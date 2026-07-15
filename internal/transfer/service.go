@@ -17,6 +17,7 @@ var (
 	ErrFileTooLarge  = errors.New("file exceeds node limit")
 	ErrQuotaExceeded = errors.New("storage or traffic quota exceeded")
 	ErrStorageFull   = errors.New("node storage is full")
+	ErrConflict      = errors.New("transfer state conflict")
 )
 
 type ContentType string
@@ -104,6 +105,14 @@ type Transfer struct {
 	ExpiresAt          time.Time             `json:"expiresAt"`
 }
 
+type Progress struct {
+	DeviceID         string                `json:"deviceId"`
+	Status           domain.TransferStatus `json:"status"`
+	Route            domain.SelectedRoute  `json:"route,omitempty"`
+	BytesTransferred int64                 `json:"bytesTransferred"`
+	ErrorCode        string                `json:"errorCode,omitempty"`
+}
+
 type Store interface {
 	ResolveTransferTargets(context.Context, auth.Session, TargetType, string, []string) ([]string, error)
 	CreateTransfer(context.Context, auth.Session, Prepared) (Transfer, error)
@@ -111,6 +120,7 @@ type Store interface {
 	GetTransfer(context.Context, auth.Session, string) (Transfer, error)
 	CancelTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error)
 	ReadTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error)
+	ReportTransferProgress(context.Context, auth.Session, string, Progress, time.Time) (Transfer, error)
 }
 
 type Service struct {
@@ -201,6 +211,18 @@ func (service *Service) Read(ctx context.Context, session auth.Session, id strin
 	return service.store.ReadTransfer(ctx, session, id, service.now().UTC())
 }
 
+func (service *Service) ReportProgress(ctx context.Context, session auth.Session, id string, progress Progress) (Transfer, error) {
+	if id == "" || session.DeviceID == nil || progress.DeviceID == "" || progress.BytesTransferred < 0 || !reportableStatus(progress.Status) || !reportableRoute(progress.Route) || len(progress.ErrorCode) > 100 {
+		return Transfer{}, ErrInvalid
+	}
+	for _, character := range progress.ErrorCode {
+		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
+			return Transfer{}, ErrInvalid
+		}
+	}
+	return service.store.ReportTransferProgress(ctx, session, id, progress, service.now().UTC())
+}
+
 func validateRequest(request Request) error {
 	if !validTargetType(request.TargetType) || !validContentType(request.ContentType) {
 		return ErrInvalid
@@ -249,6 +271,28 @@ func validContentType(value ContentType) bool {
 }
 func validTargetType(value TargetType) bool {
 	return value == TargetSingle || value == TargetMultiple || value == TargetAllDevices || value == TargetGroupAll || value == TargetGroupSelected
+}
+
+func reportableStatus(value domain.TransferStatus) bool {
+	switch value {
+	case domain.TransferCheckingRoute, domain.TransferWaitingForTarget, domain.TransferWaitingForNode,
+		domain.TransferWaitingForLAN, domain.TransferQueued, domain.TransferUploadingToNode,
+		domain.TransferAvailableOnNode, domain.TransferDownloading, domain.TransferTransferringLAN,
+		domain.TransferPaused, domain.TransferVerifying, domain.TransferDelivered, domain.TransferRead,
+		domain.TransferFailed, domain.TransferSourceFileMissing, domain.TransferSourceFileChanged:
+		return true
+	default:
+		return false
+	}
+}
+
+func reportableRoute(value domain.SelectedRoute) bool {
+	switch value {
+	case "", domain.SelectedRouteLAN, domain.SelectedRouteNode, domain.SelectedRouteWaitingLAN, domain.SelectedRouteDraft:
+		return true
+	default:
+		return false
+	}
 }
 
 func hasDuplicates(values []string) bool {

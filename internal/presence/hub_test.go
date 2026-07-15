@@ -83,7 +83,7 @@ func TestWebSocketHeartbeatAndNotification(t *testing.T) {
 	hub.pollInterval = time.Hour
 	server := httptest.NewServer(hub)
 	defer server.Close()
-	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?access_token=valid&protocolVersion=1&clientVersion=test"
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?access_token=valid&protocolVersion=1&clientVersion=test-v1.1"
 	connection, _, err := websocket.Dial(context.Background(), url, nil)
 	if err != nil {
 		t.Fatal(err)

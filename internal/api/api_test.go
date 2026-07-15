@@ -180,6 +180,10 @@ func (*testStore) ReadTransfer(context.Context, auth.Session, string, time.Time)
 	return transfer.Transfer{ID: "transfer-1"}, nil
 }
 
+func (*testStore) ReportTransferProgress(_ context.Context, _ auth.Session, id string, progress transfer.Progress, _ time.Time) (transfer.Transfer, error) {
+	return transfer.Transfer{ID: id, Status: progress.Status}, nil
+}
+
 func (store *testStore) PrepareChunkUpload(_ context.Context, _ auth.Session, _ string, index int) (filetransfer.FileRecord, *filetransfer.ChunkRecord, error) {
 	if chunk, ok := store.chunks[index]; ok {
 		return store.fileRecord, &chunk, nil

@@ -14,11 +14,12 @@ import (
 	"time"
 
 	"github.com/grandcat/zeroconf"
+	"nexdrop/internal/version"
 )
 
 const (
 	ServiceType       = "_nexdrop._tcp"
-	ProtocolVersion   = "1"
+	ProtocolVersion   = version.CurrentProtocol
 	FallbackPort      = 53317
 	discoveryMagic    = "NEXDROP_DISCOVERY_V1"
 	defaultDiscoverIn = 5 * time.Second

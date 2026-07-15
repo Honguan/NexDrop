@@ -128,8 +128,8 @@ class APIClient {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const query = new URLSearchParams({
       access_token: this.tokens.accessToken,
-      protocolVersion: "1",
-      clientVersion: "web-v1",
+      protocolVersion: "1.1",
+      clientVersion: "web-v1.1",
     });
     return `${protocol}//${location.host}/ws?${query}`;
   }

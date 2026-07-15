@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"nexdrop/internal/version"
 )
 
 const defaultMaxChunkSize int64 = 9 * 1024 * 1024
@@ -59,7 +61,7 @@ func (server *TransferServer) routes() http.Handler {
 	mux.HandleFunc("PUT /v1/transfers/{transfer}/files/{file}/chunks/{index}", server.putChunk)
 	mux.HandleFunc("POST /v1/transfers/{transfer}/files/{file}/complete", server.complete)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-NexDrop-Protocol") != ProtocolVersion {
+		if !version.SupportedProtocol(r.Header.Get("X-NexDrop-Protocol")) {
 			writeLANError(w, http.StatusUpgradeRequired, "PROTOCOL_VERSION_UNSUPPORTED")
 			return
 		}
@@ -189,7 +191,7 @@ func (client *TransferClient) request(ctx context.Context, target Advertisement,
 	if request.Header == nil {
 		request.Header = make(http.Header)
 	}
-	request.Header.Set("X-NexDrop-Protocol", ProtocolVersion)
+	request.Header.Set("X-NexDrop-Protocol", target.Protocol)
 	request.Header.Set("X-NexDrop-Challenge", target.Challenge)
 	response, err := httpClient.Do(request)
 	if err != nil {

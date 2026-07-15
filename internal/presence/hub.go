@@ -11,10 +11,11 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"nexdrop/internal/auth"
+	"nexdrop/internal/version"
 )
 
 const (
-	ProtocolVersion      = "1"
+	ProtocolVersion      = version.CurrentProtocol
 	HeartbeatInterval    = 15 * time.Second
 	DisconnectedTimeout  = 45 * time.Second
 	notificationInterval = 5 * time.Second
@@ -77,13 +78,17 @@ func NewHub(authenticator Authenticator, store Store) *Hub {
 func (hub *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := websocketToken(r)
 	session, err := hub.authenticator.Authenticate(r.Context(), token)
-	if err != nil || session.DeviceID == nil || r.URL.Query().Get("protocolVersion") != ProtocolVersion {
+	if err != nil || session.DeviceID == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !version.SupportedProtocol(r.URL.Query().Get("protocolVersion")) {
+		http.Error(w, "protocol version unsupported", http.StatusUpgradeRequired)
+		return
+	}
 	clientVersion := r.URL.Query().Get("clientVersion")
-	if clientVersion == "" {
-		http.Error(w, "client version required", http.StatusBadRequest)
+	if !version.SupportedClient(clientVersion) {
+		http.Error(w, "client version unsupported", http.StatusUpgradeRequired)
 		return
 	}
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"nexdrop.v1"}})
@@ -110,7 +115,7 @@ func (hub *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	writeErrors := make(chan error, 1)
 	go func() { writeErrors <- hub.writeLoop(ctx, deviceID, current) }()
-	if !hub.enqueue(current, Message{Type: "connected", Payload: map[string]any{"heartbeatIntervalSeconds": int(hub.heartbeat.Seconds())}}) {
+	if !hub.enqueue(current, Message{Type: "connected", Payload: map[string]any{"heartbeatIntervalSeconds": int(hub.heartbeat.Seconds()), "versions": version.Current()}}) {
 		return
 	}
 

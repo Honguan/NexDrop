@@ -13,6 +13,7 @@ import (
 type fakeStore struct {
 	resolved []string
 	prepared Prepared
+	progress Progress
 }
 
 func (store *fakeStore) ResolveTransferTargets(context.Context, auth.Session, TargetType, string, []string) ([]string, error) {
@@ -31,6 +32,10 @@ func (*fakeStore) CancelTransfer(context.Context, auth.Session, string, time.Tim
 }
 func (*fakeStore) ReadTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error) {
 	return Transfer{}, nil
+}
+func (store *fakeStore) ReportTransferProgress(_ context.Context, _ auth.Session, id string, progress Progress, _ time.Time) (Transfer, error) {
+	store.progress = progress
+	return Transfer{ID: id, Status: progress.Status}, nil
 }
 
 func TestCreateTextUsesLANBeforeNode(t *testing.T) {
@@ -90,5 +95,20 @@ func TestCreateRejectsInvalidPayloads(t *testing.T) {
 		if _, err := service.Create(context.Background(), auth.Session{DeviceID: &deviceID}, request); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("test %d error = %v, want ErrInvalid", index, err)
 		}
+	}
+}
+
+func TestReportProgressValidatesClientState(t *testing.T) {
+	store := &fakeStore{}
+	service := NewService(store)
+	deviceID := "sender-device"
+	result, err := service.ReportProgress(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", Progress{
+		DeviceID: "target-device", Status: domain.TransferTransferringLAN, Route: domain.SelectedRouteLAN, BytesTransferred: 42,
+	})
+	if err != nil || result.Status != domain.TransferTransferringLAN || store.progress.BytesTransferred != 42 {
+		t.Fatalf("ReportProgress() = %+v, %v; stored = %+v", result, err, store.progress)
+	}
+	if _, err := service.ReportProgress(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", Progress{DeviceID: "target-device", Status: domain.TransferCancelled}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("cancel report error = %v, want ErrInvalid", err)
 	}
 }

@@ -809,6 +809,101 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 	return store.GetTransfer(ctx, session, result.ID)
 }
 
+func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Session, transferID string, progress transfer.Progress, now time.Time) (transfer.Transfer, error) {
+	if session.DeviceID == nil {
+		return transfer.Transfer{}, transfer.ErrForbidden
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var currentRoute domain.SelectedRoute
+	var currentStatus domain.TransferStatus
+	err = tx.QueryRow(ctx, `
+		SELECT target.selected_route, target.status
+		FROM transfer_targets target
+		JOIN transfer_tasks task ON task.id = target.transfer_id
+		WHERE task.id = $1 AND target.target_device_id = $2
+		  AND ($3::uuid = target.target_device_id OR $3::uuid = task.sender_device_id)
+		FOR UPDATE OF target
+	`, transferID, progress.DeviceID, *session.DeviceID).Scan(&currentRoute, &currentStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return transfer.Transfer{}, transfer.ErrForbidden
+	}
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if currentStatus.IsTerminal() || (currentStatus == domain.TransferDelivered && progress.Status != domain.TransferRead) {
+		return transfer.Transfer{}, transfer.ErrConflict
+	}
+	nextRoute := currentRoute
+	if progress.Route != "" {
+		nextRoute = progress.Route
+	}
+	if nextRoute != currentRoute {
+		_, err = tx.Exec(ctx, `
+			UPDATE transfer_routes SET ended_at = $3
+			WHERE transfer_target_id = (SELECT id FROM transfer_targets WHERE transfer_id = $1 AND target_device_id = $2)
+			  AND ended_at IS NULL
+		`, transferID, progress.DeviceID, now)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transfer_routes (transfer_target_id, route, started_at)
+			SELECT id, $3, $4 FROM transfer_targets WHERE transfer_id = $1 AND target_device_id = $2
+		`, transferID, progress.DeviceID, nextRoute, now)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	var completedAt any
+	if progress.Status == domain.TransferDelivered || progress.Status == domain.TransferRead || progress.Status == domain.TransferFailed {
+		completedAt = now
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_targets
+		SET selected_route = $3::text, status = $4::text,
+		    bytes_transferred = GREATEST(bytes_transferred, $5::bigint),
+		    started_at = COALESCE(started_at, $6::timestamptz),
+		    completed_at = COALESCE($7::timestamptz, completed_at),
+		    read_at = CASE WHEN $4::text = 'READ' THEN $6::timestamptz ELSE read_at END,
+		    error_code = NULLIF($8::text, '')
+		WHERE transfer_id = $1 AND target_device_id = $2
+	`, transferID, progress.DeviceID, nextRoute, progress.Status, progress.BytesTransferred, now, completedAt, progress.ErrorCode)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if progress.Status == domain.TransferDelivered || progress.Status == domain.TransferRead {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO delivery_status (transfer_id, device_id, delivered_at, read_at)
+			VALUES ($1, $2, $3::timestamptz, CASE WHEN $4::text = 'READ' THEN $3::timestamptz ELSE NULL END)
+			ON CONFLICT (transfer_id, device_id) DO UPDATE
+			SET delivered_at = COALESCE(delivery_status.delivered_at, EXCLUDED.delivered_at),
+			    read_at = COALESCE(delivery_status.read_at, EXCLUDED.read_at)
+		`, transferID, progress.DeviceID, now, progress.Status)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_tasks task SET status = CASE
+		  WHEN NOT EXISTS (SELECT 1 FROM transfer_targets WHERE transfer_id = task.id AND status <> 'READ') THEN 'READ'
+		  WHEN NOT EXISTS (SELECT 1 FROM transfer_targets WHERE transfer_id = task.id AND status NOT IN ('DELIVERED', 'READ')) THEN 'DELIVERED'
+		  WHEN NOT EXISTS (SELECT 1 FROM transfer_targets WHERE transfer_id = task.id AND status NOT IN ('FAILED', 'CANCELLED', 'EXPIRED')) THEN 'FAILED'
+		  ELSE CASE WHEN $2::text IN ('DELIVERED', 'READ', 'FAILED') THEN task.status ELSE $2::text END END
+		WHERE task.id = $1
+	`, transferID, progress.Status)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return transfer.Transfer{}, err
+	}
+	return store.GetTransfer(ctx, session, transferID)
+}
+
 func enforceTransferQuotas(ctx context.Context, tx pgx.Tx, session auth.Session, prepared transfer.Prepared) error {
 	nodeFiles := make(map[int]bool)
 	for _, target := range prepared.FileTargets {

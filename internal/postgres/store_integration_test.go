@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,6 +149,13 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatalf("owner RemoveGroupMember() error = %v", err)
 	}
 	session.DeviceID = &created.ID
+	if err := store.RegisterLANIdentity(ctx, session, created.ID, strings.ReplaceAll(created.ID, "-", "")[:12], strings.Repeat("a", 64), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = store.ListDevices(ctx, userID)
+	if err != nil || listed[0].LANFingerprint != strings.Repeat("a", 64) {
+		t.Fatalf("LAN identity list = %+v, %v", listed, err)
+	}
 	var targetSessionID string
 	err = store.pool.QueryRow(ctx, `
 		INSERT INTO user_sessions (
@@ -192,8 +200,11 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if !bytes.Equal(targetTransfers[0].WrappedContentKeys[targetDevice.ID], []byte{1, 2, 3}) {
 		t.Fatalf("target wrapped content keys = %+v", targetTransfers[0].WrappedContentKeys)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE transfer_targets SET status = 'DELIVERED' WHERE transfer_id = $1`, textTransfer.ID); err != nil {
-		t.Fatal(err)
+	reported, err := transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
+		DeviceID: targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
+	})
+	if err != nil || reported.Targets[0].Status != domain.TransferDelivered || reported.Targets[0].BytesTransferred != 14 {
+		t.Fatalf("ReportProgress() = %+v, %v", reported, err)
 	}
 	readTransfer, err := transferService.Read(ctx, targetSession, textTransfer.ID)
 	if err != nil || readTransfer.Targets[0].Status != domain.TransferRead {

@@ -19,6 +19,7 @@ import (
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
+	"nexdrop/internal/version"
 )
 
 type API struct {
@@ -38,6 +39,7 @@ func New(authService *auth.Service, deviceService *device.Service, pairingServic
 
 func (api *API) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/version", api.version)
 	mux.HandleFunc("POST /api/auth/login", api.login)
 	mux.HandleFunc("POST /api/auth/refresh", api.refresh)
 	mux.HandleFunc("POST /api/auth/logout", api.logout)
@@ -67,6 +69,7 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/transfers/{id}", api.getTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/cancel", api.cancelTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/read", api.readTransfer)
+	mux.HandleFunc("PUT /api/transfers/{id}/targets/{deviceId}", api.reportTransferProgress)
 	mux.HandleFunc("POST /api/files/{id}/chunks/{index}", api.uploadChunk)
 	mux.HandleFunc("GET /api/files/{id}/chunks/{index}", api.downloadChunk)
 	mux.HandleFunc("POST /api/files/{id}/complete", api.completeFile)
@@ -87,6 +90,10 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/admin/failures", api.adminFailures)
 	mux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
 	return mux
+}
+
+func (api *API) version(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, version.Current())
 }
 
 func (api *API) refresh(w http.ResponseWriter, r *http.Request) {
@@ -502,6 +509,25 @@ func (api *API) readTransfer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (api *API) reportTransferProgress(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var progress transfer.Progress
+	if decodeJSON(r, &progress) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	progress.DeviceID = r.PathValue("deviceId")
+	result, err := api.transfers.ReportProgress(r.Context(), session, r.PathValue("id"), progress)
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (api *API) uploadChunk(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticate(w, r)
 	if !ok {
@@ -736,6 +762,8 @@ func writeTransferError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInsufficientStorage, "QUOTA_EXCEEDED")
 	case errors.Is(err, transfer.ErrStorageFull):
 		writeError(w, http.StatusInsufficientStorage, "STORAGE_FULL")
+	case errors.Is(err, transfer.ErrConflict):
+		writeError(w, http.StatusConflict, "TRANSFER_STATE_CONFLICT")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}
