@@ -50,6 +50,20 @@ CREATE TABLE device_connections (
     client_version text NOT NULL
 );
 
+CREATE TABLE device_pairing_codes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    target_device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    created_by_session_id uuid NOT NULL REFERENCES user_sessions(id) ON DELETE CASCADE,
+    code_hash bytea NOT NULL,
+    attempt_count integer NOT NULL DEFAULT 0,
+    expires_at timestamptz NOT NULL,
+    used_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX device_pairing_codes_target_idx
+    ON device_pairing_codes(target_device_id, expires_at DESC);
+
 CREATE TABLE groups (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_user_id uuid NOT NULL REFERENCES users(id),

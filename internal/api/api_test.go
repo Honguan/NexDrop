@@ -13,6 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/pairing"
 )
 
 type testStore struct {
@@ -79,6 +80,14 @@ func (store *testStore) RevokeDevice(_ context.Context, _ auth.Session, id strin
 	return device.Device{ID: id, TrustStatus: device.TrustRevoked, RevokedAt: &now}, nil
 }
 
+func (*testStore) CreatePairingCode(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error) {
+	return "challenge-1", nil
+}
+
+func (*testStore) RedeemPairingCode(_ context.Context, _ auth.Session, deviceID, _ string, _ []byte, _ time.Time, _ int) (device.Device, error) {
+	return device.Device{ID: deviceID, TrustStatus: device.TrustTrusted}, nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -88,7 +97,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -130,7 +139,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store)).Routes()
+	handler := New(authService, device.NewService(store), pairing.NewService(store)).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)

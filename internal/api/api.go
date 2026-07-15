@@ -9,15 +9,17 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/pairing"
 )
 
 type API struct {
 	auth    *auth.Service
 	devices *device.Service
+	pairing *pairing.Service
 }
 
-func New(authService *auth.Service, deviceService *device.Service) *API {
-	return &API{auth: authService, devices: deviceService}
+func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service) *API {
+	return &API{auth: authService, devices: deviceService, pairing: pairingService}
 }
 
 func (api *API) Routes() http.Handler {
@@ -32,6 +34,8 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/devices/{id}", api.deleteDevice)
 	mux.HandleFunc("POST /api/devices/{id}/approve", api.approveDevice)
 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
+	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
+	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
 	return mux
 }
 
@@ -181,6 +185,40 @@ func (api *API) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (api *API) createPairingCode(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	challenge, err := api.pairing.Create(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writePairingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, challenge)
+}
+
+func (api *API) redeemPairingCode(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		ChallengeID string `json:"challengeId"`
+		Code        string `json:"code"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.pairing.Redeem(r.Context(), session, r.PathValue("id"), request.ChallengeID, request.Code)
+	if err != nil {
+		writePairingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Session, bool) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -222,5 +260,20 @@ func writeDeviceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+	}
+}
+
+func writePairingError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, pairing.ErrInvalidCode):
+		writeError(w, http.StatusBadRequest, "PAIRING_CODE_INVALID")
+	case errors.Is(err, pairing.ErrExpired):
+		writeError(w, http.StatusGone, "PAIRING_CODE_EXPIRED")
+	case errors.Is(err, pairing.ErrUsed):
+		writeError(w, http.StatusConflict, "PAIRING_CODE_USED")
+	case errors.Is(err, pairing.ErrLocked):
+		writeError(w, http.StatusTooManyRequests, "PAIRING_CODE_LOCKED")
+	default:
+		writeDeviceError(w, err)
 	}
 }

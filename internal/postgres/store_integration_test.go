@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/pairing"
 )
 
 func TestDeviceLifecycleIntegration(t *testing.T) {
@@ -56,9 +59,36 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("ListDevices() = %+v, %v", listed, err)
 	}
-	approved, err := store.ApproveDevice(ctx, session, created.ID)
+	codeHash := sha256.Sum256([]byte("123456"))
+	challengeID, err := store.CreatePairingCode(ctx, session, created.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongHash := sha256.Sum256([]byte("654321"))
+	for attempt := 1; attempt <= pairing.MaximumCodeAttempts; attempt++ {
+		_, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, wrongHash[:], time.Now(), pairing.MaximumCodeAttempts)
+		want := pairing.ErrInvalidCode
+		if attempt == pairing.MaximumCodeAttempts {
+			want = pairing.ErrLocked
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("pairing attempt %d error = %v, want %v", attempt, err, want)
+		}
+	}
+	if _, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts); !errors.Is(err, pairing.ErrLocked) {
+		t.Fatalf("locked pairing code error = %v, want ErrLocked", err)
+	}
+
+	challengeID, err = store.CreatePairingCode(ctx, session, created.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts)
 	if err != nil || approved.TrustStatus != device.TrustTrusted {
-		t.Fatalf("ApproveDevice() = %+v, %v", approved, err)
+		t.Fatalf("RedeemPairingCode() = %+v, %v", approved, err)
+	}
+	if _, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts); !errors.Is(err, pairing.ErrUsed) {
+		t.Fatalf("reused pairing code error = %v, want ErrUsed", err)
 	}
 	renamed, err := store.RenameDevice(ctx, userID, created.ID, "Workstation")
 	if err != nil || renamed.DisplayName != "Workstation" {
@@ -72,4 +102,3 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatal("device revocation did not revoke its session")
 	}
 }
-
