@@ -50,6 +50,7 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
 	mux.HandleFunc("POST /api/devices/{id}/session-challenge", api.createDeviceSessionChallenge)
 	mux.HandleFunc("POST /api/devices/{id}/attach-session", api.attachDeviceSession)
+	mux.HandleFunc("PUT /api/devices/{id}/lan-identity", api.registerDeviceLANIdentity)
 	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
 	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
 	mux.HandleFunc("POST /api/groups", api.createGroup)
@@ -174,6 +175,26 @@ func (api *API) listDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) registerDeviceLANIdentity(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		CertificateFingerprint string `json:"certificateFingerprint"`
+	}
+	if decodeJSON(r, &request) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	shortID, err := api.devices.RegisterLANIdentity(r.Context(), session, r.PathValue("id"), request.CertificateFingerprint)
+	if err != nil {
+		writeDeviceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"shortDeviceId": shortID, "certificateFingerprint": strings.ToLower(request.CertificateFingerprint)})
 }
 
 func (api *API) renameDevice(w http.ResponseWriter, r *http.Request) {

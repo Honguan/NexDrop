@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 type fakeStore struct {
 	created bool
 	proof   []byte
+	lanID   string
 }
 
 func (store *fakeStore) CreateDevice(_ context.Context, _ auth.Session, name string, deviceType Type, publicKey []byte, algorithm string) (Device, error) {
@@ -50,6 +52,11 @@ func (store *fakeStore) CreateDeviceSessionChallenge(_ context.Context, _ auth.S
 }
 
 func (*fakeStore) RedeemDeviceSessionChallenge(context.Context, auth.Session, string, string, []byte, time.Time, int) error {
+	return nil
+}
+
+func (store *fakeStore) RegisterLANIdentity(_ context.Context, _ auth.Session, _, shortID, _ string, _ time.Time) error {
+	store.lanID = shortID
 	return nil
 }
 
@@ -102,6 +109,24 @@ func TestDeviceLifecycle(t *testing.T) {
 	revoked, err := service.Revoke(context.Background(), session, "device-1")
 	if err != nil || revoked.TrustStatus != TrustRevoked || revoked.RevokedAt == nil {
 		t.Fatalf("Revoke() = %+v, %v", revoked, err)
+	}
+}
+
+func TestRegisterLANIdentityRequiresOwningDeviceSession(t *testing.T) {
+	store := &fakeStore{}
+	service := NewService(store)
+	deviceID := "12345678-abcd-4000-8000-123456789abc"
+	session := auth.Session{DeviceID: &deviceID}
+	shortID, err := service.RegisterLANIdentity(context.Background(), session, deviceID, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shortID != "12345678abcd" || store.lanID != shortID {
+		t.Fatalf("short ID = %q, stored = %q", shortID, store.lanID)
+	}
+	otherID := "aaaaaaaa-bbbb-4000-8000-123456789abc"
+	if _, err := service.RegisterLANIdentity(context.Background(), session, otherID, strings.Repeat("a", 64)); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("other device error = %v, want ErrForbidden", err)
 	}
 }
 

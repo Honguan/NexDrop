@@ -38,14 +38,16 @@ const (
 )
 
 type Device struct {
-	ID          string      `json:"id"`
-	DisplayName string      `json:"displayName"`
-	Type        Type        `json:"type"`
-	PublicKey   []byte      `json:"publicKey,omitempty"`
-	Algorithm   string      `json:"keyAlgorithm,omitempty"`
-	TrustStatus TrustStatus `json:"trustStatus"`
-	RevokedAt   *time.Time  `json:"revokedAt,omitempty"`
-	CreatedAt   time.Time   `json:"createdAt"`
+	ID             string      `json:"id"`
+	DisplayName    string      `json:"displayName"`
+	Type           Type        `json:"type"`
+	PublicKey      []byte      `json:"publicKey,omitempty"`
+	Algorithm      string      `json:"keyAlgorithm,omitempty"`
+	LANShortID     string      `json:"lanShortId,omitempty"`
+	LANFingerprint string      `json:"lanCertificateFingerprint,omitempty"`
+	TrustStatus    TrustStatus `json:"trustStatus"`
+	RevokedAt      *time.Time  `json:"revokedAt,omitempty"`
+	CreatedAt      time.Time   `json:"createdAt"`
 }
 
 type SessionChallenge struct {
@@ -66,6 +68,7 @@ type Store interface {
 	DevicePublicKeyForSession(context.Context, auth.Session, string) ([]byte, error)
 	CreateDeviceSessionChallenge(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error)
 	RedeemDeviceSessionChallenge(context.Context, auth.Session, string, string, []byte, time.Time, int) error
+	RegisterLANIdentity(context.Context, auth.Session, string, string, string, time.Time) error
 }
 
 const (
@@ -172,6 +175,27 @@ func (service *Service) Revoke(ctx context.Context, session auth.Session, id str
 		return Device{}, ErrInvalid
 	}
 	return service.store.RevokeDevice(ctx, session, id, service.now().UTC())
+}
+
+func (service *Service) RegisterLANIdentity(ctx context.Context, session auth.Session, id, fingerprint string) (string, error) {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	compactID := strings.ReplaceAll(id, "-", "")
+	if session.DeviceID == nil || *session.DeviceID != id {
+		return "", ErrForbidden
+	}
+	if len(compactID) != 32 || len(fingerprint) != 64 {
+		return "", ErrInvalid
+	}
+	for _, character := range compactID + fingerprint {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return "", ErrInvalid
+		}
+	}
+	shortID := compactID[:12]
+	if err := service.store.RegisterLANIdentity(ctx, session, id, shortID, fingerprint, service.now().UTC()); err != nil {
+		return "", err
+	}
+	return shortID, nil
 }
 
 func validType(value Type) bool {

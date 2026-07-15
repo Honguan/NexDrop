@@ -104,6 +104,10 @@ func (*testStore) RedeemDeviceSessionChallenge(context.Context, auth.Session, st
 	return nil
 }
 
+func (*testStore) RegisterLANIdentity(context.Context, auth.Session, string, string, string, time.Time) error {
+	return nil
+}
+
 func (*testStore) CreatePairingCode(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error) {
 	return "challenge-1", nil
 }

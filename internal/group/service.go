@@ -41,13 +41,15 @@ type Member struct {
 }
 
 type GroupDevice struct {
-	ID          string      `json:"id"`
-	OwnerUserID string      `json:"ownerUserId"`
-	DisplayName string      `json:"displayName"`
-	Type        device.Type `json:"type"`
-	PublicKey   []byte      `json:"publicKey"`
-	Algorithm   string      `json:"keyAlgorithm"`
-	AddedAt     time.Time   `json:"addedAt"`
+	ID             string      `json:"id"`
+	OwnerUserID    string      `json:"ownerUserId"`
+	DisplayName    string      `json:"displayName"`
+	Type           device.Type `json:"type"`
+	PublicKey      []byte      `json:"publicKey"`
+	Algorithm      string      `json:"keyAlgorithm"`
+	LANShortID     string      `json:"lanShortId,omitempty"`
+	LANFingerprint string      `json:"lanCertificateFingerprint,omitempty"`
+	AddedAt        time.Time   `json:"addedAt"`
 }
 
 type Details struct {

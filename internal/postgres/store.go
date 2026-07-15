@@ -183,9 +183,11 @@ func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name
 func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.Device, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
+		       COALESCE(l.short_device_id, ''), COALESCE(l.certificate_fingerprint, ''),
 		       d.trust_status, d.revoked_at, d.created_at
 		FROM devices d
 		JOIN device_keys k ON k.device_id = d.id
+		LEFT JOIN device_lan_identities l ON l.device_id = d.id
 		WHERE d.user_id = $1
 		ORDER BY d.created_at
 	`, userID)
@@ -197,12 +199,33 @@ func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.De
 	devices := make([]device.Device, 0)
 	for rows.Next() {
 		var item device.Device
-		if err := rows.Scan(&item.ID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.TrustStatus, &item.RevokedAt, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.LANShortID, &item.LANFingerprint, &item.TrustStatus, &item.RevokedAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		devices = append(devices, item)
 	}
 	return devices, rows.Err()
+}
+
+func (store *Store) RegisterLANIdentity(ctx context.Context, session auth.Session, deviceID, shortID, fingerprint string, updatedAt time.Time) error {
+	command, err := store.pool.Exec(ctx, `
+		INSERT INTO device_lan_identities (device_id, short_device_id, certificate_fingerprint, updated_at)
+		SELECT d.id, $3, $4, $5
+		FROM devices d JOIN user_sessions s ON s.device_id = d.id
+		WHERE d.id = $1 AND s.id = $2 AND s.revoked_at IS NULL
+		  AND d.trust_status <> 'REVOKED' AND d.revoked_at IS NULL
+		ON CONFLICT (device_id) DO UPDATE
+		SET short_device_id = EXCLUDED.short_device_id,
+		    certificate_fingerprint = EXCLUDED.certificate_fingerprint,
+		    updated_at = EXCLUDED.updated_at
+	`, deviceID, session.SessionID, shortID, fingerprint, updatedAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return device.ErrForbidden
+	}
+	return nil
 }
 
 func (store *Store) RenameDevice(ctx context.Context, userID, deviceID, name string) (device.Device, error) {
@@ -480,10 +503,12 @@ func (store *Store) GetGroup(ctx context.Context, session auth.Session, groupID 
 	}
 	deviceRows, err := store.pool.Query(ctx, `
 		SELECT d.id::text, d.user_id::text, d.display_name, d.device_type,
-		       k.public_key, k.key_algorithm, gd.added_at
+		       k.public_key, k.key_algorithm, COALESCE(l.short_device_id, ''),
+		       COALESCE(l.certificate_fingerprint, ''), gd.added_at
 		FROM group_devices gd
 		JOIN devices d ON d.id = gd.device_id
 		JOIN device_keys k ON k.device_id = d.id
+		LEFT JOIN device_lan_identities l ON l.device_id = d.id
 		WHERE gd.group_id = $1
 		ORDER BY gd.added_at
 	`, groupID)
@@ -494,7 +519,7 @@ func (store *Store) GetGroup(ctx context.Context, session auth.Session, groupID 
 	result.Devices = make([]group.GroupDevice, 0)
 	for deviceRows.Next() {
 		var item group.GroupDevice
-		if err := deviceRows.Scan(&item.ID, &item.OwnerUserID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.AddedAt); err != nil {
+		if err := deviceRows.Scan(&item.ID, &item.OwnerUserID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.LANShortID, &item.LANFingerprint, &item.AddedAt); err != nil {
 			return group.Details{}, err
 		}
 		result.Devices = append(result.Devices, item)
