@@ -181,6 +181,26 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 			return true, errors.New("one or more checks failed")
 		}
 		return true, nil
+	case "cleanup":
+		flags := flag.NewFlagSet("cleanup", flag.ContinueOnError)
+		limit := flags.Int("limit", 100, "maximum files to clean")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return true, err
+		}
+		store, err := postgres.Open(ctx, databaseURL)
+		if err != nil {
+			return true, err
+		}
+		defer store.Close()
+		cleaner, err := maintenance.NewCleaner(store, storagePath)
+		if err != nil {
+			return true, err
+		}
+		cleaned, err := cleaner.RunOnce(ctx, *limit)
+		if err != nil {
+			return true, err
+		}
+		return true, json.NewEncoder(os.Stdout).Encode(map[string]int{"cleaned": cleaned})
 	case "reset-password":
 		flags := flag.NewFlagSet("reset-password", flag.ContinueOnError)
 		identifier := flags.String("identifier", "", "username or email")

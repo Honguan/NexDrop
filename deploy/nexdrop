@@ -39,6 +39,9 @@ case "$command" in
         docker compose config >/dev/null
         docker compose run --rm nexdrop doctor
         ;;
+    cleanup)
+        docker compose run --rm nexdrop cleanup "$@"
+        ;;
     reset-password)
         docker compose run --rm -T nexdrop reset-password "$@"
         ;;
@@ -50,7 +53,7 @@ case "$command" in
         fi
         ;;
     *)
-        echo "usage: nexdrop {install|update|status|logs|backup|restore|doctor|reset-password|uninstall}" >&2
+        echo "usage: nexdrop {install|update|status|logs|backup|restore|cleanup|doctor|reset-password|uninstall}" >&2
         exit 2
         ;;
 esac
