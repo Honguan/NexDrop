@@ -196,11 +196,11 @@ class ApiClient {
     for (var attempt = 0; ; attempt++) {
       try {
         final response = await send();
-        if (response.statusCode < 500 || attempt >= 2) return response;
+        if (response.statusCode < 500 || attempt >= 3) return response;
       } on SocketException {
-        if (attempt >= 2) rethrow;
+        if (attempt >= 3) rethrow;
       } on http.ClientException {
-        if (attempt >= 2) rethrow;
+        if (attempt >= 3) rethrow;
       }
       await Future<void>.delayed(Duration(seconds: 1 << attempt));
     }
