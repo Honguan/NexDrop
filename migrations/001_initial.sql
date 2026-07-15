@@ -209,10 +209,11 @@ CREATE TABLE notifications (
 
 CREATE TABLE transfer_metrics (
     event_id uuid PRIMARY KEY,
-    transfer_id uuid NOT NULL REFERENCES transfer_tasks(id) ON DELETE CASCADE,
-    sender_device_id uuid NOT NULL REFERENCES devices(id),
-    receiver_device_id uuid REFERENCES devices(id),
-    group_id uuid REFERENCES groups(id),
+    transfer_id uuid NOT NULL,
+    sender_user_id uuid NOT NULL,
+    sender_device_id uuid NOT NULL,
+    receiver_device_id uuid,
+    group_id uuid,
     content_type text NOT NULL,
     route text NOT NULL,
     file_size bigint NOT NULL DEFAULT 0,

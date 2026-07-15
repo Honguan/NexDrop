@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/filetransfer"
@@ -24,10 +27,11 @@ type API struct {
 	groups    *group.Service
 	transfers *transfer.Service
 	files     *filetransfer.Service
+	analytics *analytics.Service
 }
 
-func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service) *API {
-	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService}
+func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service) *API {
+	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService}
 }
 
 func (api *API) Routes() http.Handler {
@@ -61,6 +65,12 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/files/{id}/chunks/{index}", api.uploadChunk)
 	mux.HandleFunc("GET /api/files/{id}/chunks/{index}", api.downloadChunk)
 	mux.HandleFunc("POST /api/files/{id}/complete", api.completeFile)
+	mux.HandleFunc("POST /api/metrics/batch", api.uploadMetrics)
+	mux.HandleFunc("GET /api/statistics/overview", api.statisticsOverview)
+	mux.HandleFunc("GET /api/statistics/transfers", api.statisticsTransfers)
+	mux.HandleFunc("GET /api/statistics/devices", api.statisticsDevices)
+	mux.HandleFunc("GET /api/statistics/groups", api.statisticsGroups)
+	mux.HandleFunc("GET /api/statistics/node", api.statisticsNode)
 	return mux
 }
 
@@ -516,6 +526,93 @@ func (api *API) completeFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
+func (api *API) uploadMetrics(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Events []analytics.Metric `json:"events"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.analytics.Upload(r.Context(), session, request.Events)
+	if err != nil {
+		writeAnalyticsError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) statisticsOverview(w http.ResponseWriter, r *http.Request) {
+	api.withStatistics(w, r, func(ctx context.Context, session auth.Session, value analytics.TimeRange) (any, error) {
+		return api.analytics.Overview(ctx, session, value)
+	})
+}
+
+func (api *API) statisticsTransfers(w http.ResponseWriter, r *http.Request) {
+	api.withStatistics(w, r, func(ctx context.Context, session auth.Session, value analytics.TimeRange) (any, error) {
+		return api.analytics.Transfers(ctx, session, value)
+	})
+}
+
+func (api *API) statisticsDevices(w http.ResponseWriter, r *http.Request) {
+	api.withStatistics(w, r, func(ctx context.Context, session auth.Session, value analytics.TimeRange) (any, error) {
+		return api.analytics.Devices(ctx, session, value)
+	})
+}
+
+func (api *API) statisticsGroups(w http.ResponseWriter, r *http.Request) {
+	api.withStatistics(w, r, func(ctx context.Context, session auth.Session, value analytics.TimeRange) (any, error) {
+		return api.analytics.Groups(ctx, session, value)
+	})
+}
+
+func (api *API) statisticsNode(w http.ResponseWriter, r *http.Request) {
+	api.withStatistics(w, r, func(ctx context.Context, session auth.Session, value analytics.TimeRange) (any, error) {
+		return api.analytics.Node(ctx, session, value)
+	})
+}
+
+func (api *API) withStatistics(w http.ResponseWriter, r *http.Request, load func(context.Context, auth.Session, analytics.TimeRange) (any, error)) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	timeRange, err := parseTimeRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_TIME_RANGE")
+		return
+	}
+	result, err := load(r.Context(), session, timeRange)
+	if err != nil {
+		writeAnalyticsError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func parseTimeRange(r *http.Request) (analytics.TimeRange, error) {
+	to := time.Now().UTC()
+	from := to.Add(-7 * 24 * time.Hour)
+	var err error
+	if value := r.URL.Query().Get("from"); value != "" {
+		from, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			return analytics.TimeRange{}, err
+		}
+	}
+	if value := r.URL.Query().Get("to"); value != "" {
+		to, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			return analytics.TimeRange{}, err
+		}
+	}
+	return analytics.TimeRange{From: from, To: to}, nil
+}
+
 func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Session, bool) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -617,6 +714,17 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "HASH_MISMATCH")
 	case errors.Is(err, filetransfer.ErrIncomplete):
 		writeError(w, http.StatusConflict, "FILE_INCOMPLETE")
+	default:
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+	}
+}
+
+func writeAnalyticsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, analytics.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "INVALID_ANALYTICS_REQUEST")
+	case errors.Is(err, analytics.ErrForbidden):
+		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}

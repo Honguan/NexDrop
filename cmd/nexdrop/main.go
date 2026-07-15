@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"nexdrop/internal/analytics"
 	"nexdrop/internal/api"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
@@ -56,7 +57,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure file storage: %v", err)
 	}
-	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService)
+	analyticsService := analytics.NewService(store)
+	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService)
 	presenceHub := presence.NewHub(authService, store)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)

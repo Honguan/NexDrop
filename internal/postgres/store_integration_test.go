@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/domain"
@@ -145,10 +146,6 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err := store.RemoveGroupMember(ctx, session, createdGroup.ID, memberUserID); err != nil {
 		t.Fatalf("owner RemoveGroupMember() error = %v", err)
 	}
-	if err := store.DeleteGroup(ctx, session, createdGroup.ID); err != nil {
-		t.Fatalf("DeleteGroup() error = %v", err)
-	}
-
 	session.DeviceID = &created.ID
 	var targetSessionID string
 	err = store.pool.QueryRow(ctx, `
@@ -267,6 +264,48 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	}
 	if err := store.DisconnectDevice(ctx, targetDevice.ID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
+	}
+	analyticsService := analytics.NewService(store)
+	metricStart := time.Now().UTC().Add(-time.Minute)
+	metrics := []analytics.Metric{
+		{
+			EventID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", TransferID: textTransfer.ID,
+			SenderDeviceID: created.ID, ReceiverDeviceID: targetDevice.ID, ContentType: "TEXT",
+			Route: domain.SelectedRouteLAN, FileSize: 10, StartedAt: metricStart, Succeeded: true,
+		},
+		{
+			EventID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", TransferID: fileTransfer.ID,
+			SenderDeviceID: created.ID, ReceiverDeviceID: targetDevice.ID, GroupID: createdGroup.ID,
+			ContentType: "FILE", Route: domain.SelectedRouteNode, FileSize: 1, StartedAt: metricStart, Succeeded: true,
+		},
+	}
+	batch, err := analyticsService.Upload(ctx, session, metrics)
+	if err != nil || batch.Accepted != 2 {
+		t.Fatalf("Upload metrics = %+v, %v", batch, err)
+	}
+	duplicateBatch, err := analyticsService.Upload(ctx, session, metrics)
+	if err != nil || duplicateBatch.Duplicates != 2 {
+		t.Fatalf("duplicate metrics = %+v, %v", duplicateBatch, err)
+	}
+	rangeValue := analytics.TimeRange{From: metricStart.Add(-time.Hour), To: time.Now().UTC().Add(time.Hour)}
+	overview, err := analyticsService.Overview(ctx, session, rangeValue)
+	if err != nil || overview.TransferCount != 2 || overview.TotalBytes != 11 || overview.RouteCounts["LAN"] != 1 || overview.RouteCounts["NODE"] != 1 {
+		t.Fatalf("Overview() = %+v, %v", overview, err)
+	}
+	daily, err := analyticsService.Transfers(ctx, session, rangeValue)
+	if err != nil || len(daily) != 1 || daily[0].TotalBytes != 11 {
+		t.Fatalf("Transfers() = %+v, %v", daily, err)
+	}
+	deviceStatistics, err := analyticsService.Devices(ctx, session, rangeValue)
+	if err != nil || len(deviceStatistics) < 2 {
+		t.Fatalf("Devices() = %+v, %v", deviceStatistics, err)
+	}
+	groupStatistics, err := analyticsService.Groups(ctx, session, rangeValue)
+	if err != nil || len(groupStatistics) != 1 || groupStatistics[0].FileCount != 1 {
+		t.Fatalf("Groups() = %+v, %v", groupStatistics, err)
+	}
+	if err := store.DeleteGroup(ctx, session, createdGroup.ID); err != nil {
+		t.Fatalf("DeleteGroup() error = %v", err)
 	}
 	cancelled, err := transferService.Cancel(ctx, session, fileTransfer.ID)
 	if err != nil || cancelled.Status != domain.TransferCancelled {

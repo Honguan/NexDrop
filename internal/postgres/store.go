@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/filetransfer"
@@ -1238,6 +1239,203 @@ func (store *Store) AcknowledgeNotification(ctx context.Context, deviceID, notif
 		return device.ErrNotFound
 	}
 	return nil
+}
+
+func (store *Store) InsertMetrics(ctx context.Context, session auth.Session, metrics []analytics.Metric) (analytics.BatchResult, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return analytics.BatchResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	result := analytics.BatchResult{}
+	for _, metric := range metrics {
+		var receiver any
+		if metric.ReceiverDeviceID != "" {
+			receiver = metric.ReceiverDeviceID
+		}
+		var groupID any
+		if metric.GroupID != "" {
+			groupID = metric.GroupID
+		}
+		command, err := tx.Exec(ctx, `
+			INSERT INTO transfer_metrics (
+				event_id, transfer_id, sender_user_id, sender_device_id, receiver_device_id, group_id,
+				content_type, route, file_size, started_at, completed_at,
+				average_bytes_per_second, retry_count, succeeded, error_code
+			)
+			SELECT $1, $2, $15, sender.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+			FROM devices sender
+			WHERE sender.id = $3 AND sender.user_id = $15
+			  AND sender.trust_status = 'TRUSTED' AND sender.revoked_at IS NULL
+			  AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM devices WHERE id = $4))
+			  AND ($5::uuid IS NULL OR EXISTS (
+			      SELECT 1 FROM group_members WHERE group_id = $5 AND user_id = $15
+			  ))
+			ON CONFLICT (event_id) DO NOTHING
+		`, metric.EventID, metric.TransferID, metric.SenderDeviceID, receiver, groupID,
+			metric.ContentType, metric.Route, metric.FileSize, metric.StartedAt, metric.CompletedAt,
+			metric.AverageBytesPerSecond, metric.RetryCount, metric.Succeeded, metric.ErrorCode, session.ID)
+		if err != nil {
+			return analytics.BatchResult{}, err
+		}
+		if command.RowsAffected() == 1 {
+			result.Accepted++
+		} else {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM transfer_metrics WHERE event_id = $1)`, metric.EventID).Scan(&exists); err != nil {
+				return analytics.BatchResult{}, err
+			}
+			if !exists {
+				return analytics.BatchResult{}, analytics.ErrForbidden
+			}
+			result.Duplicates++
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return analytics.BatchResult{}, err
+	}
+	return result, nil
+}
+
+func (store *Store) AnalyticsOverview(ctx context.Context, session auth.Session, timeRange analytics.TimeRange) (analytics.Overview, error) {
+	result := analytics.Overview{RouteCounts: make(map[string]int64), RouteBytes: make(map[string]int64)}
+	err := store.pool.QueryRow(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(m.file_size), 0),
+		       COUNT(*) FILTER (WHERE m.succeeded), COUNT(*) FILTER (WHERE NOT m.succeeded)
+		FROM transfer_metrics m
+		WHERE m.sender_user_id = $1 AND m.started_at >= $2 AND m.started_at < $3
+	`, session.ID, timeRange.From, timeRange.To).Scan(&result.TransferCount, &result.TotalBytes, &result.Succeeded, &result.Failed)
+	if err != nil {
+		return analytics.Overview{}, err
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT m.route, COUNT(*), COALESCE(SUM(m.file_size), 0)
+		FROM transfer_metrics m
+		WHERE m.sender_user_id = $1 AND m.started_at >= $2 AND m.started_at < $3
+		GROUP BY m.route
+	`, session.ID, timeRange.From, timeRange.To)
+	if err != nil {
+		return analytics.Overview{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var route string
+		var count, bytes int64
+		if err := rows.Scan(&route, &count, &bytes); err != nil {
+			return analytics.Overview{}, err
+		}
+		result.RouteCounts[route] = count
+		result.RouteBytes[route] = bytes
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) DailyTransfers(ctx context.Context, session auth.Session, timeRange analytics.TimeRange) ([]analytics.DailyTransfer, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT date_trunc('day', m.started_at AT TIME ZONE 'UTC')::date::text,
+		       COUNT(*), COALESCE(SUM(m.file_size), 0),
+		       COALESCE(SUM(m.file_size) FILTER (WHERE m.route = 'LAN'), 0),
+		       COALESCE(SUM(m.file_size) FILTER (WHERE m.route = 'NODE'), 0),
+		       COUNT(*) FILTER (WHERE NOT m.succeeded)
+		FROM transfer_metrics m
+		WHERE m.sender_user_id = $1 AND m.started_at >= $2 AND m.started_at < $3
+		GROUP BY 1 ORDER BY 1
+	`, session.ID, timeRange.From, timeRange.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]analytics.DailyTransfer, 0)
+	for rows.Next() {
+		var item analytics.DailyTransfer
+		if err := rows.Scan(&item.Date, &item.Count, &item.TotalBytes, &item.LANBytes, &item.NodeBytes, &item.Failed); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) DeviceStatistics(ctx context.Context, session auth.Session, timeRange analytics.TimeRange) ([]analytics.DeviceStatistic, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT d.id::text, d.display_name,
+		       COUNT(m.event_id) FILTER (WHERE m.sender_device_id = d.id),
+		       COUNT(m.event_id) FILTER (WHERE m.receiver_device_id = d.id),
+		       COALESCE(SUM(m.file_size) FILTER (WHERE m.sender_device_id = d.id), 0),
+		       COALESCE(SUM(m.file_size) FILTER (WHERE m.receiver_device_id = d.id), 0),
+		       COALESCE(AVG(m.average_bytes_per_second) FILTER (WHERE m.sender_device_id = d.id), 0)
+		FROM devices d
+		LEFT JOIN transfer_metrics m ON (m.sender_device_id = d.id OR m.receiver_device_id = d.id)
+		  AND m.started_at >= $2 AND m.started_at < $3
+		WHERE d.user_id = $1
+		GROUP BY d.id, d.display_name ORDER BY d.display_name
+	`, session.ID, timeRange.From, timeRange.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]analytics.DeviceStatistic, 0)
+	for rows.Next() {
+		var item analytics.DeviceStatistic
+		if err := rows.Scan(&item.DeviceID, &item.DisplayName, &item.SentCount, &item.ReceivedCount, &item.SentBytes, &item.ReceivedBytes, &item.AverageSpeed); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) GroupStatistics(ctx context.Context, session auth.Session, timeRange analytics.TimeRange) ([]analytics.GroupStatistic, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT g.id::text, g.name,
+		       COUNT(m.event_id) FILTER (WHERE m.content_type IN ('TEXT', 'URL', 'NOTIFICATION')),
+		       COUNT(m.event_id) FILTER (WHERE m.content_type IN ('FILE', 'IMAGE')),
+		       COALESCE(SUM(m.file_size), 0),
+		       COUNT(DISTINCT m.sender_device_id),
+		       COUNT(DISTINCT sender.user_id)
+		FROM groups g
+		JOIN group_members membership ON membership.group_id = g.id AND membership.user_id = $1
+		LEFT JOIN transfer_metrics m ON m.group_id = g.id AND m.started_at >= $2 AND m.started_at < $3
+		LEFT JOIN devices sender ON sender.id = m.sender_device_id
+		GROUP BY g.id, g.name ORDER BY g.name
+	`, session.ID, timeRange.From, timeRange.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]analytics.GroupStatistic, 0)
+	for rows.Next() {
+		var item analytics.GroupStatistic
+		if err := rows.Scan(&item.GroupID, &item.Name, &item.MessageCount, &item.FileCount, &item.TransferBytes, &item.ActiveDevices, &item.ActiveUsers); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) NodeStatistics(ctx context.Context, session auth.Session, timeRange analytics.TimeRange) ([]analytics.NodeMetric, error) {
+	if !session.Admin {
+		return nil, analytics.ErrForbidden
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT recorded_at, cpu_percent, memory_bytes, disk_bytes, cache_bytes,
+		       network_upload_bytes, network_download_bytes, online_devices, active_transfers
+		FROM system_metrics WHERE recorded_at >= $1 AND recorded_at < $2 ORDER BY recorded_at
+	`, timeRange.From, timeRange.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]analytics.NodeMetric, 0)
+	for rows.Next() {
+		var item analytics.NodeMetric
+		if err := rows.Scan(&item.RecordedAt, &item.CPUPercent, &item.MemoryBytes, &item.DiskBytes, &item.CacheBytes, &item.NetworkUploadBytes, &item.NetworkDownloadBytes, &item.OnlineDevices, &item.ActiveTransfers); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 type rowScanner interface {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/domain"
@@ -192,6 +193,30 @@ func (store *testStore) CompleteFile(_ context.Context, _ auth.Session, _ string
 	return nil
 }
 
+func (*testStore) InsertMetrics(_ context.Context, _ auth.Session, metrics []analytics.Metric) (analytics.BatchResult, error) {
+	return analytics.BatchResult{Accepted: len(metrics)}, nil
+}
+
+func (*testStore) AnalyticsOverview(context.Context, auth.Session, analytics.TimeRange) (analytics.Overview, error) {
+	return analytics.Overview{TransferCount: 1}, nil
+}
+
+func (*testStore) DailyTransfers(context.Context, auth.Session, analytics.TimeRange) ([]analytics.DailyTransfer, error) {
+	return []analytics.DailyTransfer{}, nil
+}
+
+func (*testStore) DeviceStatistics(context.Context, auth.Session, analytics.TimeRange) ([]analytics.DeviceStatistic, error) {
+	return []analytics.DeviceStatistic{}, nil
+}
+
+func (*testStore) GroupStatistics(context.Context, auth.Session, analytics.TimeRange) ([]analytics.GroupStatistic, error) {
+	return []analytics.GroupStatistic{}, nil
+}
+
+func (*testStore) NodeStatistics(context.Context, auth.Session, analytics.TimeRange) ([]analytics.NodeMetric, error) {
+	return []analytics.NodeMetric{}, nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -201,7 +226,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -243,7 +268,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +317,7 @@ func TestCreateAndListGroup(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, group.NewService(store), nil, nil).Routes()
+	handler := New(authService, nil, nil, group.NewService(store), nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -335,7 +360,7 @@ func TestCreateTransfer(t *testing.T) {
 		sessionDeviceID: &senderDeviceID,
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil).Routes()
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +408,7 @@ func TestUploadAndDownloadChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(authService, nil, nil, nil, nil, fileService).Routes()
+	handler := New(authService, nil, nil, nil, nil, fileService, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -402,5 +427,44 @@ func TestUploadAndDownloadChunk(t *testing.T) {
 	handler.ServeHTTP(downloadResponse, download)
 	if downloadResponse.Code != http.StatusOK || !bytes.Equal(downloadResponse.Body.Bytes(), content) {
 		t.Fatalf("download status = %d, body = %q", downloadResponse.Code, downloadResponse.Body.Bytes())
+	}
+}
+
+func TestUploadMetricsAndReadOverview(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID := "11111111-1111-1111-1111-111111111111"
+	store := &testStore{
+		credential:      auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)},
+		sessionDeviceID: &deviceID,
+	}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, nil, nil, analytics.NewService(store)).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"events": []analytics.Metric{{
+		EventID: "22222222-2222-2222-2222-222222222222", TransferID: "33333333-3333-3333-3333-333333333333",
+		SenderDeviceID: deviceID, ContentType: "TEXT", Route: domain.SelectedRouteLAN, StartedAt: time.Now().UTC(), Succeeded: true,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload := httptest.NewRequest(http.MethodPost, "/api/metrics/batch", bytes.NewReader(payload))
+	upload.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	uploadResponse := httptest.NewRecorder()
+	handler.ServeHTTP(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, body = %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	overview := httptest.NewRequest(http.MethodGet, "/api/statistics/overview", nil)
+	overview.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	overviewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(overviewResponse, overview)
+	if overviewResponse.Code != http.StatusOK {
+		t.Fatalf("overview status = %d, body = %s", overviewResponse.Code, overviewResponse.Body.String())
 	}
 }
