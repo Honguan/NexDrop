@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><link rel="stylesheet" href="popup.css" /><title>NexDrop 設定</title></head>
+  <body class="options">
+    <main>
+      <div class="brand"><span>N</span><strong>NexDrop</strong></div>
+      <p class="eyebrow">NODE SETTINGS</p><h1>連線至私人節點</h1>
+      <form><label for="node-url">NexDrop 網址</label><input id="node-url" type="url" placeholder="https://drop.example.com" required /><p class="hint">正式環境必須使用 HTTPS。本機測試可使用 localhost。</p><button class="primary">儲存設定</button><p id="save-status" role="status"></p></form>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

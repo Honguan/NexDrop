@@ -127,6 +127,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(false);
+  const [sharedContent, setSharedContent] = useState(readSharedContent);
 
   const reload = useCallback(async () => {
     const [nextDevices, nextGroups, nextTransfers] = await Promise.all([
@@ -195,7 +196,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} onSent={reload} notify={setNotice} />;
+      case "send": return <SendView user={user} devices={devices} initialContent={sharedContent} onSent={async () => { await reload(); setSharedContent(""); }} notify={setNotice} />;
       case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "groups": return <GroupsView groups={groups} reload={reload} notify={setNotice} />;
@@ -233,9 +234,9 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
-function SendView({ user, devices, onSent, notify }: { user: User; devices: Device[]; onSent: () => Promise<void>; notify: (value: string) => void }) {
+function SendView({ user, devices, initialContent, onSent, notify }: { user: User; devices: Device[]; initialContent: string; onSent: () => Promise<void>; notify: (value: string) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
-  const [content, setContent] = useState("");
+  const [content, setContent] = useState(initialContent);
   const [busy, setBusy] = useState(false);
   const trusted = devices.filter((item) => item.trustStatus === "TRUSTED" && item.publicKey);
 
@@ -464,3 +465,20 @@ function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { m
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
 function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
+
+function readSharedContent() {
+  if (!location.hash.startsWith("#share=")) return "";
+  try {
+    const encoded = location.hash.slice(7).replaceAll("-", "+").replaceAll("_", "/");
+    const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as { kind?: string; title?: string; url?: string; text?: string };
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+    if (payload.kind === "SELECTION") return [payload.text, payload.url].filter(Boolean).join("\n\n");
+    return payload.url ?? payload.text ?? "";
+  } catch {
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+    return "";
+  }
+}

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><link rel="stylesheet" href="popup.css" /><title>NexDrop</title></head>
+  <body>
+    <header><div class="brand"><span>N</span><strong>NexDrop</strong></div><i id="status">正在連線…</i></header>
+    <main>
+      <p class="eyebrow">SEND CURRENT PAGE</p>
+      <h1>傳送目前分頁</h1>
+      <p class="hint">選擇設備，或交由 NexDrop Web 繼續。</p>
+      <section id="targets" aria-label="目的設備"><p class="empty">正在讀取設備…</p></section>
+      <button id="send" class="primary" disabled>安全傳送 <span>↗</span></button>
+      <button id="open-web" class="secondary">開啟 NexDrop Web</button>
+    </main>
+    <footer><a href="options.html" target="_blank">節點設定</a><span>Manifest V3</span></footer>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

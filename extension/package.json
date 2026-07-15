@@ -1,0 +1,14 @@
+{
+  "name": "nexdrop-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "test": "npm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.1.38",
+    "typescript": "5.9.3"
+  }
+}
