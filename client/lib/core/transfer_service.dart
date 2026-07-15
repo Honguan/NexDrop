@@ -160,26 +160,39 @@ class TransferService {
         await api.sendJson('/api/transfers', 'POST', request)
             as Map<String, dynamic>;
     final transfer = TransferSummary.fromJson(response);
-    for (final target in transfer.targets.where(
-      (target) => target.route == 'LAN',
-    )) {
-      final endpoint = lan.endpointFor(target.deviceId);
-      final wrappedKey = encrypted.wrappedContentKeys[target.deviceId];
-      if (endpoint == null || wrappedKey == null) {
-        throw const HttpException('區網目標已離線');
+    try {
+      for (final target in transfer.targets.where(
+        (target) => target.route == 'LAN',
+      )) {
+        final endpoint = lan.endpointFor(target.deviceId);
+        final wrappedKey = encrypted.wrappedContentKeys[target.deviceId];
+        if (endpoint == null || wrappedKey == null) {
+          throw const HttpException('區網目標已離線');
+        }
+        await lan.sendMessage(
+          endpoint,
+          transfer.id,
+          contentType: request['contentType'] as String,
+          content: encrypted.content,
+          wrappedContentKey: wrappedKey,
+        );
+        await _reportProgress(
+          transfer.id,
+          target.deviceId,
+          'DELIVERED',
+          utf8.encode(encrypted.content).length,
+        );
       }
-      await lan.sendMessage(
-        endpoint,
-        transfer.id,
-        contentType: request['contentType'] as String,
-        content: encrypted.content,
-        wrappedContentKey: wrappedKey,
-      );
-      await _reportProgress(
-        transfer.id,
-        target.deviceId,
-        'DELIVERED',
-        utf8.encode(encrypted.content).length,
+    } on Exception {
+      if (routeMode != 'AUTOMATIC') rethrow;
+      await _discardFailedLanTransfer(transfer.id);
+      return sendText(
+        content: content,
+        devices: devices,
+        groupId: groupId,
+        groupAll: groupAll,
+        nodeAvailable: true,
+        routeMode: routeMode,
       );
     }
     await _cache(transfer);
@@ -321,28 +334,42 @@ class TransferService {
         }
       }
       final lanBytes = <String, int>{};
-      for (final target in transfer.fileTargets.where(
-        (target) => target.route == 'LAN',
-      )) {
-        final endpoint = lan.endpointFor(target.deviceId);
-        if (endpoint == null) {
-          throw const HttpException('區網目標已離線');
+      try {
+        for (final target in transfer.fileTargets.where(
+          (target) => target.route == 'LAN',
+        )) {
+          final endpoint = lan.endpointFor(target.deviceId);
+          if (endpoint == null) {
+            throw const HttpException('區網目標已離線');
+          }
+          final encryptedFile = encrypted.files[target.fileIndex];
+          final remoteFile = transfer.files[target.fileIndex];
+          await _reportProgress(
+            transfer.id,
+            target.deviceId,
+            'TRANSFERRING_LAN',
+            lanBytes[target.deviceId] ?? 0,
+          );
+          final sent = await _uploadLanFile(
+            endpoint,
+            transfer.id,
+            remoteFile.id,
+            encryptedFile,
+          );
+          lanBytes[target.deviceId] = (lanBytes[target.deviceId] ?? 0) + sent;
         }
-        final encryptedFile = encrypted.files[target.fileIndex];
-        final remoteFile = transfer.files[target.fileIndex];
-        await _reportProgress(
-          transfer.id,
-          target.deviceId,
-          'TRANSFERRING_LAN',
-          lanBytes[target.deviceId] ?? 0,
+      } on Exception {
+        if (routeMode != 'AUTOMATIC') rethrow;
+        await _discardFailedLanTransfer(transfer.id);
+        return sendFiles(
+          sourcePaths: sourcePaths,
+          devices: devices,
+          groupId: groupId,
+          groupAll: groupAll,
+          nodeAvailable: true,
+          routeMode: routeMode,
+          allowLargeFileViaNode: allowLargeFileViaNode,
         );
-        final sent = await _uploadLanFile(
-          endpoint,
-          transfer.id,
-          remoteFile.id,
-          encryptedFile,
-        );
-        lanBytes[target.deviceId] = (lanBytes[target.deviceId] ?? 0) + sent;
       }
       for (final (fileIndex, encryptedFile) in encrypted.files.indexed) {
         if (!transfer.fileTargets.any(
@@ -872,6 +899,16 @@ class TransferService {
 
   Future<void> cancel(String transferId) async {
     await api.sendJson('/api/transfers/$transferId/cancel', 'POST');
+  }
+
+  Future<void> _discardFailedLanTransfer(String transferId) async {
+    try {
+      await api.sendJson('/api/transfers/$transferId/cancel', 'POST');
+    } on Exception {
+      // The replacement transfer remains useful if cancellation races a failure.
+    }
+    await database.deleteWaitingLanTasksForTransfer(transferId);
+    await _storage.delete(key: '$_waitingRecipePrefix$transferId');
   }
 
   Future<void> pause(String transferId, String deviceId, int bytes) =>
