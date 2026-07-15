@@ -29,6 +29,7 @@ import (
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
+	"nexdrop/internal/webui"
 )
 
 const defaultAddress = ":8080"
@@ -95,6 +96,14 @@ func main() {
 	}()
 	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
 	presenceHub := presence.NewHub(authService, store)
+	webPath := os.Getenv("NEXDROP_WEB_PATH")
+	if webPath == "" {
+		webPath = "/usr/share/nexdrop/web"
+	}
+	webHandler, err := webui.NewHandler(webPath)
+	if err != nil {
+		log.Fatalf("configure Web UI: %v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +115,7 @@ func main() {
 	})
 	mux.Handle("/api/", applicationAPI.Routes())
 	mux.Handle("/ws", presenceHub)
+	mux.Handle("/", webHandler)
 
 	server := &http.Server{
 		Addr:              address,

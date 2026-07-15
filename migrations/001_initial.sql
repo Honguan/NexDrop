@@ -46,6 +46,20 @@ CREATE TABLE device_keys (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE device_session_challenges (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    session_id uuid NOT NULL REFERENCES user_sessions(id) ON DELETE CASCADE,
+    proof_hash bytea NOT NULL,
+    attempt_count integer NOT NULL DEFAULT 0,
+    expires_at timestamptz NOT NULL,
+    used_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX device_session_challenges_session_idx
+    ON device_session_challenges(session_id, expires_at DESC);
+
 CREATE TABLE device_connections (
     device_id uuid PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     connected_at timestamptz NOT NULL,

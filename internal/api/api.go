@@ -48,6 +48,8 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/devices/{id}", api.deleteDevice)
 	mux.HandleFunc("POST /api/devices/{id}/approve", api.approveDevice)
 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
+	mux.HandleFunc("POST /api/devices/{id}/session-challenge", api.createDeviceSessionChallenge)
+	mux.HandleFunc("POST /api/devices/{id}/attach-session", api.attachDeviceSession)
 	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
 	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
 	mux.HandleFunc("POST /api/groups", api.createGroup)

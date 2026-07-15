@@ -2,7 +2,12 @@ package device
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -43,6 +48,14 @@ type Device struct {
 	CreatedAt   time.Time   `json:"createdAt"`
 }
 
+type SessionChallenge struct {
+	ID                 string    `json:"id"`
+	SessionID          string    `json:"sessionId"`
+	EphemeralPublicKey []byte    `json:"ephemeralPublicKey"`
+	Nonce              []byte    `json:"nonce"`
+	ExpiresAt          time.Time `json:"expiresAt"`
+}
+
 type Store interface {
 	CreateDevice(context.Context, auth.Session, string, Type, []byte, string) (Device, error)
 	ListDevices(context.Context, string) ([]Device, error)
@@ -50,6 +63,64 @@ type Store interface {
 	DeleteDevice(context.Context, string, string) error
 	ApproveDevice(context.Context, auth.Session, string) (Device, error)
 	RevokeDevice(context.Context, auth.Session, string, time.Time) (Device, error)
+	DevicePublicKeyForSession(context.Context, auth.Session, string) ([]byte, error)
+	CreateDeviceSessionChallenge(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error)
+	RedeemDeviceSessionChallenge(context.Context, auth.Session, string, string, []byte, time.Time, int) error
+}
+
+const (
+	sessionChallengeTTL      = 5 * time.Minute
+	maximumChallengeAttempts = 5
+)
+
+func (service *Service) CreateSessionChallenge(ctx context.Context, session auth.Session, deviceID string) (SessionChallenge, error) {
+	if deviceID == "" {
+		return SessionChallenge{}, ErrInvalid
+	}
+	publicKey, err := service.store.DevicePublicKeyForSession(ctx, session, deviceID)
+	if err != nil {
+		return SessionChallenge{}, err
+	}
+	recipient, err := ecdh.X25519().NewPublicKey(publicKey)
+	if err != nil {
+		return SessionChallenge{}, ErrInvalid
+	}
+	ephemeral, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return SessionChallenge{}, fmt.Errorf("generate session challenge key: %w", err)
+	}
+	shared, err := ephemeral.ECDH(recipient)
+	if err != nil {
+		return SessionChallenge{}, ErrInvalid
+	}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return SessionChallenge{}, fmt.Errorf("generate session challenge nonce: %w", err)
+	}
+	proof := sessionProof(shared, session.SessionID, nonce)
+	proofHash := sha256.Sum256(proof)
+	now := service.now().UTC()
+	id, err := service.store.CreateDeviceSessionChallenge(ctx, session, deviceID, proofHash[:], now.Add(sessionChallengeTTL), now)
+	if err != nil {
+		return SessionChallenge{}, err
+	}
+	return SessionChallenge{ID: id, SessionID: session.SessionID, EphemeralPublicKey: ephemeral.PublicKey().Bytes(), Nonce: nonce, ExpiresAt: now.Add(sessionChallengeTTL)}, nil
+}
+
+func (service *Service) AttachSession(ctx context.Context, session auth.Session, deviceID, challengeID string, proof []byte) error {
+	if deviceID == "" || challengeID == "" || len(proof) != sha256.Size {
+		return ErrInvalid
+	}
+	proofHash := sha256.Sum256(proof)
+	return service.store.RedeemDeviceSessionChallenge(ctx, session, deviceID, challengeID, proofHash[:], service.now().UTC(), maximumChallengeAttempts)
+}
+
+func sessionProof(shared []byte, sessionID string, nonce []byte) []byte {
+	mac := hmac.New(sha256.New, shared)
+	_, _ = mac.Write([]byte("nexdrop/session-attach/v1"))
+	_, _ = mac.Write([]byte(sessionID))
+	_, _ = mac.Write(nonce)
+	return mac.Sum(nil)
 }
 
 type Service struct {

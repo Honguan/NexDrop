@@ -92,6 +92,18 @@ func (store *testStore) RevokeDevice(_ context.Context, _ auth.Session, id strin
 	return device.Device{ID: id, TrustStatus: device.TrustRevoked, RevokedAt: &now}, nil
 }
 
+func (*testStore) DevicePublicKeyForSession(context.Context, auth.Session, string) ([]byte, error) {
+	return make([]byte, 32), nil
+}
+
+func (*testStore) CreateDeviceSessionChallenge(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error) {
+	return "challenge-1", nil
+}
+
+func (*testStore) RedeemDeviceSessionChallenge(context.Context, auth.Session, string, string, []byte, time.Time, int) error {
+	return nil
+}
+
 func (*testStore) CreatePairingCode(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error) {
 	return "challenge-1", nil
 }

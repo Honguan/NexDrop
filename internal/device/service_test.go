@@ -2,6 +2,8 @@ package device
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"errors"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 
 type fakeStore struct {
 	created bool
+	proof   []byte
 }
 
 func (store *fakeStore) CreateDevice(_ context.Context, _ auth.Session, name string, deviceType Type, publicKey []byte, algorithm string) (Device, error) {
@@ -34,6 +37,20 @@ func (*fakeStore) ApproveDevice(_ context.Context, _ auth.Session, id string) (D
 
 func (*fakeStore) RevokeDevice(_ context.Context, _ auth.Session, id string, now time.Time) (Device, error) {
 	return Device{ID: id, TrustStatus: TrustRevoked, RevokedAt: &now}, nil
+}
+
+func (*fakeStore) DevicePublicKeyForSession(context.Context, auth.Session, string) ([]byte, error) {
+	pair, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	return pair.PublicKey().Bytes(), nil
+}
+
+func (store *fakeStore) CreateDeviceSessionChallenge(_ context.Context, _ auth.Session, _ string, proof []byte, _ time.Time, _ time.Time) (string, error) {
+	store.proof = append([]byte(nil), proof...)
+	return "challenge-1", nil
+}
+
+func (*fakeStore) RedeemDeviceSessionChallenge(context.Context, auth.Session, string, string, []byte, time.Time, int) error {
+	return nil
 }
 
 func TestCreateValidatesDeviceIdentity(t *testing.T) {
@@ -85,5 +102,18 @@ func TestDeviceLifecycle(t *testing.T) {
 	revoked, err := service.Revoke(context.Background(), session, "device-1")
 	if err != nil || revoked.TrustStatus != TrustRevoked || revoked.RevokedAt == nil {
 		t.Fatalf("Revoke() = %+v, %v", revoked, err)
+	}
+}
+
+func TestCreateSessionChallenge(t *testing.T) {
+	store := &fakeStore{}
+	service := NewService(store)
+	session := auth.Session{User: auth.User{ID: "user-1"}, SessionID: "session-1"}
+	challenge, err := service.CreateSessionChallenge(context.Background(), session, "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if challenge.ID != "challenge-1" || challenge.SessionID != session.SessionID || len(challenge.EphemeralPublicKey) != 32 || len(challenge.Nonce) != 32 || len(store.proof) != 32 {
+		t.Fatalf("challenge = %+v, proof length = %d", challenge, len(store.proof))
 	}
 }
