@@ -158,11 +158,12 @@ class AppController extends ChangeNotifier {
     required List<Device> recipients,
     String? groupId,
     List<String> files = const [],
+    bool groupAll = true,
   }) async {
     await _run(() async {
       await platformShare.startTransferService();
       try {
-        final resolved = groupId == null
+        final resolved = groupId == null || !groupAll
             ? recipients
             : await transfersService.groupDevices(groupId);
         if (files.isEmpty) {
@@ -170,6 +171,7 @@ class AppController extends ChangeNotifier {
             content: content,
             devices: resolved,
             groupId: groupId,
+            groupAll: groupAll,
             lanAvailable: lan.onlineDeviceIds,
           );
         } else {
@@ -177,6 +179,7 @@ class AppController extends ChangeNotifier {
             sourcePaths: files,
             devices: resolved,
             groupId: groupId,
+            groupAll: groupAll,
             lanAvailable: lan.onlineDeviceIds,
           );
         }

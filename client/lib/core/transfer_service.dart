@@ -100,6 +100,7 @@ class TransferService {
     required String content,
     required List<Device> devices,
     String? groupId,
+    bool groupAll = true,
     Set<String> lanAvailable = const {},
   }) async {
     final recipients = devices
@@ -109,11 +110,13 @@ class TransferService {
     final encrypted = await crypto.encryptText(content.trim(), recipients);
     final request = <String, dynamic>{
       'targetType': groupId != null
-          ? 'GROUP_ALL_DEVICES'
+          ? groupAll
+                ? 'GROUP_ALL_DEVICES'
+                : 'GROUP_SELECTED_DEVICES'
           : recipients.length == 1
           ? 'SINGLE_DEVICE'
           : 'MULTIPLE_DEVICES',
-      'targetDeviceIds': groupId == null
+      'targetDeviceIds': groupId == null || !groupAll
           ? recipients.map((recipient) => recipient.id).toList()
           : <String>[],
       'lanAvailableDeviceIds': recipients
@@ -160,6 +163,7 @@ class TransferService {
     required List<String> sourcePaths,
     required List<Device> devices,
     String? groupId,
+    bool groupAll = true,
     Set<String> lanAvailable = const {},
   }) async {
     final recipients = devices
@@ -175,11 +179,13 @@ class TransferService {
     try {
       final request = <String, dynamic>{
         'targetType': groupId != null
-            ? 'GROUP_ALL_DEVICES'
+            ? groupAll
+                  ? 'GROUP_ALL_DEVICES'
+                  : 'GROUP_SELECTED_DEVICES'
             : recipients.length == 1
             ? 'SINGLE_DEVICE'
             : 'MULTIPLE_DEVICES',
-        'targetDeviceIds': groupId == null
+        'targetDeviceIds': groupId == null || !groupAll
             ? recipients.map((recipient) => recipient.id).toList()
             : <String>[],
         'lanAvailableDeviceIds': recipients

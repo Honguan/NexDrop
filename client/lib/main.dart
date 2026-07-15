@@ -372,6 +372,8 @@ class _SendViewState extends State<SendView> {
   final content = TextEditingController();
   final selectedDevices = <String>{};
   String? groupId;
+  bool groupAll = true;
+  List<Device> groupDevices = const [];
   List<String> files = const [];
 
   @override
@@ -397,7 +399,7 @@ class _SendViewState extends State<SendView> {
 
   @override
   Widget build(BuildContext context) {
-    final trusted = widget.controller.devices
+    final trusted = (groupId == null ? widget.controller.devices : groupDevices)
         .where((device) => device.trusted && device.publicKey != null)
         .toList();
     return _Page(
@@ -436,7 +438,7 @@ class _SendViewState extends State<SendView> {
                       (device) => FilterChip(
                         label: Text(device.displayName),
                         selected: selectedDevices.contains(device.id),
-                        onSelected: groupId == null
+                        onSelected: groupId == null || !groupAll
                             ? (_) => setState(
                                 () => selectedDevices.contains(device.id)
                                     ? selectedDevices.remove(device.id)
@@ -461,11 +463,18 @@ class _SendViewState extends State<SendView> {
                       ),
                     ),
                   ],
-                  onChanged: (value) => setState(() {
-                    groupId = value;
-                    if (value != null) selectedDevices.clear();
-                  }),
+                  onChanged: _selectGroup,
                 ),
+                if (groupId != null)
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('傳送至群組全部設備'),
+                    value: groupAll,
+                    onChanged: (value) => setState(() {
+                      groupAll = value;
+                      if (value) selectedDevices.clear();
+                    }),
+                  ),
               ],
               const SizedBox(height: 24),
               FilledButton.icon(
@@ -482,7 +491,7 @@ class _SendViewState extends State<SendView> {
 
   bool get _canSend =>
       (content.text.trim().isNotEmpty || files.isNotEmpty) &&
-      (groupId != null || selectedDevices.isNotEmpty) &&
+      ((groupId != null && groupAll) || selectedDevices.isNotEmpty) &&
       widget.controller.currentDevice?.trusted == true;
 
   Future<void> _pickFiles() async {
@@ -496,15 +505,17 @@ class _SendViewState extends State<SendView> {
   }
 
   void _send() {
-    final recipients = widget.controller.devices
-        .where((device) => selectedDevices.contains(device.id))
-        .toList();
+    final recipients =
+        (groupId == null ? widget.controller.devices : groupDevices)
+            .where((device) => selectedDevices.contains(device.id))
+            .toList();
     unawaited(
       widget.controller
           .send(
             content: content.text,
             recipients: recipients,
             groupId: groupId,
+            groupAll: groupAll,
             files: files,
           )
           .then((_) {
@@ -514,6 +525,8 @@ class _SendViewState extends State<SendView> {
               files = const [];
               selectedDevices.clear();
               groupId = null;
+              groupAll = true;
+              groupDevices = const [];
             });
             ScaffoldMessenger.of(
               context,
@@ -521,6 +534,24 @@ class _SendViewState extends State<SendView> {
           })
           .catchError((_) {}),
     );
+  }
+
+  Future<void> _selectGroup(String? value) async {
+    setState(() {
+      groupId = value;
+      groupAll = true;
+      selectedDevices.clear();
+      groupDevices = const [];
+    });
+    if (value == null) return;
+    try {
+      final devices = await widget.controller.transfersService.groupDevices(
+        value,
+      );
+      if (mounted && groupId == value) setState(() => groupDevices = devices);
+    } catch (_) {
+      // AppController displays network errors during send/reload operations.
+    }
   }
 }
 
