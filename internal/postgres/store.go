@@ -50,7 +50,8 @@ func (store *Store) CredentialByIdentifier(ctx context.Context, identifier strin
 	err := store.pool.QueryRow(ctx, `
 		SELECT id::text, username, email, is_admin, password_hash
 		FROM users
-		WHERE lower(username) = lower($1) OR lower(email) = lower($1)
+		WHERE (lower(username) = lower($1) OR lower(email) = lower($1))
+		  AND disabled_at IS NULL
 	`, identifier).Scan(
 		&credential.ID,
 		&credential.Username,
@@ -88,6 +89,7 @@ func (store *Store) SessionByAccessToken(ctx context.Context, tokenHash []byte, 
 		WHERE s.access_token_hash = $1
 		  AND s.access_expires_at > $2
 		  AND s.revoked_at IS NULL
+		  AND u.disabled_at IS NULL
 	`, tokenHash, now).Scan(&session.SessionID, &session.ID, &session.Username, &session.Email, &session.Admin, &session.DeviceID)
 	return session, err
 }

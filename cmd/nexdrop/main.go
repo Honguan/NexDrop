@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/api"
 	"nexdrop/internal/auth"
@@ -59,6 +60,10 @@ func main() {
 		log.Fatalf("configure file storage: %v", err)
 	}
 	analyticsService := analytics.NewService(store)
+	adminService := admin.NewService(store)
+	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
+		log.Fatalf("bootstrap administrator: %v", err)
+	}
 	cleaner, err := maintenance.NewCleaner(store, storagePath)
 	if err != nil {
 		log.Fatalf("configure cleanup worker: %v", err)
@@ -67,7 +72,7 @@ func main() {
 		_, _ = cleaner.RunOnce(context.Background(), 100)
 		cleaner.Start(context.Background(), time.Hour)
 	}()
-	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService)
+	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
 	presenceHub := presence.NewHub(authService, store)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)

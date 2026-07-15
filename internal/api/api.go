@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
@@ -28,10 +29,11 @@ type API struct {
 	transfers *transfer.Service
 	files     *filetransfer.Service
 	analytics *analytics.Service
+	admin     *admin.Service
 }
 
-func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service) *API {
-	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService}
+func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
+	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService, admin: adminService}
 }
 
 func (api *API) Routes() http.Handler {
@@ -71,6 +73,16 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/statistics/devices", api.statisticsDevices)
 	mux.HandleFunc("GET /api/statistics/groups", api.statisticsGroups)
 	mux.HandleFunc("GET /api/statistics/node", api.statisticsNode)
+	mux.HandleFunc("GET /api/admin/users", api.adminUsers)
+	mux.HandleFunc("POST /api/admin/users", api.createAdminUser)
+	mux.HandleFunc("DELETE /api/admin/users/{id}", api.disableAdminUser)
+	mux.HandleFunc("POST /api/admin/users/{id}/reset-password", api.resetAdminPassword)
+	mux.HandleFunc("GET /api/admin/settings", api.adminSettings)
+	mux.HandleFunc("PUT /api/admin/settings", api.updateAdminSettings)
+	mux.HandleFunc("PUT /api/admin/quotas/{ownerType}/{ownerId}", api.setAdminQuota)
+	mux.HandleFunc("GET /api/admin/storage", api.adminStorage)
+	mux.HandleFunc("GET /api/admin/failures", api.adminFailures)
+	mux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
 	return mux
 }
 

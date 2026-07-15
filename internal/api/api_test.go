@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
@@ -217,6 +218,48 @@ func (*testStore) NodeStatistics(context.Context, auth.Session, analytics.TimeRa
 	return []analytics.NodeMetric{}, nil
 }
 
+func (*testStore) BootstrapAdmin(context.Context, string, string, string) error { return nil }
+
+func (*testStore) ListAdminUsers(context.Context, int, int) ([]admin.User, error) {
+	return []admin.User{}, nil
+}
+
+func (*testStore) CreateAdminUser(context.Context, auth.Session, string, string, string, bool) (admin.User, error) {
+	return admin.User{}, nil
+}
+
+func (*testStore) DisableAdminUser(context.Context, auth.Session, string, time.Time) error {
+	return nil
+}
+
+func (*testStore) ResetAdminPassword(context.Context, auth.Session, string, string, time.Time) error {
+	return nil
+}
+
+func (*testStore) AdminNodeSettings(context.Context) (admin.NodeSettings, error) {
+	return admin.NodeSettings{SingleFileLimitBytes: 1024, DefaultUserQuotaBytes: 2048, DefaultGroupQuotaBytes: 4096, NodeCacheLimitBytes: 8192, DefaultUserDailyBytes: 16384, DefaultGroupDailyBytes: 32768, DiskWarningPercent: 80, DiskStopPercent: 95}, nil
+}
+
+func (*testStore) UpdateAdminNodeSettings(_ context.Context, _ auth.Session, settings admin.NodeSettings) (admin.NodeSettings, error) {
+	return settings, nil
+}
+
+func (*testStore) SetAdminQuota(_ context.Context, _ auth.Session, quota admin.Quota) (admin.Quota, error) {
+	return quota, nil
+}
+
+func (*testStore) AdminStorageOverview(context.Context, time.Time) (admin.StorageOverview, error) {
+	return admin.StorageOverview{}, nil
+}
+
+func (*testStore) ListAdminFailures(context.Context, int, int) ([]admin.Failure, error) {
+	return []admin.Failure{}, nil
+}
+
+func (*testStore) ListAdminAuditLogs(context.Context, int, int) ([]admin.AuditLog, error) {
+	return []admin.AuditLog{}, nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -226,7 +269,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -268,7 +311,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil, nil, nil).Routes()
+	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil, nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +360,7 @@ func TestCreateAndListGroup(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, group.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, nil, nil, group.NewService(store), nil, nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +403,7 @@ func TestCreateTransfer(t *testing.T) {
 		sessionDeviceID: &senderDeviceID,
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil).Routes()
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +451,7 @@ func TestUploadAndDownloadChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(authService, nil, nil, nil, nil, fileService, nil).Routes()
+	handler := New(authService, nil, nil, nil, nil, fileService, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -441,7 +484,7 @@ func TestUploadMetricsAndReadOverview(t *testing.T) {
 		sessionDeviceID: &deviceID,
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, nil, nil, analytics.NewService(store)).Routes()
+	handler := New(authService, nil, nil, nil, nil, nil, analytics.NewService(store), nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -466,5 +509,30 @@ func TestUploadMetricsAndReadOverview(t *testing.T) {
 	handler.ServeHTTP(overviewResponse, overview)
 	if overviewResponse.Code != http.StatusOK {
 		t.Fatalf("overview status = %d, body = %s", overviewResponse.Code, overviewResponse.Body.String())
+	}
+}
+
+func TestReadAdminSettings(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testStore{credential: auth.Credential{
+		User:         auth.User{ID: "admin-1", Username: "admin", Admin: true},
+		PasswordHash: string(passwordHash),
+	}}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, nil, nil, nil, admin.NewService(store)).Routes()
+	pair, err := authService.Login(context.Background(), "admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
+	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin settings status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
