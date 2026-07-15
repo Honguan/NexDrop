@@ -187,6 +187,43 @@ class AppController extends ChangeNotifier {
     await reload();
   });
 
+  Future<String> readText(TransferSummary transfer) async {
+    if (account == null || currentDevice == null) {
+      throw StateError('尚未登入設備');
+    }
+    late String value;
+    await _run(() async {
+      value = await transfersService.readText(
+        transfer,
+        account!,
+        currentDevice!,
+      );
+      await reload();
+    });
+    return value;
+  }
+
+  Future<List<String>> receiveFiles(TransferSummary transfer) async {
+    if (account == null || currentDevice == null) {
+      throw StateError('尚未登入設備');
+    }
+    late List<String> value;
+    await _run(() async {
+      value = await transfersService.receiveFiles(
+        transfer,
+        account!,
+        currentDevice!,
+      );
+      await reload();
+    });
+    return value;
+  }
+
+  Future<void> cancelTransfer(TransferSummary transfer) => _run(() async {
+    await transfersService.cancel(transfer.id);
+    await reload();
+  });
+
   Future<Map<String, dynamic>> createPairingCode(Device device) async {
     late Map<String, dynamic> result;
     await _run(

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexdrop_client/core/crypto_service.dart';
@@ -38,6 +39,30 @@ void main() {
         encrypted.wrappedContentKeys['second-device']!,
       ),
       '跨設備加密內容',
+    );
+  });
+
+  test('接收設備可逐分段解密檔案', () async {
+    final root = await Directory.systemTemp.createTemp('nexdrop-crypto-test-');
+    addTearDown(() => root.delete(recursive: true));
+    final source = File('${root.path}${Platform.pathSeparator}source.txt');
+    await source.writeAsString('NexDrop encrypted file');
+    final sender = CryptoService(store: MemorySecretStore());
+    final receiver = CryptoService(store: MemorySecretStore());
+    final receiverKey = await receiver.ensureDeviceKey('receiver');
+    final encrypted = await sender.encryptFiles(
+      [source.path],
+      '${root.path}${Platform.pathSeparator}encrypted',
+      [(id: 'receiver-device', publicKey: base64Encode(receiverKey.publicKey))],
+    );
+    final wrapped = encrypted.wrappedContentKeys['receiver-device']!;
+    final decryptor = await receiver.fileChunkDecryptor('receiver', wrapped);
+    final encryptedBytes = await File(
+      encrypted.files.single.tempPath,
+    ).readAsBytes();
+    expect(
+      utf8.decode(await decryptor.decrypt(encryptedBytes)),
+      'NexDrop encrypted file',
     );
   });
 }

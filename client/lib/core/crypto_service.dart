@@ -89,6 +89,26 @@ class EncryptedFileTransfer {
   final List<EncryptedFileUpload> files;
 }
 
+class FileChunkDecryptor {
+  const FileChunkDecryptor(this._key);
+
+  final SecretKey _key;
+
+  Future<List<int>> decrypt(List<int> bytes) {
+    if (bytes.length < 28) {
+      throw const FormatException('無效的加密檔案分段');
+    }
+    return CryptoService._aes.decrypt(
+      SecretBox(
+        bytes.sublist(12, bytes.length - 16),
+        nonce: bytes.sublist(0, 12),
+        mac: Mac(bytes.sublist(bytes.length - 16)),
+      ),
+      secretKey: _key,
+    );
+  }
+}
+
 class CryptoService {
   CryptoService({SecretStore? store}) : _store = store ?? PlatformSecretStore();
 
@@ -245,6 +265,11 @@ class CryptoService {
     final contentKey = await _unwrapKey(accountId, wrappedValue);
     return utf8.decode(await _decryptEnvelope(content, contentKey));
   }
+
+  Future<FileChunkDecryptor> fileChunkDecryptor(
+    String accountId,
+    String wrappedValue,
+  ) async => FileChunkDecryptor(await _unwrapKey(accountId, wrappedValue));
 
   Future<String> proveSession(
     String accountId,

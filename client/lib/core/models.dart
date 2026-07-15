@@ -84,6 +84,7 @@ class TransferSummary {
     required this.createdAt,
     required this.targets,
     required this.files,
+    this.senderDeviceId,
     this.fileTargets = const [],
     this.encryptedContent,
     this.wrappedContentKeys = const {},
@@ -96,6 +97,7 @@ class TransferSummary {
     contentType: json['contentType'] as String,
     status: json['status'] as String,
     createdAt: DateTime.parse(json['createdAt'] as String).toLocal(),
+    senderDeviceId: json['senderDeviceId'] as String?,
     encryptedContent: json['content'] as String?,
     wrappedContentKeys:
         (json['wrappedContentKeys'] as Map<String, dynamic>? ?? {}).map(
@@ -118,6 +120,7 @@ class TransferSummary {
   final String contentType;
   final String status;
   final DateTime createdAt;
+  final String? senderDeviceId;
   final String? encryptedContent;
   final Map<String, String> wrappedContentKeys;
   final List<TransferTarget> targets;
@@ -174,6 +177,8 @@ class TransferFile {
     required this.name,
     required this.size,
     required this.chunkCount,
+    required this.chunkSize,
+    required this.sha256,
   });
 
   factory TransferFile.fromJson(Map<String, dynamic> json) => TransferFile(
@@ -181,10 +186,14 @@ class TransferFile {
     name: json['name'] as String,
     size: json['size'] as int,
     chunkCount: json['chunkCount'] as int,
+    chunkSize: json['chunkSize'] as int,
+    sha256: json['sha256'] as String,
   );
 
   final String id;
   final String name;
   final int size;
   final int chunkCount;
+  final int chunkSize;
+  final String sha256;
 }

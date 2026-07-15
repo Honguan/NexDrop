@@ -134,6 +134,15 @@ class LocalDatabase {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  Future<void> recordDownload(String fileId, String localPath) async {
+    final database = await open();
+    await database.insert('downloads', {
+      'file_id': fileId,
+      'local_path': localPath,
+      'downloaded_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
   Future<void> close() async {
     await _database?.close();
     _database = null;

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:crypto/crypto.dart' as hashes;
+import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'api_client.dart';
@@ -286,6 +288,141 @@ class TransferService {
         .toList();
   }
 
+  Future<String> readText(
+    TransferSummary transfer,
+    UserAccount account,
+    Device currentDevice,
+  ) async {
+    final content = transfer.encryptedContent;
+    final wrapped = transfer.wrappedContentKeys[currentDevice.id];
+    if (content == null || wrapped == null) {
+      throw const FormatException('此設備無法解密內容');
+    }
+    final plaintext = await crypto.decryptText(account.id, content, wrapped);
+    await api.sendJson('/api/transfers/${transfer.id}/read', 'POST');
+    return plaintext;
+  }
+
+  Future<List<String>> receiveFiles(
+    TransferSummary transfer,
+    UserAccount account,
+    Device currentDevice,
+  ) async {
+    final content = transfer.encryptedContent;
+    final wrapped = transfer.wrappedContentKeys[currentDevice.id];
+    if (content == null || wrapped == null) {
+      throw const FormatException('此設備無法解密檔案');
+    }
+    final metadataText = await crypto.decryptText(account.id, content, wrapped);
+    final metadata = (jsonDecode(metadataText) as List<dynamic>)
+        .cast<Map<String, dynamic>>();
+    if (metadata.length != transfer.files.length) {
+      throw const FormatException('檔案中繼資料不一致');
+    }
+    final decryptor = await crypto.fileChunkDecryptor(account.id, wrapped);
+    final downloads = await getDownloadsDirectory();
+    final support = await getApplicationSupportDirectory();
+    final destination = Directory(
+      path.join((downloads ?? support).path, 'NexDrop'),
+    );
+    await destination.create(recursive: true);
+    final saved = <String>[];
+    var usedNode = false;
+    for (final (fileIndex, remoteFile) in transfer.files.indexed) {
+      final originalName = path.basename(
+        metadata[fileIndex]['name'] as String? ?? 'NexDrop-file-$fileIndex',
+      );
+      final outputPath = await _availablePath(destination.path, originalName);
+      final output = await File(outputPath).open(mode: FileMode.write);
+      final digestSink = _DigestSink();
+      final digestInput = hashes.sha256.startChunkedConversion(digestSink);
+      final localEncrypted = File(
+        path.join(
+          support.path,
+          'lan-incoming',
+          '${transfer.id}-${remoteFile.id}.nxd',
+        ),
+      );
+      final isLocal = await localEncrypted.exists();
+      usedNode = usedNode || !isLocal;
+      if (!isLocal) {
+        await _reportProgress(
+          transfer.id,
+          currentDevice.id,
+          'DOWNLOADING_FROM_NODE',
+          0,
+        );
+      }
+      final localInput = isLocal ? await localEncrypted.open() : null;
+      var transferred = 0;
+      try {
+        for (var index = 0; index < remoteFile.chunkCount; index++) {
+          final encrypted = localInput == null
+              ? await api.downloadChunk(remoteFile.id, index)
+              : await localInput.read(remoteFile.chunkSize);
+          if (encrypted.isEmpty) {
+            throw const FileSystemException('加密檔案分段遺失');
+          }
+          digestInput.add(encrypted);
+          await output.writeFrom(await decryptor.decrypt(encrypted));
+          transferred += encrypted.length;
+          if (!isLocal) {
+            await _reportProgress(
+              transfer.id,
+              currentDevice.id,
+              'DOWNLOADING_FROM_NODE',
+              transferred,
+            );
+          }
+        }
+      } finally {
+        digestInput.close();
+        await localInput?.close();
+        await output.close();
+      }
+      if (base64Encode(digestSink.value.bytes) != remoteFile.sha256) {
+        await File(outputPath).delete();
+        throw const FormatException('HASH_MISMATCH');
+      }
+      if (await localEncrypted.exists()) await localEncrypted.delete();
+      await database.recordDownload(remoteFile.id, outputPath);
+      saved.add(outputPath);
+    }
+    if (usedNode) {
+      await _reportProgress(
+        transfer.id,
+        currentDevice.id,
+        'DELIVERED',
+        transfer.files.fold<int>(0, (total, file) => total + file.size),
+      );
+    }
+    await api.sendJson('/api/transfers/${transfer.id}/read', 'POST');
+    return saved;
+  }
+
+  Future<void> cancel(String transferId) async {
+    await api.sendJson('/api/transfers/$transferId/cancel', 'POST');
+  }
+
+  Future<void> pause(String transferId, String deviceId, int bytes) =>
+      _reportProgress(transferId, deviceId, 'PAUSED', bytes);
+
+  Future<String> _availablePath(String directory, String requestedName) async {
+    final safe = requestedName.replaceAll(
+      RegExp(r'[<>:"/\\|?*\x00-\x1f]'),
+      '_',
+    );
+    var candidate = path.join(directory, safe.isEmpty ? 'NexDrop-file' : safe);
+    var suffix = 1;
+    while (await File(candidate).exists()) {
+      final extension = path.extension(safe);
+      final stem = path.basenameWithoutExtension(safe);
+      candidate = path.join(directory, '$stem ($suffix)$extension');
+      suffix++;
+    }
+    return candidate;
+  }
+
   Future<int> _uploadLanFile(
     LanEndpoint endpoint,
     String transferId,
@@ -346,4 +483,16 @@ class TransferService {
 
 extension _FirstOrNull<T> on Iterable<T> {
   T? get firstOrNull => isEmpty ? null : first;
+}
+
+class _DigestSink implements Sink<hashes.Digest> {
+  hashes.Digest? _value;
+
+  hashes.Digest get value => _value ?? hashes.sha256.convert(const []);
+
+  @override
+  void add(hashes.Digest data) => _value = data;
+
+  @override
+  void close() {}
 }

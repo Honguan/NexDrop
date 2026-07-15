@@ -10,6 +10,7 @@ import 'package:workmanager/workmanager.dart';
 import 'app_controller.dart';
 import 'core/api_client.dart';
 import 'core/local_database.dart';
+import 'core/models.dart';
 import 'core/platform_share.dart';
 
 const _backgroundSyncTask = 'nexdrop.background-sync';
@@ -523,16 +524,23 @@ class _SendViewState extends State<SendView> {
   }
 }
 
-class ActivityView extends StatelessWidget {
+class ActivityView extends StatefulWidget {
   const ActivityView({super.key, required this.controller});
   final AppController controller;
+  @override
+  State<ActivityView> createState() => _ActivityViewState();
+}
+
+class _ActivityViewState extends State<ActivityView> {
+  String? busyId;
+
   @override
   Widget build(BuildContext context) => _Page(
     title: '傳輸紀錄',
     subtitle: '跨區網與節點的任務、路徑與交付狀態。',
     child: Card(
       child: Column(
-        children: controller.transfers
+        children: widget.controller.transfers
             .map(
               (transfer) => ListTile(
                 leading: CircleAvatar(
@@ -550,13 +558,83 @@ class ActivityView extends StatelessWidget {
                 subtitle: Text(
                   '${transfer.targets.map((target) => target.route).join('、')} · ${_date(transfer.createdAt)}',
                 ),
-                trailing: Chip(label: Text(transfer.status)),
+                onTap:
+                    transfer.wrappedContentKeys.containsKey(
+                      widget.controller.currentDevice?.id,
+                    )
+                    ? () => _open(transfer)
+                    : null,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (busyId == transfer.id)
+                      const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      Chip(label: Text(transfer.status)),
+                    if (transfer.senderDeviceId ==
+                        widget.controller.currentDevice?.id)
+                      IconButton(
+                        tooltip: '取消傳輸',
+                        icon: const Icon(Icons.cancel_outlined),
+                        onPressed: () => _cancel(transfer),
+                      ),
+                  ],
+                ),
               ),
             )
             .toList(),
       ),
     ),
   );
+
+  Future<void> _open(TransferSummary transfer) async {
+    if (busyId != null) return;
+    setState(() => busyId = transfer.id);
+    try {
+      if (transfer.files.isEmpty) {
+        final text = await widget.controller.readText(transfer);
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(transfer.contentType == 'URL' ? '網址' : '文字'),
+            content: SelectableText(text),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('關閉'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        final paths = await widget.controller.receiveFiles(transfer);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已儲存 ${paths.length} 個檔案至 Downloads/NexDrop')),
+        );
+      }
+    } catch (_) {
+      // AppController displays the actionable error banner.
+    } finally {
+      if (mounted) setState(() => busyId = null);
+    }
+  }
+
+  Future<void> _cancel(TransferSummary transfer) async {
+    if (busyId != null) return;
+    setState(() => busyId = transfer.id);
+    try {
+      await widget.controller.cancelTransfer(transfer);
+    } catch (_) {
+      // AppController displays the actionable error banner.
+    } finally {
+      if (mounted) setState(() => busyId = null);
+    }
+  }
 }
 
 class DevicesView extends StatelessWidget {
