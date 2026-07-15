@@ -50,6 +50,13 @@ class WaitingLanTask {
   final String status;
 }
 
+class LocalDraft {
+  const LocalDraft({required this.id, required this.payload});
+
+  final String id;
+  final Map<String, dynamic> payload;
+}
+
 class LocalDatabase {
   Database? _database;
 
@@ -190,6 +197,37 @@ class LocalDatabase {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  Future<void> saveDraft(String id, Map<String, dynamic> payload) async {
+    final database = await open();
+    final now = DateTime.now().toUtc().toIso8601String();
+    await database.insert('drafts', {
+      'id': id,
+      'encrypted_payload': jsonEncode(payload),
+      'created_at': now,
+      'updated_at': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<LocalDraft>> drafts() async {
+    final database = await open();
+    final rows = await database.query('drafts', orderBy: 'created_at ASC');
+    return rows
+        .map(
+          (row) => LocalDraft(
+            id: row['id'] as String,
+            payload:
+                jsonDecode(row['encrypted_payload'] as String)
+                    as Map<String, dynamic>,
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> deleteDraft(String id) async {
+    final database = await open();
+    await database.delete('drafts', where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<String?> setting(String key) async {
     final database = await open();
     final rows = await database.query(
@@ -283,6 +321,15 @@ class LocalDatabase {
           ),
         )
         .toList();
+  }
+
+  Future<void> deleteLocalTransfer(String transferId) async {
+    final database = await open();
+    await database.delete(
+      'local_transfers',
+      where: 'transfer_id = ?',
+      whereArgs: [transferId],
+    );
   }
 
   Future<void> recordDownload(String fileId, String localPath) async {

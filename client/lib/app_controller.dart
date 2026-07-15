@@ -313,6 +313,7 @@ class AppController extends ChangeNotifier {
           if (message['type'] == 'connected') {
             nodeOnline = true;
             unawaited(_retryWaitingLan());
+            unawaited(_flushDrafts());
             unawaited(_updateDesktopStatus());
             _heartbeat = Timer.periodic(
               const Duration(seconds: 15),
@@ -354,6 +355,16 @@ class AppController extends ChangeNotifier {
       await transfersService.retryWaitingLan();
       waitingLanTasks = await database.waitingLanTasks();
       notifyListeners();
+    } catch (reason) {
+      error = _message(reason);
+      notifyListeners();
+    }
+  }
+
+  Future<void> _flushDrafts() async {
+    try {
+      await transfersService.flushDrafts();
+      await reload();
     } catch (reason) {
       error = _message(reason);
       notifyListeners();

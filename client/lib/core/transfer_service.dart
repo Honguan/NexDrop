@@ -42,6 +42,7 @@ class TransferService {
   final FlutterSecureStorage _storage;
   final LanIdentityStore _lanIdentityStore;
   bool _retryingWaitingLan = false;
+  bool _flushingDrafts = false;
   Device? _currentDevice;
 
   Future<DeviceSession> synchronizeDevice(UserAccount account) async {
@@ -149,6 +150,10 @@ class TransferService {
       'wrappedContentKeys': encrypted.wrappedContentKeys,
     };
     if (groupId != null) request['groupId'] = groupId;
+    if (!nodeAvailable) {
+      request['lanAvailableDeviceIds'] = <String>[];
+      return _saveTextDraft(request, devices);
+    }
     final response =
         await api.sendJson('/api/transfers', 'POST', request)
             as Map<String, dynamic>;
@@ -234,6 +239,10 @@ class TransferService {
         'files': encrypted.files.map((file) => file.record).toList(),
       };
       if (groupId != null) request['groupId'] = groupId;
+      if (!nodeAvailable) {
+        request['lanAvailableDeviceIds'] = <String>[];
+        return await _saveFileDraft(request, devices, sourcePaths, encrypted);
+      }
       final response =
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>;
@@ -317,8 +326,12 @@ class TransferService {
         }
         await api.sendJson('/api/files/${remoteFile.id}/complete', 'POST');
       }
+      final nodeDeviceIds = transfer.fileTargets
+          .where((target) => target.route == 'NODE')
+          .map((target) => target.deviceId)
+          .toSet();
       for (final target in transfer.targets.where(
-        (target) => target.route == 'NODE',
+        (target) => nodeDeviceIds.contains(target.deviceId),
       )) {
         await api.sendJson(
           '/api/transfers/${transfer.id}/targets/${target.deviceId}',
@@ -408,6 +421,37 @@ class TransferService {
     return transfer;
   }
 
+  Future<TransferSummary> _saveTextDraft(
+    Map<String, dynamic> request,
+    List<Device> devices,
+  ) async {
+    final id = const Uuid().v4();
+    await database.saveDraft(id, {'kind': 'TEXT', 'request': request});
+    final transfer = TransferSummary(
+      id: id,
+      senderDeviceId: _currentDevice?.id,
+      contentType: request['contentType'] as String,
+      status: 'CREATED',
+      createdAt: DateTime.now(),
+      encryptedContent: request['content'] as String,
+      wrappedContentKeys:
+          (request['wrappedContentKeys'] as Map<String, String>),
+      targets: [
+        for (final device in devices)
+          TransferTarget(
+            deviceId: device.id,
+            route: 'LOCAL_DRAFT',
+            status: 'CREATED',
+            bytesTransferred: 0,
+          ),
+      ],
+      files: const [],
+    );
+    await _cache(transfer);
+    await database.cacheLocalTransfer(transfer);
+    return transfer;
+  }
+
   Future<TransferSummary> _sendFilesLanOnly(
     List<Device> devices,
     EncryptedFileTransfer encrypted,
@@ -489,6 +533,70 @@ class TransferService {
       fileTargets: fileTargets,
       encryptedContent: encrypted.content,
       wrappedContentKeys: encrypted.wrappedContentKeys,
+    );
+    await _cache(transfer);
+    await database.cacheLocalTransfer(transfer);
+    return transfer;
+  }
+
+  Future<TransferSummary> _saveFileDraft(
+    Map<String, dynamic> request,
+    List<Device> devices,
+    List<String> sourcePaths,
+    EncryptedFileTransfer encrypted,
+  ) async {
+    final id = const Uuid().v4();
+    await database.saveDraft(id, {
+      'kind': 'FILE',
+      'request': request,
+      'sources': sourcePaths,
+      'recipe': {
+        'contentKey': base64Encode(encrypted.contentKey),
+        'files': {
+          for (final (index, file) in encrypted.files.indexed)
+            '$index': {
+              'nonces': file.nonces,
+              'sha256': file.sha256,
+              'sourceSize': file.originalSize,
+              'sourceModifiedAt': file.originalModifiedAt
+                  .toUtc()
+                  .toIso8601String(),
+              'sourceSha256': file.originalSha256,
+            },
+        },
+      },
+    });
+    final files = encrypted.files
+        .map(
+          (file) => TransferFile(
+            id: const Uuid().v4(),
+            name: file.record['name'] as String,
+            size: file.size,
+            chunkCount: file.chunks.length,
+            chunkSize: file.record['chunkSize'] as int,
+            sha256: file.sha256,
+          ),
+        )
+        .toList();
+    final transfer = TransferSummary(
+      id: id,
+      senderDeviceId: _currentDevice?.id,
+      contentType: 'FILE',
+      status: 'CREATED',
+      createdAt: DateTime.now(),
+      encryptedContent: encrypted.content,
+      wrappedContentKeys:
+          (request['wrappedContentKeys'] as Map<String, String>),
+      targets: [
+        for (final device in devices)
+          TransferTarget(
+            deviceId: device.id,
+            route: 'LOCAL_DRAFT',
+            status: 'CREATED',
+            bytesTransferred: 0,
+          ),
+      ],
+      files: files,
     );
     await _cache(transfer);
     await database.cacheLocalTransfer(transfer);
@@ -723,6 +831,141 @@ class TransferService {
       }
     } finally {
       _retryingWaitingLan = false;
+    }
+  }
+
+  Future<void> flushDrafts() async {
+    if (_flushingDrafts) return;
+    _flushingDrafts = true;
+    try {
+      for (final draft in await database.drafts()) {
+        if (draft.payload['kind'] == 'TEXT') {
+          await api.sendJson(
+            '/api/transfers',
+            'POST',
+            draft.payload['request'] as Map<String, dynamic>,
+          );
+        } else if (draft.payload['kind'] == 'FILE') {
+          await _flushFileDraft(draft);
+        } else {
+          continue;
+        }
+        await database.deleteDraft(draft.id);
+        await database.deleteLocalTransfer(draft.id);
+      }
+    } finally {
+      _flushingDrafts = false;
+    }
+  }
+
+  Future<void> _flushFileDraft(LocalDraft draft) async {
+    final request = Map<String, dynamic>.from(draft.payload['request'] as Map);
+    final sources = (draft.payload['sources'] as List<dynamic>).cast<String>();
+    final recipe = Map<String, dynamic>.from(draft.payload['recipe'] as Map);
+    final recipes = Map<String, dynamic>.from(recipe['files'] as Map);
+    for (final (index, sourcePath) in sources.indexed) {
+      final source = File(sourcePath);
+      if (!await source.exists()) {
+        throw const FileSystemException('SOURCE_FILE_MISSING');
+      }
+      final stat = await source.stat();
+      final fileRecipe = Map<String, dynamic>.from(recipes['$index'] as Map);
+      final digest = await hashes.sha256.bind(source.openRead()).first;
+      if (stat.size != fileRecipe['sourceSize'] ||
+          digest.toString() != fileRecipe['sourceSha256']) {
+        throw const FormatException('SOURCE_FILE_CHANGED');
+      }
+    }
+    final response =
+        await api.sendJson('/api/transfers', 'POST', request)
+            as Map<String, dynamic>;
+    final transfer = TransferSummary.fromJson(response);
+    final support = await getApplicationSupportDirectory();
+    final recreatedFiles = <EncryptedFileUpload>[];
+    try {
+      for (final (index, sourcePath) in sources.indexed) {
+        final fileRecipe = Map<String, dynamic>.from(recipes['$index'] as Map);
+        final recreated = await crypto.recreateEncryptedFile(
+          sourcePath: sourcePath,
+          tempDirectory: path.join(support.path, 'temp'),
+          contentKey: base64Decode(recipe['contentKey'] as String),
+          nonces: (fileRecipe['nonces'] as List<dynamic>).cast<String>(),
+        );
+        if (recreated.sha256 != fileRecipe['sha256']) {
+          throw const FormatException('HASH_MISMATCH');
+        }
+        recreatedFiles.add(recreated);
+        if (transfer.fileTargets.any(
+          (target) => target.fileIndex == index && target.route == 'NODE',
+        )) {
+          final input = await File(recreated.tempPath).open();
+          try {
+            for (final (chunkIndex, chunk) in recreated.chunks.indexed) {
+              await api.uploadChunk(
+                transfer.files[index].id,
+                chunkIndex,
+                await input.read(chunk.size),
+                chunk.sha256Hex,
+              );
+            }
+          } finally {
+            await input.close();
+          }
+          await api.sendJson(
+            '/api/files/${transfer.files[index].id}/complete',
+            'POST',
+          );
+        }
+      }
+      final waitingTargets = transfer.fileTargets.where(
+        (target) => target.route == 'WAITING_LAN',
+      );
+      if (waitingTargets.isNotEmpty) {
+        await _storage.write(
+          key: '$_waitingRecipePrefix${transfer.id}',
+          value: jsonEncode(recipe),
+        );
+        for (final target in waitingTargets) {
+          final fileRecipe = Map<String, dynamic>.from(
+            recipes['${target.fileIndex}'] as Map,
+          );
+          await database.saveWaitingLanTask(
+            id: '${transfer.id}:${target.fileIndex}:${target.deviceId}',
+            transferId: transfer.id,
+            fileId: transfer.files[target.fileIndex].id,
+            fileIndex: target.fileIndex,
+            targetDeviceId: target.deviceId,
+            targetRoute: transfer.targets
+                .firstWhere((item) => item.deviceId == target.deviceId)
+                .route,
+            sourcePath: sources[target.fileIndex],
+            sourceSize: fileRecipe['sourceSize'] as int,
+            sourceModifiedAt: DateTime.parse(
+              fileRecipe['sourceModifiedAt'] as String,
+            ),
+            sourceSha256: fileRecipe['sourceSha256'] as String,
+          );
+        }
+      }
+      final nodeDeviceIds = transfer.fileTargets
+          .where((target) => target.route == 'NODE')
+          .map((target) => target.deviceId)
+          .toSet();
+      for (final target in transfer.targets.where(
+        (target) => nodeDeviceIds.contains(target.deviceId),
+      )) {
+        await _reportProgress(
+          transfer.id,
+          target.deviceId,
+          'AVAILABLE_ON_NODE',
+          recreatedFiles.fold<int>(0, (total, file) => total + file.size),
+        );
+      }
+    } finally {
+      for (final recreated in recreatedFiles) {
+        final temporary = File(recreated.tempPath);
+        if (await temporary.exists()) await temporary.delete();
+      }
     }
   }
 
