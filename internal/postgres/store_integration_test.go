@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -11,8 +12,10 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/domain"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
+	"nexdrop/internal/transfer"
 )
 
 func TestDeviceLifecycleIntegration(t *testing.T) {
@@ -141,6 +144,76 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	}
 	if err := store.DeleteGroup(ctx, session, createdGroup.ID); err != nil {
 		t.Fatalf("DeleteGroup() error = %v", err)
+	}
+
+	session.DeviceID = &created.ID
+	var targetSessionID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO user_sessions (
+			user_id, access_token_hash, access_expires_at, refresh_token_hash, expires_at
+		) VALUES ($1, $2, now() + interval '1 hour', $3, now() + interval '1 day')
+		RETURNING id::text
+	`, userID, []byte("target-access-hash"), []byte("target-refresh-hash")).Scan(&targetSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSession := auth.Session{User: session.User, SessionID: targetSessionID}
+	targetDevice, err := store.CreateDevice(ctx, targetSession, "Phone", device.TypeAndroid, bytes.Repeat([]byte{1}, 32), "X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApproveDevice(ctx, session, targetDevice.ID); err != nil {
+		t.Fatal(err)
+	}
+	targetSession.DeviceID = &targetDevice.ID
+	transferService := transfer.NewService(store)
+	textTransfer, err := transferService.Create(ctx, session, transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
+		LANAvailableDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentText,
+		Content: []byte("encrypted text"), WrappedContentKeys: map[string][]byte{targetDevice.ID: {1, 2, 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(textTransfer.Targets) != 1 || textTransfer.Targets[0].SelectedRoute != domain.SelectedRouteLAN {
+		t.Fatalf("text transfer targets = %+v", textTransfer.Targets)
+	}
+	targetTransfers, err := store.ListTransfers(ctx, targetSession)
+	if err != nil || len(targetTransfers) != 1 {
+		t.Fatalf("target ListTransfers() = %+v, %v", targetTransfers, err)
+	}
+	if !bytes.Equal(targetTransfers[0].WrappedContentKeys[targetDevice.ID], []byte{1, 2, 3}) {
+		t.Fatalf("target wrapped content keys = %+v", targetTransfers[0].WrappedContentKeys)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE transfer_targets SET status = 'DELIVERED' WHERE transfer_id = $1`, textTransfer.ID); err != nil {
+		t.Fatal(err)
+	}
+	readTransfer, err := transferService.Read(ctx, targetSession, textTransfer.ID)
+	if err != nil || readTransfer.Targets[0].Status != domain.TransferRead {
+		t.Fatalf("Read() = %+v, %v", readTransfer, err)
+	}
+
+	fileTransfer, err := transferService.Create(ctx, session, transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentFile,
+		WrappedContentKeys: map[string][]byte{targetDevice.ID: {4, 5, 6}},
+		Files: []transfer.File{
+			{Name: "small.bin", MIMEType: "application/octet-stream", Size: 1, SHA256: make([]byte, 32), ChunkSize: int(8 * 1024 * 1024), ChunkCount: 1},
+			{Name: "large.bin", MIMEType: "application/octet-stream", Size: domain.DefaultLargeFileThreshold + 1, SHA256: bytes.Repeat([]byte{2}, 32), ChunkSize: int(8 * 1024 * 1024), ChunkCount: 13},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fileTransfer.FileTargets) != 2 || fileTransfer.Targets[0].SelectedRoute != domain.SelectedRouteMixed {
+		t.Fatalf("file transfer = %+v", fileTransfer)
+	}
+	targetFileTransfer, err := store.GetTransfer(ctx, targetSession, fileTransfer.ID)
+	if err != nil || !bytes.Equal(targetFileTransfer.WrappedContentKeys[targetDevice.ID], []byte{4, 5, 6}) {
+		t.Fatalf("target file transfer key = %+v, %v", targetFileTransfer.WrappedContentKeys, err)
+	}
+	cancelled, err := transferService.Cancel(ctx, session, fileTransfer.ID)
+	if err != nil || cancelled.Status != domain.TransferCancelled {
+		t.Fatalf("Cancel() = %+v, %v", cancelled, err)
 	}
 
 	renamed, err := store.RenameDevice(ctx, userID, created.ID, "Workstation")

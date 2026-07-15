@@ -19,6 +19,7 @@ const (
 	SelectedRouteNode       SelectedRoute = "NODE"
 	SelectedRouteWaitingLAN SelectedRoute = "WAITING_LAN"
 	SelectedRouteDraft      SelectedRoute = "LOCAL_DRAFT"
+	SelectedRouteMixed      SelectedRoute = "MIXED"
 )
 
 type RouteRequest struct {

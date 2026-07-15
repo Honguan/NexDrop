@@ -11,17 +11,19 @@ import (
 	"nexdrop/internal/device"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
+	"nexdrop/internal/transfer"
 )
 
 type API struct {
-	auth    *auth.Service
-	devices *device.Service
-	pairing *pairing.Service
-	groups  *group.Service
+	auth      *auth.Service
+	devices   *device.Service
+	pairing   *pairing.Service
+	groups    *group.Service
+	transfers *transfer.Service
 }
 
-func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service) *API {
-	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService}
+func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service) *API {
+	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService}
 }
 
 func (api *API) Routes() http.Handler {
@@ -47,6 +49,11 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/groups/{id}/members/{userId}", api.removeGroupMember)
 	mux.HandleFunc("POST /api/groups/{id}/devices", api.addGroupDevice)
 	mux.HandleFunc("DELETE /api/groups/{id}/devices/{deviceId}", api.removeGroupDevice)
+	mux.HandleFunc("POST /api/transfers", api.createTransfer)
+	mux.HandleFunc("GET /api/transfers", api.listTransfers)
+	mux.HandleFunc("GET /api/transfers/{id}", api.getTransfer)
+	mux.HandleFunc("POST /api/transfers/{id}/cancel", api.cancelTransfer)
+	mux.HandleFunc("POST /api/transfers/{id}/read", api.readTransfer)
 	return mux
 }
 
@@ -373,6 +380,76 @@ func (api *API) removeGroupDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (api *API) createTransfer(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request transfer.Request
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.transfers.Create(r.Context(), session, request)
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (api *API) listTransfers(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.transfers.List(r.Context(), session)
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) getTransfer(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.transfers.Get(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) cancelTransfer(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.transfers.Cancel(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) readTransfer(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.transfers.Read(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Session, bool) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -442,6 +519,19 @@ func writeGroupError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
 	case errors.Is(err, group.ErrConflict):
 		writeError(w, http.StatusConflict, "GROUP_CONFLICT")
+	default:
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+	}
+}
+
+func writeTransferError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, transfer.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "INVALID_TRANSFER")
+	case errors.Is(err, transfer.ErrNotFound):
+		writeError(w, http.StatusNotFound, "TRANSFER_NOT_FOUND")
+	case errors.Is(err, transfer.ErrForbidden):
+		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}

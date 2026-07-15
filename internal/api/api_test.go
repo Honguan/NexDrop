@@ -13,16 +13,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/domain"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
+	"nexdrop/internal/transfer"
 )
 
 type testStore struct {
-	credential auth.Credential
-	accessHash []byte
-	refresh    []byte
-	devices    []device.Device
-	groups     []group.Group
+	credential      auth.Credential
+	accessHash      []byte
+	refresh         []byte
+	devices         []device.Device
+	groups          []group.Group
+	sessionDeviceID *string
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -39,7 +42,7 @@ func (store *testStore) SessionByAccessToken(_ context.Context, access []byte, _
 	if !bytes.Equal(access, store.accessHash) {
 		return auth.Session{}, errors.New("not found")
 	}
-	return auth.Session{User: store.credential.User, SessionID: "session-1"}, nil
+	return auth.Session{User: store.credential.User, SessionID: "session-1", DeviceID: store.sessionDeviceID}, nil
 }
 
 func (store *testStore) RotateSession(_ context.Context, oldRefresh, access []byte, _ time.Time, refresh []byte, _ time.Time, _ time.Time) error {
@@ -126,6 +129,34 @@ func (*testStore) RemoveGroupDevice(context.Context, auth.Session, string, strin
 	return nil
 }
 
+func (*testStore) ResolveTransferTargets(_ context.Context, _ auth.Session, _ transfer.TargetType, _ string, requested []string) ([]string, error) {
+	return requested, nil
+}
+
+func (*testStore) CreateTransfer(_ context.Context, session auth.Session, prepared transfer.Prepared) (transfer.Transfer, error) {
+	return transfer.Transfer{
+		ID: "transfer-1", SenderUserID: session.ID, SenderDeviceID: *session.DeviceID,
+		TargetType: prepared.TargetType, ContentType: prepared.ContentType, Targets: prepared.Targets,
+		FileTargets: prepared.FileTargets, Status: prepared.Status,
+	}, nil
+}
+
+func (*testStore) ListTransfers(context.Context, auth.Session) ([]transfer.Transfer, error) {
+	return []transfer.Transfer{}, nil
+}
+
+func (*testStore) GetTransfer(context.Context, auth.Session, string) (transfer.Transfer, error) {
+	return transfer.Transfer{ID: "transfer-1"}, nil
+}
+
+func (*testStore) CancelTransfer(context.Context, auth.Session, string, time.Time) (transfer.Transfer, error) {
+	return transfer.Transfer{ID: "transfer-1", Status: domain.TransferCancelled}, nil
+}
+
+func (*testStore) ReadTransfer(context.Context, auth.Session, string, time.Time) (transfer.Transfer, error) {
+	return transfer.Transfer{ID: "transfer-1"}, nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -135,7 +166,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -177,7 +208,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store), pairing.NewService(store), nil).Routes()
+	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +257,7 @@ func TestCreateAndListGroup(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, group.NewService(store)).Routes()
+	handler := New(authService, nil, nil, group.NewService(store), nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -253,5 +284,47 @@ func TestCreateAndListGroup(t *testing.T) {
 	handler.ServeHTTP(listResponse, list)
 	if listResponse.Code != http.StatusOK {
 		t.Fatalf("list groups status = %d, body = %s", listResponse.Code, listResponse.Body.String())
+	}
+}
+
+func TestCreateTransfer(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDeviceID := "sender-device"
+	store := &testStore{
+		credential: auth.Credential{
+			User: auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"}, PasswordHash: string(passwordHash),
+		},
+		sessionDeviceID: &senderDeviceID,
+	}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, transfer.NewService(store)).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{"target-device"},
+		ContentType: transfer.ContentText, Content: []byte("encrypted"),
+		WrappedContentKeys: map[string][]byte{"target-device": {1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/transfers", bytes.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create transfer status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var created transfer.Transfer
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != "transfer-1" || created.Targets[0].SelectedRoute != domain.SelectedRouteNode {
+		t.Fatalf("created transfer = %+v", created)
 	}
 }

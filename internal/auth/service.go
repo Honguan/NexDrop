@@ -29,6 +29,7 @@ type Credential struct {
 type Session struct {
 	User
 	SessionID string
+	DeviceID  *string
 }
 
 type Store interface {

@@ -13,6 +13,7 @@ import (
 	"nexdrop/internal/device"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
+	"nexdrop/internal/transfer"
 )
 
 type Store struct {
@@ -76,13 +77,13 @@ func (store *Store) CreateSession(
 func (store *Store) SessionByAccessToken(ctx context.Context, tokenHash []byte, now time.Time) (auth.Session, error) {
 	var session auth.Session
 	err := store.pool.QueryRow(ctx, `
-		SELECT s.id::text, u.id::text, u.username, u.email, u.is_admin
+		SELECT s.id::text, u.id::text, u.username, u.email, u.is_admin, s.device_id::text
 		FROM user_sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.access_token_hash = $1
 		  AND s.access_expires_at > $2
 		  AND s.revoked_at IS NULL
-	`, tokenHash, now).Scan(&session.SessionID, &session.ID, &session.Username, &session.Email, &session.Admin)
+	`, tokenHash, now).Scan(&session.SessionID, &session.ID, &session.Username, &session.Email, &session.Admin, &session.DeviceID)
 	return session, err
 }
 
@@ -598,6 +599,393 @@ func (store *Store) RemoveGroupDevice(ctx context.Context, session auth.Session,
 		return group.ErrForbidden
 	}
 	return nil
+}
+
+func (store *Store) ResolveTransferTargets(ctx context.Context, session auth.Session, targetType transfer.TargetType, groupID string, requested []string) ([]string, error) {
+	var rows pgx.Rows
+	var err error
+	switch targetType {
+	case transfer.TargetSingle, transfer.TargetMultiple:
+		rows, err = store.pool.Query(ctx, `
+			SELECT id::text FROM devices
+			WHERE user_id = $1 AND id::text = ANY($2)
+			  AND trust_status = 'TRUSTED' AND revoked_at IS NULL
+		`, session.ID, requested)
+	case transfer.TargetAllDevices:
+		rows, err = store.pool.Query(ctx, `
+			SELECT id::text FROM devices
+			WHERE user_id = $1 AND id <> $2
+			  AND trust_status = 'TRUSTED' AND revoked_at IS NULL
+		`, session.ID, session.DeviceID)
+	case transfer.TargetGroupAll:
+		rows, err = store.pool.Query(ctx, `
+			SELECT d.id::text
+			FROM group_devices gd
+			JOIN devices d ON d.id = gd.device_id
+			JOIN group_members actor ON actor.group_id = gd.group_id AND actor.user_id = $2
+			WHERE gd.group_id = $1 AND d.trust_status = 'TRUSTED' AND d.revoked_at IS NULL
+		`, groupID, session.ID)
+	case transfer.TargetGroupSelected:
+		rows, err = store.pool.Query(ctx, `
+			SELECT d.id::text
+			FROM group_devices gd
+			JOIN devices d ON d.id = gd.device_id
+			JOIN group_members actor ON actor.group_id = gd.group_id AND actor.user_id = $2
+			WHERE gd.group_id = $1 AND d.id::text = ANY($3)
+			  AND d.trust_status = 'TRUSTED' AND d.revoked_at IS NULL
+		`, groupID, session.ID, requested)
+	default:
+		return nil, transfer.ErrInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if (targetType == transfer.TargetSingle || targetType == transfer.TargetMultiple || targetType == transfer.TargetGroupSelected) && len(result) != len(requested) {
+		return nil, transfer.ErrForbidden
+	}
+	return result, nil
+}
+
+func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, prepared transfer.Prepared) (transfer.Transfer, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var result transfer.Transfer
+	var groupID any
+	if prepared.GroupID != "" {
+		groupID = prepared.GroupID
+	}
+	var totalSize int64
+	for _, file := range prepared.Files {
+		totalSize += file.Size
+	}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO transfer_tasks (
+			sender_user_id, sender_device_id, group_id, target_type, content_type,
+			total_file_count, total_size, status, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id::text
+	`, session.ID, session.DeviceID, groupID, prepared.TargetType, prepared.ContentType,
+		len(prepared.Files), totalSize, prepared.Status, prepared.CreatedAt, prepared.ExpiresAt).Scan(&result.ID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	for _, deviceID := range prepared.ResolvedDeviceIDs {
+		wrappedKey := prepared.WrappedContentKeys[deviceID]
+		if len(wrappedKey) == 0 {
+			continue
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transfer_content_keys (transfer_id, target_device_id, wrapped_content_key)
+			VALUES ($1, $2, $3)
+		`, result.ID, deviceID, wrappedKey)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	if len(prepared.Content) > 0 {
+		var messageID string
+		err = tx.QueryRow(ctx, `
+			INSERT INTO messages (
+				transfer_id, sender_user_id, sender_device_id, group_id, content_type,
+				encrypted_content, created_at, expires_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			RETURNING id::text
+		`, result.ID, session.ID, session.DeviceID, groupID, prepared.ContentType,
+			prepared.Content, prepared.CreatedAt, prepared.ExpiresAt).Scan(&messageID)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		for _, deviceID := range prepared.ResolvedDeviceIDs {
+			_, err = tx.Exec(ctx, `
+				INSERT INTO message_targets (message_id, target_device_id, wrapped_content_key)
+				VALUES ($1, $2, $3)
+			`, messageID, deviceID, prepared.WrappedContentKeys[deviceID])
+			if err != nil {
+				return transfer.Transfer{}, err
+			}
+		}
+	}
+	fileIDs := make([]string, len(prepared.Files))
+	for index, file := range prepared.Files {
+		err = tx.QueryRow(ctx, `
+			WITH generated AS (SELECT gen_random_uuid() AS id)
+			INSERT INTO files (
+				id, transfer_id, original_name, mime_type, size, sha256,
+				chunk_size, chunk_count, storage_path, expires_at
+			)
+			SELECT id, $1, $2, $3, $4, $5, $6, $7, 'pending/' || id::text, $8
+			FROM generated
+			RETURNING id::text
+		`, result.ID, file.Name, file.MIMEType, file.Size, file.SHA256,
+			file.ChunkSize, file.ChunkCount, prepared.ExpiresAt).Scan(&fileIDs[index])
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	for _, target := range prepared.Targets {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transfer_targets (
+				transfer_id, target_device_id, selected_route, status, bytes_transferred
+			) VALUES ($1, $2, $3, $4, 0)
+		`, result.ID, target.DeviceID, target.SelectedRoute, target.Status)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	for _, target := range prepared.FileTargets {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transfer_file_targets (file_id, target_device_id, selected_route, status)
+			VALUES ($1, $2, $3, $4)
+		`, fileIDs[target.FileIndex], target.DeviceID, target.SelectedRoute, target.Status)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return transfer.Transfer{}, err
+	}
+	return store.GetTransfer(ctx, session, result.ID)
+}
+
+func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]transfer.Transfer, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT DISTINCT t.id::text, t.created_at
+		FROM transfer_tasks t
+		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
+		WHERE t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2)
+		ORDER BY t.created_at DESC
+	`, session.ID, session.DeviceID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &createdAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]transfer.Transfer, 0, len(ids))
+	for _, id := range ids {
+		item, err := store.GetTransfer(ctx, session, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func (store *Store) GetTransfer(ctx context.Context, session auth.Session, transferID string) (transfer.Transfer, error) {
+	var result transfer.Transfer
+	var groupID *string
+	err := store.pool.QueryRow(ctx, `
+		SELECT t.id::text, t.sender_user_id::text, t.sender_device_id::text, t.target_type,
+		       t.group_id::text, t.content_type, m.encrypted_content, t.status, t.created_at, t.expires_at
+		FROM transfer_tasks t
+		LEFT JOIN messages m ON m.transfer_id = t.id
+		WHERE t.id = $1 AND (
+			t.sender_user_id = $2 OR ($3::uuid IS NOT NULL AND EXISTS (
+				SELECT 1 FROM transfer_targets access_target
+				WHERE access_target.transfer_id = t.id AND access_target.target_device_id = $3
+			))
+		)
+	`, transferID, session.ID, session.DeviceID).Scan(
+		&result.ID, &result.SenderUserID, &result.SenderDeviceID, &result.TargetType,
+		&groupID, &result.ContentType, &result.Content, &result.Status, &result.CreatedAt, &result.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return transfer.Transfer{}, transfer.ErrNotFound
+	}
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if groupID != nil {
+		result.GroupID = *groupID
+	}
+	keyRows, err := store.pool.Query(ctx, `
+		SELECT target_device_id::text, wrapped_content_key
+		FROM transfer_content_keys
+		WHERE transfer_id = $1 AND ($2 OR target_device_id = $3)
+	`, transferID, result.SenderUserID == session.ID, session.DeviceID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	result.WrappedContentKeys = make(map[string][]byte)
+	for keyRows.Next() {
+		var deviceID string
+		var wrappedKey []byte
+		if err := keyRows.Scan(&deviceID, &wrappedKey); err != nil {
+			keyRows.Close()
+			return transfer.Transfer{}, err
+		}
+		result.WrappedContentKeys[deviceID] = wrappedKey
+	}
+	err = keyRows.Err()
+	keyRows.Close()
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	fileRows, err := store.pool.Query(ctx, `
+		SELECT id::text, original_name, mime_type, size, sha256, chunk_size, chunk_count, expires_at
+		FROM files WHERE transfer_id = $1 ORDER BY id
+	`, transferID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	fileIndex := make(map[string]int)
+	result.Files = make([]transfer.File, 0)
+	for fileRows.Next() {
+		var file transfer.File
+		if err := fileRows.Scan(&file.ID, &file.Name, &file.MIMEType, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.ExpiresAt); err != nil {
+			fileRows.Close()
+			return transfer.Transfer{}, err
+		}
+		fileIndex[file.ID] = len(result.Files)
+		result.Files = append(result.Files, file)
+	}
+	err = fileRows.Err()
+	fileRows.Close()
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	targetRows, err := store.pool.Query(ctx, `
+		SELECT target_device_id::text, selected_route, status, bytes_transferred
+		FROM transfer_targets WHERE transfer_id = $1 ORDER BY target_device_id
+	`, transferID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	result.Targets = make([]transfer.Target, 0)
+	for targetRows.Next() {
+		var target transfer.Target
+		if err := targetRows.Scan(&target.DeviceID, &target.SelectedRoute, &target.Status, &target.BytesTransferred); err != nil {
+			targetRows.Close()
+			return transfer.Transfer{}, err
+		}
+		result.Targets = append(result.Targets, target)
+	}
+	err = targetRows.Err()
+	targetRows.Close()
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if len(result.Files) > 0 {
+		rows, err := store.pool.Query(ctx, `
+			SELECT ft.file_id::text, ft.target_device_id::text, ft.selected_route, ft.status
+			FROM transfer_file_targets ft JOIN files f ON f.id = ft.file_id
+			WHERE f.transfer_id = $1 ORDER BY ft.file_id, ft.target_device_id
+		`, transferID)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		for rows.Next() {
+			var fileID string
+			var target transfer.FileTarget
+			if err := rows.Scan(&fileID, &target.DeviceID, &target.SelectedRoute, &target.Status); err != nil {
+				rows.Close()
+				return transfer.Transfer{}, err
+			}
+			target.FileIndex = fileIndex[fileID]
+			result.FileTargets = append(result.FileTargets, target)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
+	return result, nil
+}
+
+func (store *Store) CancelTransfer(ctx context.Context, session auth.Session, transferID string, now time.Time) (transfer.Transfer, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `
+		UPDATE transfer_tasks SET status = 'CANCELLED'
+		WHERE id = $1 AND sender_user_id = $2 AND status NOT IN ('DELIVERED', 'READ', 'FAILED', 'CANCELLED', 'EXPIRED')
+	`, transferID, session.ID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if command.RowsAffected() == 0 {
+		return transfer.Transfer{}, transfer.ErrForbidden
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_targets SET status = 'CANCELLED', completed_at = $2
+		WHERE transfer_id = $1 AND status NOT IN ('DELIVERED', 'READ', 'FAILED', 'CANCELLED', 'EXPIRED')
+	`, transferID, now)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_file_targets SET status = 'CANCELLED'
+		WHERE file_id IN (SELECT id FROM files WHERE transfer_id = $1)
+		  AND status NOT IN ('DELIVERED', 'READ', 'FAILED', 'CANCELLED', 'EXPIRED')
+	`, transferID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return transfer.Transfer{}, err
+	}
+	return store.GetTransfer(ctx, session, transferID)
+}
+
+func (store *Store) ReadTransfer(ctx context.Context, session auth.Session, transferID string, now time.Time) (transfer.Transfer, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `
+		UPDATE transfer_targets SET status = 'READ', read_at = $3
+		WHERE transfer_id = $1 AND target_device_id = $2 AND status = 'DELIVERED'
+	`, transferID, session.DeviceID, now)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if command.RowsAffected() == 0 {
+		return transfer.Transfer{}, transfer.ErrForbidden
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO delivery_status (transfer_id, device_id, delivered_at, read_at)
+		VALUES ($1, $2, $3, $3)
+		ON CONFLICT (transfer_id, device_id) DO UPDATE SET read_at = EXCLUDED.read_at
+	`, transferID, session.DeviceID, now)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return transfer.Transfer{}, err
+	}
+	return store.GetTransfer(ctx, session, transferID)
 }
 
 type rowScanner interface {

@@ -15,6 +15,7 @@ import (
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
+	"nexdrop/internal/transfer"
 )
 
 const defaultAddress = ":8080"
@@ -44,7 +45,8 @@ func main() {
 	deviceService := device.NewService(store)
 	pairingService := pairing.NewService(store)
 	groupService := group.NewService(store)
-	applicationAPI := api.New(authService, deviceService, pairingService, groupService)
+	transferService := transfer.NewService(store)
+	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {

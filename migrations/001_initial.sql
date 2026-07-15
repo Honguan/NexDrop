@@ -88,6 +88,7 @@ CREATE TABLE group_devices (
 
 CREATE TABLE messages (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    transfer_id uuid UNIQUE,
     sender_user_id uuid NOT NULL REFERENCES users(id),
     sender_device_id uuid NOT NULL REFERENCES devices(id),
     group_id uuid REFERENCES groups(id) ON DELETE CASCADE,
@@ -108,6 +109,7 @@ CREATE TABLE transfer_tasks (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     sender_user_id uuid NOT NULL REFERENCES users(id),
     sender_device_id uuid NOT NULL REFERENCES devices(id),
+    group_id uuid REFERENCES groups(id),
     target_type text NOT NULL,
     content_type text NOT NULL,
     total_file_count integer NOT NULL DEFAULT 0,
@@ -115,6 +117,17 @@ CREATE TABLE transfer_tasks (
     status text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz
+);
+
+ALTER TABLE messages
+    ADD CONSTRAINT messages_transfer_fk
+    FOREIGN KEY (transfer_id) REFERENCES transfer_tasks(id) ON DELETE CASCADE;
+
+CREATE TABLE transfer_content_keys (
+    transfer_id uuid NOT NULL REFERENCES transfer_tasks(id) ON DELETE CASCADE,
+    target_device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    wrapped_content_key bytea NOT NULL,
+    PRIMARY KEY (transfer_id, target_device_id)
 );
 
 CREATE TABLE transfer_targets (
@@ -151,6 +164,16 @@ CREATE TABLE files (
     chunk_count integer NOT NULL,
     storage_path text NOT NULL,
     expires_at timestamptz NOT NULL
+);
+
+CREATE TABLE transfer_file_targets (
+    file_id uuid NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    target_device_id uuid NOT NULL REFERENCES devices(id),
+    selected_route text NOT NULL,
+    status text NOT NULL,
+    bytes_transferred bigint NOT NULL DEFAULT 0,
+    error_code text,
+    PRIMARY KEY (file_id, target_device_id)
 );
 
 CREATE TABLE file_chunks (
