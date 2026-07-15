@@ -446,6 +446,15 @@ class LocalDatabase {
     );
   }
 
+  Future<void> deleteWaitingLanTasksForTransfer(String transferId) async {
+    final database = await open();
+    await database.delete(
+      'waiting_lan_tasks',
+      where: 'transfer_id = ?',
+      whereArgs: [transferId],
+    );
+  }
+
   Future<void> replaceWaitingLanSource({
     required String id,
     required String sourcePath,

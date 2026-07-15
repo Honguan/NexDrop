@@ -608,25 +608,26 @@ class TransferService {
     EncryptedFileTransfer encrypted,
   ) async {
     final id = const Uuid().v4();
+    final recipe = <String, dynamic>{
+      'contentKey': base64Encode(encrypted.contentKey),
+      'files': {
+        for (final (index, file) in encrypted.files.indexed)
+          '$index': {
+            'nonces': file.nonces,
+            'sha256': file.sha256,
+            'sourceSize': file.originalSize,
+            'sourceModifiedAt': file.originalModifiedAt
+                .toUtc()
+                .toIso8601String(),
+            'sourceSha256': file.originalSha256,
+          },
+      },
+    };
     await database.saveDraft(id, {
       'kind': 'FILE',
       'request': request,
       'sources': sourcePaths,
-      'recipe': {
-        'contentKey': base64Encode(encrypted.contentKey),
-        'files': {
-          for (final (index, file) in encrypted.files.indexed)
-            '$index': {
-              'nonces': file.nonces,
-              'sha256': file.sha256,
-              'sourceSize': file.originalSize,
-              'sourceModifiedAt': file.originalModifiedAt
-                  .toUtc()
-                  .toIso8601String(),
-              'sourceSha256': file.originalSha256,
-            },
-        },
-      },
+      'recipe': recipe,
     });
     final files = encrypted.files
         .map(
@@ -640,11 +641,43 @@ class TransferService {
           ),
         )
         .toList();
+    final routeMode = request['routeMode'] as String;
+    final allowLarge = request['allowLargeFileViaNode'] as bool? ?? false;
+    final waitForLan =
+        routeMode != 'NODE_ONLY' &&
+        encrypted.files.every(
+          (file) =>
+              routeMode == 'LAN_ONLY' ||
+              routeMode == 'WAIT_LAN' ||
+              (!allowLarge && file.originalSize > 100 * 1024 * 1024),
+        );
+    if (waitForLan) {
+      await _storage.write(
+        key: '$_waitingRecipePrefix$id',
+        value: jsonEncode(recipe),
+      );
+      for (final device in devices) {
+        for (final (index, source) in encrypted.files.indexed) {
+          await database.saveWaitingLanTask(
+            id: '$id:$index:${device.id}',
+            transferId: id,
+            fileId: files[index].id,
+            fileIndex: index,
+            targetDeviceId: device.id,
+            targetRoute: 'LOCAL_WAITING_LAN',
+            sourcePath: sourcePaths[index],
+            sourceSize: source.originalSize,
+            sourceModifiedAt: source.originalModifiedAt,
+            sourceSha256: source.originalSha256,
+          );
+        }
+      }
+    }
     final transfer = TransferSummary(
       id: id,
       senderDeviceId: _currentDevice?.id,
       contentType: 'FILE',
-      status: 'CREATED',
+      status: waitForLan ? 'WAITING_FOR_LAN' : 'CREATED',
       createdAt: DateTime.now(),
       encryptedContent: encrypted.content,
       wrappedContentKeys:
@@ -653,16 +686,32 @@ class TransferService {
         for (final device in devices)
           TransferTarget(
             deviceId: device.id,
-            route: 'LOCAL_DRAFT',
-            status: 'CREATED',
+            route: waitForLan ? 'WAITING_LAN' : 'LOCAL_DRAFT',
+            status: waitForLan ? 'WAITING_FOR_LAN' : 'CREATED',
             bytesTransferred: 0,
           ),
       ],
       files: files,
+      fileTargets: waitForLan
+          ? [
+              for (final device in devices)
+                for (final index in files.indexed.map((entry) => entry.$1))
+                  TransferFileTarget(
+                    fileIndex: index,
+                    deviceId: device.id,
+                    route: 'WAITING_LAN',
+                    status: 'WAITING_FOR_LAN',
+                  ),
+            ]
+          : const [],
     );
     await _cache(transfer);
     await database.cacheLocalTransfer(transfer);
-    return transfer;
+    if (!waitForLan) return transfer;
+    await retryWaitingLan();
+    return (await database.localTransfers()).firstWhere(
+      (item) => item.id == transfer.id,
+    );
   }
 
   Future<String> readText(
@@ -857,7 +906,9 @@ class TransferService {
           if (recreated.sha256 != fileRecipe['sha256']) {
             throw const FormatException('等待 LAN 密文驗證失敗');
           }
-          await _tryReportWaiting(task, 'TRANSFERRING_LAN');
+          if (task.targetRoute != 'LOCAL_WAITING_LAN') {
+            await _tryReportWaiting(task, 'TRANSFERRING_LAN');
+          }
           await _uploadLanFile(
             endpoint,
             task.transferId,
@@ -870,6 +921,14 @@ class TransferService {
                 other.transferId == task.transferId &&
                 other.targetDeviceId == task.targetDeviceId,
           );
+          if (task.targetRoute == 'LOCAL_WAITING_LAN') {
+            await database.deleteWaitingLanTask(task.id);
+            if (remaining.isEmpty) {
+              await _announceLocalWaitingTransfer(task, endpoint);
+            }
+            await _cleanupWaitingRecipe(task.transferId);
+            continue;
+          }
           final synchronized = await _tryReportWaiting(
             task,
             remaining.isEmpty ? 'DELIVERED' : 'TRANSFERRING_LAN',
@@ -893,6 +952,82 @@ class TransferService {
       }
     } finally {
       _retryingWaitingLan = false;
+    }
+  }
+
+  Future<void> _announceLocalWaitingTransfer(
+    WaitingLanTask task,
+    LanEndpoint endpoint,
+  ) async {
+    final transfer = (await database.localTransfers()).firstWhere(
+      (item) => item.id == task.transferId,
+    );
+    final content = transfer.encryptedContent;
+    final wrapped = transfer.wrappedContentKeys[task.targetDeviceId];
+    if (content == null || wrapped == null) {
+      throw const FormatException('等待 LAN 傳輸中繼資料遺失');
+    }
+    await lan.sendMessage(
+      endpoint,
+      transfer.id,
+      contentType: 'FILE',
+      content: content,
+      wrappedContentKey: wrapped,
+      files: [
+        for (final file in transfer.files)
+          {
+            'id': file.id,
+            'name': file.name,
+            'size': file.size,
+            'chunkCount': file.chunkCount,
+            'chunkSize': file.chunkSize,
+            'sha256': file.sha256,
+          },
+      ],
+    );
+    final targets = [
+      for (final target in transfer.targets)
+        TransferTarget(
+          deviceId: target.deviceId,
+          route: target.deviceId == task.targetDeviceId ? 'LAN' : target.route,
+          status: target.deviceId == task.targetDeviceId
+              ? 'DELIVERED'
+              : target.status,
+          bytesTransferred: target.deviceId == task.targetDeviceId
+              ? transfer.files.fold<int>(0, (total, file) => total + file.size)
+              : target.bytesTransferred,
+        ),
+    ];
+    final delivered = targets.every((target) => target.status == 'DELIVERED');
+    final updated = TransferSummary(
+      id: transfer.id,
+      senderDeviceId: transfer.senderDeviceId,
+      contentType: transfer.contentType,
+      status: delivered ? 'DELIVERED' : 'WAITING_FOR_LAN',
+      createdAt: transfer.createdAt,
+      targets: targets,
+      files: transfer.files,
+      fileTargets: [
+        for (final target in transfer.fileTargets)
+          TransferFileTarget(
+            fileIndex: target.fileIndex,
+            deviceId: target.deviceId,
+            route: target.deviceId == task.targetDeviceId
+                ? 'LAN'
+                : target.route,
+            status: target.deviceId == task.targetDeviceId
+                ? 'DELIVERED'
+                : target.status,
+          ),
+      ],
+      encryptedContent: content,
+      wrappedContentKeys: transfer.wrappedContentKeys,
+    );
+    await _cache(updated);
+    await database.cacheLocalTransfer(updated);
+    if (delivered) {
+      await database.deleteDraft(transfer.id);
+      await _queueLanMetrics(updated, transfer.createdAt.toUtc());
     }
   }
 
@@ -979,6 +1114,8 @@ class TransferService {
           );
         }
       }
+      await database.deleteWaitingLanTasksForTransfer(draft.id);
+      await _storage.delete(key: '$_waitingRecipePrefix${draft.id}');
       final waitingTargets = transfer.fileTargets.where(
         (target) => target.route == 'WAITING_LAN',
       );
