@@ -6,6 +6,7 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexdrop ./cmd/nexdrop
 
 FROM alpine:3.21
+RUN apk add --no-cache postgresql17-client
 RUN addgroup -S nexdrop && adduser -S -G nexdrop nexdrop
 RUN mkdir -p /var/lib/nexdrop && chown nexdrop:nexdrop /var/lib/nexdrop
 COPY --from=build /out/nexdrop /usr/local/bin/nexdrop

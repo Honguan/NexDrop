@@ -4,15 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/api"
 	"nexdrop/internal/auth"
+	"nexdrop/internal/backup"
 	"nexdrop/internal/device"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
@@ -25,6 +29,7 @@ import (
 )
 
 const defaultAddress = ":8080"
+const version = "v1"
 
 type healthResponse struct {
 	Status  string `json:"status"`
@@ -32,6 +37,13 @@ type healthResponse struct {
 }
 
 func main() {
+	handled, err := runMaintenanceCommand(context.Background(), os.Args[1:])
+	if err != nil {
+		log.Fatal(err)
+	}
+	if handled {
+		return
+	}
 	address := os.Getenv("NEXDROP_HTTP_ADDRESS")
 	if address == "" {
 		address = defaultAddress
@@ -105,7 +117,58 @@ func main() {
 	}
 }
 
+func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error) {
+	if len(arguments) == 0 || arguments[0] == "serve" {
+		return false, nil
+	}
+	if arguments[0] == "version" {
+		fmt.Println(version)
+		return true, nil
+	}
+	databaseURL := os.Getenv("NEXDROP_DATABASE_URL")
+	if databaseURL == "" {
+		return true, errors.New("NEXDROP_DATABASE_URL is required")
+	}
+	storagePath := os.Getenv("NEXDROP_STORAGE_PATH")
+	if storagePath == "" {
+		storagePath = "/var/lib/nexdrop"
+	}
+	service := backup.NewService(func(ctx context.Context, databaseURL string) (backup.SecurityStore, error) {
+		return postgres.Open(ctx, databaseURL)
+	})
+	switch arguments[0] {
+	case "backup":
+		flags := flag.NewFlagSet("backup", flag.ContinueOnError)
+		output := flags.String("output", "", "backup archive path")
+		includeFiles := flags.Bool("include-files", false, "include cached file content")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return true, err
+		}
+		if *output == "" {
+			*output = filepath.Join(storagePath, "backups", "nexdrop-"+time.Now().UTC().Format("20060102T150405Z")+".tar.gz")
+		}
+		if err := service.Create(ctx, databaseURL, storagePath, *output, *includeFiles); err != nil {
+			return true, err
+		}
+		fmt.Println(*output)
+		return true, nil
+	case "restore":
+		flags := flag.NewFlagSet("restore", flag.ContinueOnError)
+		archive := flags.String("file", "", "backup archive path")
+		confirmed := flags.Bool("confirm", false, "confirm destructive restore")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return true, err
+		}
+		if *archive == "" || !*confirmed {
+			return true, errors.New("restore requires --file and --confirm")
+		}
+		return true, service.Restore(ctx, databaseURL, storagePath, *archive)
+	default:
+		return true, fmt.Errorf("unknown command %q", arguments[0])
+	}
+}
+
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(healthResponse{Status: "ok", Version: "v1"})
+	_ = json.NewEncoder(w).Encode(healthResponse{Status: "ok", Version: version})
 }
