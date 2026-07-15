@@ -695,6 +695,12 @@ func writeTransferError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "TRANSFER_NOT_FOUND")
 	case errors.Is(err, transfer.ErrForbidden):
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
+	case errors.Is(err, transfer.ErrFileTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE")
+	case errors.Is(err, transfer.ErrQuotaExceeded):
+		writeError(w, http.StatusInsufficientStorage, "QUOTA_EXCEEDED")
+	case errors.Is(err, transfer.ErrStorageFull):
+		writeError(w, http.StatusInsufficientStorage, "STORAGE_FULL")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}

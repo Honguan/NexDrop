@@ -272,6 +272,22 @@ CREATE TABLE storage_quotas (
     PRIMARY KEY (owner_type, owner_id)
 );
 
+CREATE TABLE node_settings (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    single_file_limit_bytes bigint NOT NULL DEFAULT 2147483648,
+    default_user_quota_bytes bigint NOT NULL DEFAULT 10737418240,
+    default_group_quota_bytes bigint NOT NULL DEFAULT 21474836480,
+    node_cache_limit_bytes bigint NOT NULL DEFAULT 107374182400,
+    default_user_daily_bytes bigint NOT NULL DEFAULT 53687091200,
+    default_group_daily_bytes bigint NOT NULL DEFAULT 107374182400,
+    disk_warning_percent integer NOT NULL DEFAULT 80,
+    disk_stop_percent integer NOT NULL DEFAULT 95,
+    CHECK (disk_warning_percent > 0 AND disk_warning_percent < disk_stop_percent),
+    CHECK (disk_stop_percent <= 100)
+);
+
+INSERT INTO node_settings (singleton) VALUES (true);
+
 CREATE INDEX transfer_tasks_sender_created_idx ON transfer_tasks(sender_user_id, created_at DESC);
 CREATE INDEX transfer_targets_device_status_idx ON transfer_targets(target_device_id, status);
 CREATE INDEX messages_group_created_idx ON messages(group_id, created_at DESC);

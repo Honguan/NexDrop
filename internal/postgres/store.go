@@ -12,8 +12,10 @@ import (
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/maintenance"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
@@ -667,6 +669,9 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 		return transfer.Transfer{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := enforceTransferQuotas(ctx, tx, session, prepared); err != nil {
+		return transfer.Transfer{}, err
+	}
 	var result transfer.Transfer
 	var groupID any
 	if prepared.GroupID != "" {
@@ -770,6 +775,129 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 		return transfer.Transfer{}, err
 	}
 	return store.GetTransfer(ctx, session, result.ID)
+}
+
+func enforceTransferQuotas(ctx context.Context, tx pgx.Tx, session auth.Session, prepared transfer.Prepared) error {
+	nodeFiles := make(map[int]bool)
+	for _, target := range prepared.FileTargets {
+		if target.SelectedRoute == domain.SelectedRouteNode {
+			nodeFiles[target.FileIndex] = true
+		}
+	}
+	if len(nodeFiles) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(730042)`); err != nil {
+		return err
+	}
+	var singleFileLimit, defaultUserQuota, defaultGroupQuota, nodeLimit int64
+	var defaultUserDaily, defaultGroupDaily int64
+	var warningPercent, stopPercent int
+	err := tx.QueryRow(ctx, `
+		SELECT single_file_limit_bytes, default_user_quota_bytes, default_group_quota_bytes,
+		       node_cache_limit_bytes, default_user_daily_bytes, default_group_daily_bytes,
+		       disk_warning_percent, disk_stop_percent
+		FROM node_settings WHERE singleton
+	`).Scan(&singleFileLimit, &defaultUserQuota, &defaultGroupQuota, &nodeLimit,
+		&defaultUserDaily, &defaultGroupDaily, &warningPercent, &stopPercent)
+	if err != nil {
+		return err
+	}
+	var requestedBytes int64
+	for index := range nodeFiles {
+		fileSize := prepared.Files[index].Size
+		if fileSize > singleFileLimit {
+			return transfer.ErrFileTooLarge
+		}
+		if requestedBytes > int64(^uint64(0)>>1)-fileSize {
+			return transfer.ErrQuotaExceeded
+		}
+		requestedBytes += fileSize
+	}
+	var userQuota, userDailyLimit int64
+	err = tx.QueryRow(ctx, `
+		SELECT
+			COALESCE((SELECT byte_limit FROM storage_quotas WHERE owner_type = 'USER' AND owner_id = $1), $2),
+			COALESCE((SELECT daily_transfer_limit FROM storage_quotas WHERE owner_type = 'USER' AND owner_id = $1), $3)
+	`, session.ID, defaultUserQuota, defaultUserDaily).Scan(&userQuota, &userDailyLimit)
+	if err != nil {
+		return err
+	}
+	var userUsage, nodeUsage, userDailyUsage int64
+	err = tx.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(f.size) FILTER (WHERE t.sender_user_id = $1), 0),
+			COALESCE(SUM(f.size), 0),
+			COALESCE(SUM(f.size) FILTER (
+				WHERE t.sender_user_id = $1 AND t.created_at >= $2
+			), 0)
+		FROM files f JOIN transfer_tasks t ON t.id = f.transfer_id
+		WHERE f.status <> 'EXPIRED' AND f.expires_at > $3
+		  AND EXISTS (
+		      SELECT 1 FROM transfer_file_targets ft
+		      WHERE ft.file_id = f.id AND ft.selected_route = 'NODE'
+		  )
+	`, session.ID, startOfUTCDay(prepared.CreatedAt), prepared.CreatedAt).Scan(&userUsage, &nodeUsage, &userDailyUsage)
+	if err != nil {
+		return err
+	}
+	if exceeds(userUsage, requestedBytes, userQuota) || exceeds(userDailyUsage, requestedBytes, userDailyLimit) {
+		return transfer.ErrQuotaExceeded
+	}
+	nodeStopLimit := nodeLimit * int64(stopPercent) / 100
+	if exceeds(nodeUsage, requestedBytes, nodeStopLimit) {
+		return transfer.ErrStorageFull
+	}
+	if prepared.GroupID != "" {
+		var groupQuota, groupDailyLimit, groupUsage, groupDailyUsage int64
+		err = tx.QueryRow(ctx, `
+			SELECT
+				COALESCE((SELECT byte_limit FROM storage_quotas WHERE owner_type = 'GROUP' AND owner_id = $1), $2),
+				COALESCE((SELECT daily_transfer_limit FROM storage_quotas WHERE owner_type = 'GROUP' AND owner_id = $1), $3)
+		`, prepared.GroupID, defaultGroupQuota, defaultGroupDaily).Scan(&groupQuota, &groupDailyLimit)
+		if err != nil {
+			return err
+		}
+		err = tx.QueryRow(ctx, `
+			SELECT
+				COALESCE(SUM(f.size), 0),
+				COALESCE(SUM(f.size) FILTER (WHERE t.created_at >= $2), 0)
+			FROM files f JOIN transfer_tasks t ON t.id = f.transfer_id
+			WHERE t.group_id = $1 AND f.status <> 'EXPIRED' AND f.expires_at > $3
+			  AND EXISTS (
+			      SELECT 1 FROM transfer_file_targets ft
+			      WHERE ft.file_id = f.id AND ft.selected_route = 'NODE'
+			  )
+		`, prepared.GroupID, startOfUTCDay(prepared.CreatedAt), prepared.CreatedAt).Scan(&groupUsage, &groupDailyUsage)
+		if err != nil {
+			return err
+		}
+		if exceeds(groupUsage, requestedBytes, groupQuota) || exceeds(groupDailyUsage, requestedBytes, groupDailyLimit) {
+			return transfer.ErrQuotaExceeded
+		}
+	}
+	projectedUsage := nodeUsage + requestedBytes
+	if projectedUsage >= nodeLimit*int64(warningPercent)/100 {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO audit_logs (actor_user_id, actor_device_id, action, target_type, metadata)
+			VALUES ($1, $2, 'STORAGE_WARNING', 'NODE', jsonb_build_object(
+				'bytesUsed', $3::bigint, 'byteLimit', $4::bigint, 'warningPercent', $5::integer
+			))
+		`, session.ID, session.DeviceID, projectedUsage, nodeLimit, warningPercent)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func exceeds(current, requested, limit int64) bool {
+	return limit < 0 || requested > limit || current > limit-requested
+}
+
+func startOfUTCDay(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]transfer.Transfer, error) {
@@ -1436,6 +1564,99 @@ func (store *Store) NodeStatistics(ctx context.Context, session auth.Session, ti
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (store *Store) ExpiredFiles(ctx context.Context, now time.Time, limit int) ([]maintenance.ExpiredFile, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT id::text, storage_path
+		FROM files
+		WHERE expires_at <= $1 AND status <> 'EXPIRED'
+		ORDER BY expires_at
+		LIMIT $2
+	`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]maintenance.ExpiredFile, 0)
+	for rows.Next() {
+		var file maintenance.ExpiredFile
+		if err := rows.Scan(&file.ID, &file.StoragePath); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		result = append(result, file)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for index := range result {
+		chunkRows, err := store.pool.Query(ctx, `SELECT storage_path FROM file_chunks WHERE file_id = $1`, result[index].ID)
+		if err != nil {
+			return nil, err
+		}
+		for chunkRows.Next() {
+			var path string
+			if err := chunkRows.Scan(&path); err != nil {
+				chunkRows.Close()
+				return nil, err
+			}
+			result[index].ChunkPaths = append(result[index].ChunkPaths, path)
+		}
+		err = chunkRows.Err()
+		chunkRows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (store *Store) MarkFileExpired(ctx context.Context, fileID string, expiredAt time.Time) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var transferID string
+	err = tx.QueryRow(ctx, `
+		UPDATE files SET status = 'EXPIRED', storage_path = '', completed_at = NULL
+		WHERE id = $1 AND status <> 'EXPIRED'
+		RETURNING transfer_id::text
+	`, fileID).Scan(&transferID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return filetransfer.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM file_chunks WHERE file_id = $1`, fileID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE transfer_file_targets SET status = 'EXPIRED' WHERE file_id = $1`, fileID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE transfer_targets target SET status = 'EXPIRED', completed_at = $2
+		WHERE target.transfer_id = $1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM files f
+		      JOIN transfer_file_targets ft ON ft.file_id = f.id AND ft.target_device_id = target.target_device_id
+		      WHERE f.transfer_id = target.transfer_id AND f.status <> 'EXPIRED'
+		  )
+	`, transferID, expiredAt); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE transfer_tasks SET status = 'EXPIRED'
+		WHERE id = $1 AND NOT EXISTS (
+			SELECT 1 FROM transfer_targets WHERE transfer_id = $1 AND status <> 'EXPIRED'
+		)
+	`, transferID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 type rowScanner interface {

@@ -15,6 +15,7 @@ import (
 	"nexdrop/internal/device"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/maintenance"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
@@ -58,6 +59,14 @@ func main() {
 		log.Fatalf("configure file storage: %v", err)
 	}
 	analyticsService := analytics.NewService(store)
+	cleaner, err := maintenance.NewCleaner(store, storagePath)
+	if err != nil {
+		log.Fatalf("configure cleanup worker: %v", err)
+	}
+	go func() {
+		_, _ = cleaner.RunOnce(context.Background(), 100)
+		cleaner.Start(context.Background(), time.Hour)
+	}()
 	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService)
 	presenceHub := presence.NewHub(authService, store)
 	mux := http.NewServeMux()

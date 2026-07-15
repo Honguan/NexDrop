@@ -17,6 +17,7 @@ import (
 	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/maintenance"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
@@ -228,7 +229,8 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if smallFileID == "" {
 		t.Fatal("small file ID was not returned")
 	}
-	fileService, err := filetransfer.NewService(store, t.TempDir())
+	storageRoot := t.TempDir()
+	fileService, err := filetransfer.NewService(store, storageRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +312,77 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	cancelled, err := transferService.Cancel(ctx, session, fileTransfer.ID)
 	if err != nil || cancelled.Status != domain.TransferCancelled {
 		t.Fatalf("Cancel() = %+v, %v", cancelled, err)
+	}
+	_, err = store.pool.Exec(ctx, `
+		INSERT INTO storage_quotas (owner_type, owner_id, byte_limit, daily_transfer_limit)
+		VALUES ('USER', $1, 0, 0)
+		ON CONFLICT (owner_type, owner_id) DO UPDATE SET byte_limit = 0, daily_transfer_limit = 0
+	`, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quotaFile := transfer.File{Name: "quota.bin", MIMEType: "application/octet-stream", Size: 1, SHA256: smallHash[:], ChunkSize: 1, ChunkCount: 1}
+	_, err = transferService.Create(ctx, session, transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentFile,
+		WrappedContentKeys: map[string][]byte{targetDevice.ID: {7}}, Files: []transfer.File{quotaFile},
+	})
+	if !errors.Is(err, transfer.ErrQuotaExceeded) {
+		t.Fatalf("node quota error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE storage_quotas SET byte_limit = 1000, daily_transfer_limit = 1000
+		WHERE owner_type = 'USER' AND owner_id = $1
+	`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE node_settings SET single_file_limit_bytes = 0`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = transferService.Create(ctx, session, transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentFile,
+		WrappedContentKeys: map[string][]byte{targetDevice.ID: {7}}, Files: []transfer.File{quotaFile},
+	})
+	if !errors.Is(err, transfer.ErrFileTooLarge) {
+		t.Fatalf("single file limit error = %v, want ErrFileTooLarge", err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE node_settings SET single_file_limit_bytes = 2147483648, node_cache_limit_bytes = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = transferService.Create(ctx, session, transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentFile,
+		WrappedContentKeys: map[string][]byte{targetDevice.ID: {7}}, Files: []transfer.File{quotaFile},
+	})
+	if !errors.Is(err, transfer.ErrStorageFull) {
+		t.Fatalf("node storage limit error = %v, want ErrStorageFull", err)
+	}
+	lanOnlyTransfer, err := transferService.Create(ctx, session, transfer.Request{
+		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID}, LANAvailableDeviceIDs: []string{targetDevice.ID},
+		ContentType: transfer.ContentFile, WrappedContentKeys: map[string][]byte{targetDevice.ID: {8}}, Files: []transfer.File{quotaFile},
+	})
+	if err != nil || lanOnlyTransfer.Targets[0].SelectedRoute != domain.SelectedRouteLAN {
+		t.Fatalf("LAN-only quota transfer = %+v, %v", lanOnlyTransfer, err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE files SET expires_at = now() - interval '1 minute' WHERE id = $1`, smallFileID); err != nil {
+		t.Fatal(err)
+	}
+	cleaner, err := maintenance.NewCleaner(store, storageRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned, err := cleaner.RunOnce(ctx, 100)
+	if err != nil || cleaned != 1 {
+		t.Fatalf("cleanup = %d, %v", cleaned, err)
+	}
+	var expiredStatus string
+	var remainingChunks int
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM files WHERE id = $1`, smallFileID).Scan(&expiredStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM file_chunks WHERE file_id = $1`, smallFileID).Scan(&remainingChunks); err != nil {
+		t.Fatal(err)
+	}
+	if expiredStatus != "EXPIRED" || remainingChunks != 0 {
+		t.Fatalf("expired file status = %s, chunks = %d", expiredStatus, remainingChunks)
 	}
 
 	renamed, err := store.RenameDevice(ctx, userID, created.ID, "Workstation")

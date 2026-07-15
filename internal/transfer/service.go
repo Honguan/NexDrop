@@ -11,9 +11,12 @@ import (
 )
 
 var (
-	ErrInvalid   = errors.New("invalid transfer request")
-	ErrNotFound  = errors.New("transfer not found")
-	ErrForbidden = errors.New("transfer operation forbidden")
+	ErrInvalid       = errors.New("invalid transfer request")
+	ErrNotFound      = errors.New("transfer not found")
+	ErrForbidden     = errors.New("transfer operation forbidden")
+	ErrFileTooLarge  = errors.New("file exceeds node limit")
+	ErrQuotaExceeded = errors.New("storage or traffic quota exceeded")
+	ErrStorageFull   = errors.New("node storage is full")
 )
 
 type ContentType string
