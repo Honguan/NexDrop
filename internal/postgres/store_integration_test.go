@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/domain"
+	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
@@ -193,11 +195,13 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatalf("Read() = %+v, %v", readTransfer, err)
 	}
 
+	smallContent := []byte("x")
+	smallHash := sha256.Sum256(smallContent)
 	fileTransfer, err := transferService.Create(ctx, session, transfer.Request{
 		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentFile,
 		WrappedContentKeys: map[string][]byte{targetDevice.ID: {4, 5, 6}},
 		Files: []transfer.File{
-			{Name: "small.bin", MIMEType: "application/octet-stream", Size: 1, SHA256: make([]byte, 32), ChunkSize: int(8 * 1024 * 1024), ChunkCount: 1},
+			{Name: "small.bin", MIMEType: "application/octet-stream", Size: 1, SHA256: smallHash[:], ChunkSize: int(8 * 1024 * 1024), ChunkCount: 1},
 			{Name: "large.bin", MIMEType: "application/octet-stream", Size: domain.DefaultLargeFileThreshold + 1, SHA256: bytes.Repeat([]byte{2}, 32), ChunkSize: int(8 * 1024 * 1024), ChunkCount: 13},
 		},
 	})
@@ -210,6 +214,38 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	targetFileTransfer, err := store.GetTransfer(ctx, targetSession, fileTransfer.ID)
 	if err != nil || !bytes.Equal(targetFileTransfer.WrappedContentKeys[targetDevice.ID], []byte{4, 5, 6}) {
 		t.Fatalf("target file transfer key = %+v, %v", targetFileTransfer.WrappedContentKeys, err)
+	}
+	var smallFileID string
+	for _, file := range fileTransfer.Files {
+		if file.Name == "small.bin" {
+			smallFileID = file.ID
+		}
+	}
+	if smallFileID == "" {
+		t.Fatal("small file ID was not returned")
+	}
+	fileService, err := filetransfer.NewService(store, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fileService.UploadChunk(ctx, targetSession, smallFileID, 0, smallHash[:], bytes.NewReader(smallContent)); !errors.Is(err, filetransfer.ErrForbidden) {
+		t.Fatalf("target upload error = %v, want ErrForbidden", err)
+	}
+	if _, err := fileService.UploadChunk(ctx, session, smallFileID, 0, smallHash[:], bytes.NewReader(smallContent)); err != nil {
+		t.Fatal(err)
+	}
+	completedFile, err := fileService.Complete(ctx, session, smallFileID)
+	if err != nil || completedFile.Status != "AVAILABLE_ON_NODE" {
+		t.Fatalf("Complete() = %+v, %v", completedFile, err)
+	}
+	_, downloadedChunk, err := fileService.OpenChunk(ctx, targetSession, smallFileID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloaded, err := io.ReadAll(downloadedChunk)
+	_ = downloadedChunk.Close()
+	if err != nil || !bytes.Equal(downloaded, smallContent) {
+		t.Fatalf("downloaded chunk = %q, %v", downloaded, err)
 	}
 	cancelled, err := transferService.Cancel(ctx, session, fileTransfer.ID)
 	if err != nil || cancelled.Status != domain.TransferCancelled {

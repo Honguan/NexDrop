@@ -4,6 +4,9 @@ services:
     environment:
       NEXDROP_HTTP_ADDRESS: ":8080"
       NEXDROP_DATABASE_URL: "postgres://nexdrop:${POSTGRES_PASSWORD}@postgres:5432/nexdrop?sslmode=disable"
+      NEXDROP_STORAGE_PATH: "/var/lib/nexdrop"
+    volumes:
+      - file-data:/var/lib/nexdrop
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,6 +52,6 @@ services:
 
 volumes:
   postgres-data:
+  file-data:
   caddy-data:
   caddy-config:
-

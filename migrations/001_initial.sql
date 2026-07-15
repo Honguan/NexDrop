@@ -163,6 +163,8 @@ CREATE TABLE files (
     chunk_size integer NOT NULL DEFAULT 8388608,
     chunk_count integer NOT NULL,
     storage_path text NOT NULL,
+    status text NOT NULL DEFAULT 'UPLOADING',
+    completed_at timestamptz,
     expires_at timestamptz NOT NULL
 );
 
@@ -182,6 +184,8 @@ CREATE TABLE file_chunks (
     size integer NOT NULL,
     sha256 bytea NOT NULL,
     status text NOT NULL,
+    storage_path text NOT NULL,
+    completed_at timestamptz NOT NULL,
     PRIMARY KEY (file_id, chunk_index)
 );
 

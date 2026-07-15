@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
@@ -986,6 +987,150 @@ func (store *Store) ReadTransfer(ctx context.Context, session auth.Session, tran
 		return transfer.Transfer{}, err
 	}
 	return store.GetTransfer(ctx, session, transferID)
+}
+
+func (store *Store) PrepareChunkUpload(ctx context.Context, session auth.Session, fileID string, index int) (filetransfer.FileRecord, *filetransfer.ChunkRecord, error) {
+	var file filetransfer.FileRecord
+	err := store.pool.QueryRow(ctx, `
+		SELECT f.id::text, f.size, f.sha256, f.chunk_size, f.chunk_count, f.status, f.storage_path
+		FROM files f
+		JOIN transfer_tasks t ON t.id = f.transfer_id
+		WHERE f.id = $1 AND t.sender_user_id = $2 AND t.sender_device_id = $3
+		  AND f.status = 'UPLOADING'
+		  AND EXISTS (
+		      SELECT 1 FROM transfer_file_targets ft
+		      WHERE ft.file_id = f.id AND ft.selected_route = 'NODE'
+		  )
+	`, fileID, session.ID, session.DeviceID).Scan(
+		&file.ID, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.Status, &file.StoragePath,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return filetransfer.FileRecord{}, nil, filetransfer.ErrForbidden
+	}
+	if err != nil {
+		return filetransfer.FileRecord{}, nil, err
+	}
+	var chunk filetransfer.ChunkRecord
+	err = store.pool.QueryRow(ctx, `
+		SELECT file_id::text, chunk_index, size, sha256, storage_path, completed_at
+		FROM file_chunks WHERE file_id = $1 AND chunk_index = $2 AND status = 'COMPLETE'
+	`, fileID, index).Scan(&chunk.FileID, &chunk.Index, &chunk.Size, &chunk.SHA256, &chunk.StoragePath, &chunk.CompletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return file, nil, nil
+	}
+	if err != nil {
+		return filetransfer.FileRecord{}, nil, err
+	}
+	return file, &chunk, nil
+}
+
+func (store *Store) RecordChunk(ctx context.Context, session auth.Session, chunk filetransfer.ChunkRecord) error {
+	command, err := store.pool.Exec(ctx, `
+		INSERT INTO file_chunks (
+			file_id, chunk_index, size, sha256, status, storage_path, completed_at
+		)
+		SELECT f.id, $2, $3, $4, 'COMPLETE', $5, $6
+		FROM files f JOIN transfer_tasks t ON t.id = f.transfer_id
+		WHERE f.id = $1 AND t.sender_user_id = $7 AND t.sender_device_id = $8
+		  AND f.status = 'UPLOADING'
+		ON CONFLICT (file_id, chunk_index) DO NOTHING
+	`, chunk.FileID, chunk.Index, chunk.Size, chunk.SHA256, chunk.StoragePath, chunk.CompletedAt, session.ID, session.DeviceID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 1 {
+		return nil
+	}
+	var existingHash []byte
+	err = store.pool.QueryRow(ctx, `
+		SELECT sha256 FROM file_chunks WHERE file_id = $1 AND chunk_index = $2 AND status = 'COMPLETE'
+	`, chunk.FileID, chunk.Index).Scan(&existingHash)
+	if err == nil && subtle.ConstantTimeCompare(existingHash, chunk.SHA256) == 1 {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) || err == nil {
+		return filetransfer.ErrConflict
+	}
+	return err
+}
+
+func (store *Store) OpenChunk(ctx context.Context, session auth.Session, fileID string, index int) (filetransfer.ChunkRecord, error) {
+	var chunk filetransfer.ChunkRecord
+	err := store.pool.QueryRow(ctx, `
+		SELECT c.file_id::text, c.chunk_index, c.size, c.sha256, c.storage_path, c.completed_at
+		FROM file_chunks c
+		JOIN transfer_file_targets ft ON ft.file_id = c.file_id
+		WHERE c.file_id = $1 AND c.chunk_index = $2 AND c.status = 'COMPLETE'
+		  AND ft.target_device_id = $3 AND ft.selected_route = 'NODE'
+	`, fileID, index, session.DeviceID).Scan(
+		&chunk.FileID, &chunk.Index, &chunk.Size, &chunk.SHA256, &chunk.StoragePath, &chunk.CompletedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return filetransfer.ChunkRecord{}, filetransfer.ErrNotFound
+	}
+	return chunk, err
+}
+
+func (store *Store) PrepareFileCompletion(ctx context.Context, session auth.Session, fileID string) (filetransfer.FileRecord, []filetransfer.ChunkRecord, error) {
+	file, _, err := store.PrepareChunkUpload(ctx, session, fileID, 0)
+	if err != nil {
+		return filetransfer.FileRecord{}, nil, err
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT file_id::text, chunk_index, size, sha256, storage_path, completed_at
+		FROM file_chunks WHERE file_id = $1 AND status = 'COMPLETE'
+		ORDER BY chunk_index
+	`, fileID)
+	if err != nil {
+		return filetransfer.FileRecord{}, nil, err
+	}
+	defer rows.Close()
+	chunks := make([]filetransfer.ChunkRecord, 0, file.ChunkCount)
+	for rows.Next() {
+		var chunk filetransfer.ChunkRecord
+		if err := rows.Scan(&chunk.FileID, &chunk.Index, &chunk.Size, &chunk.SHA256, &chunk.StoragePath, &chunk.CompletedAt); err != nil {
+			return filetransfer.FileRecord{}, nil, err
+		}
+		chunks = append(chunks, chunk)
+	}
+	return file, chunks, rows.Err()
+}
+
+func (store *Store) CompleteFile(ctx context.Context, session auth.Session, fileID, storagePath string, completedAt time.Time) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `
+		UPDATE files f SET status = 'AVAILABLE_ON_NODE', storage_path = $2, completed_at = $3
+		FROM transfer_tasks t
+		WHERE f.id = $1 AND t.id = f.transfer_id
+		  AND t.sender_user_id = $4 AND t.sender_device_id = $5
+		  AND f.status = 'UPLOADING'
+	`, fileID, storagePath, completedAt, session.ID, session.DeviceID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return filetransfer.ErrConflict
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_file_targets SET status = 'AVAILABLE_ON_NODE'
+		WHERE file_id = $1 AND selected_route = 'NODE'
+	`, fileID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_targets target SET status = 'AVAILABLE_ON_NODE'
+		WHERE target.transfer_id = (SELECT transfer_id FROM files WHERE id = $1)
+		  AND target.selected_route = 'NODE'
+	`, fileID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 type rowScanner interface {

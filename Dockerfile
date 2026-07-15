@@ -7,6 +7,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexdrop
 
 FROM alpine:3.21
 RUN addgroup -S nexdrop && adduser -S -G nexdrop nexdrop
+RUN mkdir -p /var/lib/nexdrop && chown nexdrop:nexdrop /var/lib/nexdrop
 COPY --from=build /out/nexdrop /usr/local/bin/nexdrop
 USER nexdrop
 EXPOSE 8080

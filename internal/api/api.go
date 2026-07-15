@@ -1,14 +1,17 @@
 package api
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
@@ -20,10 +23,11 @@ type API struct {
 	pairing   *pairing.Service
 	groups    *group.Service
 	transfers *transfer.Service
+	files     *filetransfer.Service
 }
 
-func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service) *API {
-	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService}
+func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service) *API {
+	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService}
 }
 
 func (api *API) Routes() http.Handler {
@@ -54,6 +58,9 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/transfers/{id}", api.getTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/cancel", api.cancelTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/read", api.readTransfer)
+	mux.HandleFunc("POST /api/files/{id}/chunks/{index}", api.uploadChunk)
+	mux.HandleFunc("GET /api/files/{id}/chunks/{index}", api.downloadChunk)
+	mux.HandleFunc("POST /api/files/{id}/complete", api.completeFile)
 	return mux
 }
 
@@ -450,6 +457,65 @@ func (api *API) readTransfer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (api *API) uploadChunk(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_CHUNK")
+		return
+	}
+	expectedHash, err := hex.DecodeString(r.Header.Get("X-Chunk-SHA256"))
+	if err != nil || len(expectedHash) != 32 {
+		writeError(w, http.StatusBadRequest, "INVALID_CHUNK_HASH")
+		return
+	}
+	record, err := api.files.UploadChunk(r.Context(), session, r.PathValue("id"), index, expectedHash, r.Body)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (api *API) downloadChunk(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_CHUNK")
+		return
+	}
+	record, file, err := api.files.OpenChunk(r.Context(), session, r.PathValue("id"), index)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	defer file.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(record.Size))
+	w.Header().Set("ETag", `"`+hex.EncodeToString(record.SHA256)+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, file)
+}
+
+func (api *API) completeFile(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	file, err := api.files.Complete(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, file)
+}
+
 func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Session, bool) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -532,6 +598,25 @@ func writeTransferError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "TRANSFER_NOT_FOUND")
 	case errors.Is(err, transfer.ErrForbidden):
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
+	default:
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+	}
+}
+
+func writeFileError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, filetransfer.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "INVALID_FILE_OPERATION")
+	case errors.Is(err, filetransfer.ErrNotFound):
+		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND")
+	case errors.Is(err, filetransfer.ErrForbidden):
+		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
+	case errors.Is(err, filetransfer.ErrConflict):
+		writeError(w, http.StatusConflict, "FILE_CONFLICT")
+	case errors.Is(err, filetransfer.ErrHash):
+		writeError(w, http.StatusUnprocessableEntity, "HASH_MISMATCH")
+	case errors.Is(err, filetransfer.ErrIncomplete):
+		writeError(w, http.StatusConflict, "FILE_INCOMPLETE")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}

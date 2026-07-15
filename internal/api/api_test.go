@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/domain"
+	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
@@ -26,6 +29,8 @@ type testStore struct {
 	devices         []device.Device
 	groups          []group.Group
 	sessionDeviceID *string
+	fileRecord      filetransfer.FileRecord
+	chunks          map[int]filetransfer.ChunkRecord
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -157,6 +162,36 @@ func (*testStore) ReadTransfer(context.Context, auth.Session, string, time.Time)
 	return transfer.Transfer{ID: "transfer-1"}, nil
 }
 
+func (store *testStore) PrepareChunkUpload(_ context.Context, _ auth.Session, _ string, index int) (filetransfer.FileRecord, *filetransfer.ChunkRecord, error) {
+	if chunk, ok := store.chunks[index]; ok {
+		return store.fileRecord, &chunk, nil
+	}
+	return store.fileRecord, nil, nil
+}
+
+func (store *testStore) RecordChunk(_ context.Context, _ auth.Session, chunk filetransfer.ChunkRecord) error {
+	store.chunks[chunk.Index] = chunk
+	return nil
+}
+
+func (store *testStore) OpenChunk(_ context.Context, _ auth.Session, _ string, index int) (filetransfer.ChunkRecord, error) {
+	return store.chunks[index], nil
+}
+
+func (store *testStore) PrepareFileCompletion(context.Context, auth.Session, string) (filetransfer.FileRecord, []filetransfer.ChunkRecord, error) {
+	result := make([]filetransfer.ChunkRecord, 0, len(store.chunks))
+	for index := 0; index < store.fileRecord.ChunkCount; index++ {
+		result = append(result, store.chunks[index])
+	}
+	return store.fileRecord, result, nil
+}
+
+func (store *testStore) CompleteFile(_ context.Context, _ auth.Session, _ string, path string, _ time.Time) error {
+	store.fileRecord.Status = "AVAILABLE_ON_NODE"
+	store.fileRecord.StoragePath = path
+	return nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -166,7 +201,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -208,7 +243,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil).Routes()
+	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +292,7 @@ func TestCreateAndListGroup(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, group.NewService(store), nil).Routes()
+	handler := New(authService, nil, nil, group.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +335,7 @@ func TestCreateTransfer(t *testing.T) {
 		sessionDeviceID: &senderDeviceID,
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store)).Routes()
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -326,5 +361,46 @@ func TestCreateTransfer(t *testing.T) {
 	}
 	if created.ID != "transfer-1" || created.Targets[0].SelectedRoute != domain.SelectedRouteNode {
 		t.Fatalf("created transfer = %+v", created)
+	}
+}
+
+func TestUploadAndDownloadChunk(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("chunk")
+	digest := sha256.Sum256(content)
+	deviceID := "device-1"
+	store := &testStore{
+		credential:      auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)},
+		sessionDeviceID: &deviceID,
+		fileRecord:      filetransfer.FileRecord{ID: "file-1", Size: int64(len(content)), SHA256: digest[:], ChunkSize: len(content), ChunkCount: 1},
+		chunks:          make(map[int]filetransfer.ChunkRecord),
+	}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	fileService, err := filetransfer.NewService(store, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(authService, nil, nil, nil, nil, fileService).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload := httptest.NewRequest(http.MethodPost, "/api/files/file-1/chunks/0", bytes.NewReader(content))
+	upload.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	upload.Header.Set("X-Chunk-SHA256", hex.EncodeToString(digest[:]))
+	uploadResponse := httptest.NewRecorder()
+	handler.ServeHTTP(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, body = %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	download := httptest.NewRequest(http.MethodGet, "/api/files/file-1/chunks/0", nil)
+	download.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	downloadResponse := httptest.NewRecorder()
+	handler.ServeHTTP(downloadResponse, download)
+	if downloadResponse.Code != http.StatusOK || !bytes.Equal(downloadResponse.Body.Bytes(), content) {
+		t.Fatalf("download status = %d, body = %q", downloadResponse.Code, downloadResponse.Body.Bytes())
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"nexdrop/internal/api"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
@@ -46,7 +47,15 @@ func main() {
 	pairingService := pairing.NewService(store)
 	groupService := group.NewService(store)
 	transferService := transfer.NewService(store)
-	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService)
+	storagePath := os.Getenv("NEXDROP_STORAGE_PATH")
+	if storagePath == "" {
+		storagePath = "/var/lib/nexdrop"
+	}
+	fileService, err := filetransfer.NewService(store, storagePath)
+	if err != nil {
+		log.Fatalf("configure file storage: %v", err)
+	}
+	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
