@@ -39,6 +39,38 @@ class LanEndpoint {
   final DateTime lastSeen;
 }
 
+class LanIncomingTransfer {
+  const LanIncomingTransfer({
+    required this.id,
+    required this.senderDeviceId,
+    required this.contentType,
+    required this.content,
+    required this.wrappedContentKey,
+    required this.files,
+    required this.receivedAt,
+  });
+
+  factory LanIncomingTransfer.fromJson(Map<String, dynamic> value) =>
+      LanIncomingTransfer(
+        id: value['transferId'] as String,
+        senderDeviceId: value['senderDeviceId'] as String,
+        contentType: value['contentType'] as String,
+        content: value['content'] as String,
+        wrappedContentKey: value['wrappedContentKey'] as String,
+        files: (value['files'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>(),
+        receivedAt: DateTime.parse(value['receivedAt'] as String),
+      );
+
+  final String id;
+  final String senderDeviceId;
+  final String contentType;
+  final String content;
+  final String wrappedContentKey;
+  final List<Map<String, dynamic>> files;
+  final DateTime receivedAt;
+}
+
 class LanService {
   LanService({LanIdentityStore? identities})
     : _identities = identities ?? LanIdentityStore();
@@ -48,6 +80,7 @@ class LanService {
   final _responseNonces = <String>{};
   final _random = Random.secure();
   final _changes = StreamController<Set<String>>.broadcast();
+  final _incoming = StreamController<LanIncomingTransfer>.broadcast();
   BonsoirBroadcast? _broadcast;
   BonsoirDiscovery? _discovery;
   StreamSubscription<BonsoirDiscoveryEvent>? _discoveryEvents;
@@ -63,6 +96,7 @@ class LanService {
   String? _storagePath;
 
   Stream<Set<String>> get changes => _changes.stream;
+  Stream<LanIncomingTransfer> get incomingTransfers => _incoming.stream;
   Set<String> get onlineDeviceIds => Set.unmodifiable(_online.keys);
 
   LanEndpoint? endpointFor(String deviceId) {
@@ -93,6 +127,7 @@ class LanService {
     final support = await getApplicationSupportDirectory();
     _storagePath = path.join(support.path, 'lan-incoming');
     await Directory(_storagePath!).create(recursive: true);
+    await _loadIncomingMessages();
     _challenge = _randomToken();
     await _startServer();
     await _startMdns();
@@ -344,7 +379,8 @@ class LanService {
 
   Future<void> _handleRequest(HttpRequest request) async {
     try {
-      if (!_trustedCertificate(request.certificate) ||
+      final peer = _trustedDevice(request.certificate);
+      if (peer == null ||
           !const {
             '1.0',
             '1.1',
@@ -361,7 +397,7 @@ class LanService {
           segments[1] == 'transfers' &&
           _tokenPattern.hasMatch(segments[2]) &&
           segments[3] == 'message') {
-        return _receiveMessage(request, segments[2]);
+        return _receiveMessage(request, segments[2], peer.id);
       }
       if (segments.length < 5 ||
           segments[0] != 'v1' ||
@@ -411,13 +447,15 @@ class LanService {
     }
   }
 
-  bool _trustedCertificate(X509Certificate? certificate) {
-    if (certificate == null) return false;
+  Device? _trustedDevice(X509Certificate? certificate) {
+    if (certificate == null) return null;
     final fingerprint = sha256.convert(certificate.der).toString();
-    return _trustedByShortId.values.any(
-      (device) =>
-          device.lanCertificateFingerprint?.toLowerCase() == fingerprint,
-    );
+    for (final device in _trustedByShortId.values) {
+      if (device.lanCertificateFingerprint?.toLowerCase() == fingerprint) {
+        return device;
+      }
+    }
+    return null;
   }
 
   Future<List<int>> _completedChunks(String transferId, String fileId) async {
@@ -435,7 +473,11 @@ class LanService {
     return values;
   }
 
-  Future<void> _receiveMessage(HttpRequest request, String transferId) async {
+  Future<void> _receiveMessage(
+    HttpRequest request,
+    String transferId,
+    String senderDeviceId,
+  ) async {
     final bytes = <int>[];
     await for (final part in request) {
       bytes.addAll(part);
@@ -453,7 +495,7 @@ class LanService {
         'error': 'INVALID_MESSAGE',
       });
     }
-    if (!const {'TEXT', 'URL'}.contains(body['contentType']) ||
+    if (!const {'TEXT', 'URL', 'FILE'}.contains(body['contentType']) ||
         body['content'] is! String ||
         body['wrappedContentKey'] is! String) {
       return _json(request.response, HttpStatus.badRequest, {
@@ -462,9 +504,14 @@ class LanService {
     }
     final directory = Directory(path.join(_storagePath!, 'messages'));
     await directory.create(recursive: true);
+    body['transferId'] = transferId;
+    body['senderDeviceId'] = senderDeviceId;
+    body['receivedAt'] = DateTime.now().toUtc().toIso8601String();
+    final normalized = utf8.encode(jsonEncode(body));
     await File(
       path.join(directory.path, '$transferId.json'),
-    ).writeAsBytes(bytes, flush: true);
+    ).writeAsBytes(normalized, flush: true);
+    _incoming.add(LanIncomingTransfer.fromJson(body));
     await _json(request.response, HttpStatus.ok, {'status': 'DELIVERED'});
   }
 
@@ -581,6 +628,7 @@ class LanService {
     required String contentType,
     required String content,
     required String wrappedContentKey,
+    List<Map<String, dynamic>> files = const [],
   }) async {
     await _request(
       target,
@@ -590,7 +638,7 @@ class LanService {
         'contentType': contentType,
         'content': content,
         'wrappedContentKey': wrappedContentKey,
-        'receivedAt': DateTime.now().toUtc().toIso8601String(),
+        'files': files,
       },
     );
   }
@@ -682,5 +730,21 @@ class LanService {
   Future<void> dispose() async {
     await stop();
     await _changes.close();
+    await _incoming.close();
+  }
+
+  Future<void> _loadIncomingMessages() async {
+    final directory = Directory(path.join(_storagePath!, 'messages'));
+    if (!await directory.exists()) return;
+    await for (final entry in directory.list()) {
+      if (entry is! File || !entry.path.endsWith('.json')) continue;
+      try {
+        final value =
+            jsonDecode(await entry.readAsString()) as Map<String, dynamic>;
+        _incoming.add(LanIncomingTransfer.fromJson(value));
+      } catch (_) {
+        // Invalid local records remain available for diagnosis.
+      }
+    }
   }
 }

@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:crypto/crypto.dart' as hashes;
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 
 import 'api_client.dart';
 import 'crypto_service.dart';
@@ -41,6 +42,7 @@ class TransferService {
   final FlutterSecureStorage _storage;
   final LanIdentityStore _lanIdentityStore;
   bool _retryingWaitingLan = false;
+  Device? _currentDevice;
 
   Future<DeviceSession> synchronizeDevice(UserAccount account) async {
     final allDevices = await api.devices();
@@ -93,6 +95,7 @@ class TransferService {
         (device) => device.id == current!.id,
       );
     }
+    _currentDevice = current;
     return DeviceSession(account: account, device: current);
   }
 
@@ -102,12 +105,29 @@ class TransferService {
     String? groupId,
     bool groupAll = true,
     Set<String> lanAvailable = const {},
+    bool nodeAvailable = true,
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
         .map((device) => (id: device.id, publicKey: device.publicKey!))
         .toList();
-    final encrypted = await crypto.encryptText(content.trim(), recipients);
+    final encryptionRecipients = [...recipients];
+    final sender = _currentDevice;
+    if (sender != null &&
+        sender.publicKey != null &&
+        !encryptionRecipients.any((recipient) => recipient.id == sender.id)) {
+      encryptionRecipients.add((id: sender.id, publicKey: sender.publicKey!));
+    }
+    final encrypted = await crypto.encryptText(
+      content.trim(),
+      encryptionRecipients,
+    );
+    if (!nodeAvailable &&
+        recipients.every(
+          (recipient) => lan.endpointFor(recipient.id) != null,
+        )) {
+      return _sendTextLanOnly(content, devices, encrypted);
+    }
     final request = <String, dynamic>{
       'targetType': groupId != null
           ? groupAll
@@ -165,18 +185,32 @@ class TransferService {
     String? groupId,
     bool groupAll = true,
     Set<String> lanAvailable = const {},
+    bool nodeAvailable = true,
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
         .map((device) => (id: device.id, publicKey: device.publicKey!))
         .toList();
+    final encryptionRecipients = [...recipients];
+    final sender = _currentDevice;
+    if (sender != null &&
+        sender.publicKey != null &&
+        !encryptionRecipients.any((recipient) => recipient.id == sender.id)) {
+      encryptionRecipients.add((id: sender.id, publicKey: sender.publicKey!));
+    }
     final support = await getApplicationSupportDirectory();
     final encrypted = await crypto.encryptFiles(
       sourcePaths,
       '${support.path}${Platform.pathSeparator}temp',
-      recipients,
+      encryptionRecipients,
     );
     try {
+      if (!nodeAvailable &&
+          recipients.every(
+            (recipient) => lan.endpointFor(recipient.id) != null,
+          )) {
+        return await _sendFilesLanOnly(devices, encrypted);
+      }
       final request = <String, dynamic>{
         'targetType': groupId != null
             ? groupAll
@@ -328,6 +362,139 @@ class TransferService {
         .toList();
   }
 
+  Future<TransferSummary> _sendTextLanOnly(
+    String plaintext,
+    List<Device> devices,
+    EncryptedEnvelope encrypted,
+  ) async {
+    final transferId = const Uuid().v4();
+    final contentType = plaintext.trim().startsWith('http') ? 'URL' : 'TEXT';
+    final targets = <TransferTarget>[];
+    for (final device in devices) {
+      final endpoint = lan.endpointFor(device.id);
+      final wrapped = encrypted.wrappedContentKeys[device.id];
+      if (endpoint == null || wrapped == null) {
+        throw const HttpException('區網目標已離線');
+      }
+      await lan.sendMessage(
+        endpoint,
+        transferId,
+        contentType: contentType,
+        content: encrypted.content,
+        wrappedContentKey: wrapped,
+      );
+      targets.add(
+        TransferTarget(
+          deviceId: device.id,
+          route: 'LAN',
+          status: 'DELIVERED',
+          bytesTransferred: utf8.encode(encrypted.content).length,
+        ),
+      );
+    }
+    final transfer = TransferSummary(
+      id: transferId,
+      senderDeviceId: _currentDevice?.id,
+      contentType: contentType,
+      status: 'DELIVERED',
+      createdAt: DateTime.now(),
+      targets: targets,
+      files: const [],
+      encryptedContent: encrypted.content,
+      wrappedContentKeys: encrypted.wrappedContentKeys,
+    );
+    await _cache(transfer);
+    await database.cacheLocalTransfer(transfer);
+    return transfer;
+  }
+
+  Future<TransferSummary> _sendFilesLanOnly(
+    List<Device> devices,
+    EncryptedFileTransfer encrypted,
+  ) async {
+    final transferId = const Uuid().v4();
+    final files = encrypted.files
+        .map(
+          (file) => TransferFile(
+            id: const Uuid().v4(),
+            name: file.record['name'] as String,
+            size: file.size,
+            chunkCount: file.chunks.length,
+            chunkSize: file.record['chunkSize'] as int,
+            sha256: file.sha256,
+          ),
+        )
+        .toList();
+    final manifest = [
+      for (final file in files)
+        {
+          'id': file.id,
+          'name': file.name,
+          'size': file.size,
+          'chunkCount': file.chunkCount,
+          'chunkSize': file.chunkSize,
+          'sha256': file.sha256,
+        },
+    ];
+    final targets = <TransferTarget>[];
+    final fileTargets = <TransferFileTarget>[];
+    for (final device in devices) {
+      final endpoint = lan.endpointFor(device.id);
+      final wrapped = encrypted.wrappedContentKeys[device.id];
+      if (endpoint == null || wrapped == null) {
+        throw const HttpException('區網目標已離線');
+      }
+      var transferred = 0;
+      for (final (index, upload) in encrypted.files.indexed) {
+        transferred += await _uploadLanFile(
+          endpoint,
+          transferId,
+          files[index].id,
+          upload,
+        );
+        fileTargets.add(
+          TransferFileTarget(
+            fileIndex: index,
+            deviceId: device.id,
+            route: 'LAN',
+            status: 'DELIVERED',
+          ),
+        );
+      }
+      await lan.sendMessage(
+        endpoint,
+        transferId,
+        contentType: 'FILE',
+        content: encrypted.content,
+        wrappedContentKey: wrapped,
+        files: manifest,
+      );
+      targets.add(
+        TransferTarget(
+          deviceId: device.id,
+          route: 'LAN',
+          status: 'DELIVERED',
+          bytesTransferred: transferred,
+        ),
+      );
+    }
+    final transfer = TransferSummary(
+      id: transferId,
+      senderDeviceId: _currentDevice?.id,
+      contentType: 'FILE',
+      status: 'DELIVERED',
+      createdAt: DateTime.now(),
+      targets: targets,
+      files: files,
+      fileTargets: fileTargets,
+      encryptedContent: encrypted.content,
+      wrappedContentKeys: encrypted.wrappedContentKeys,
+    );
+    await _cache(transfer);
+    await database.cacheLocalTransfer(transfer);
+    return transfer;
+  }
+
   Future<String> readText(
     TransferSummary transfer,
     UserAccount account,
@@ -339,7 +506,11 @@ class TransferService {
       throw const FormatException('此設備無法解密內容');
     }
     final plaintext = await crypto.decryptText(account.id, content, wrapped);
-    await api.sendJson('/api/transfers/${transfer.id}/read', 'POST');
+    try {
+      await api.sendJson('/api/transfers/${transfer.id}/read', 'POST');
+    } catch (_) {
+      if (!transfer.targets.any((target) => target.route == 'LAN')) rethrow;
+    }
     return plaintext;
   }
 
@@ -436,7 +607,11 @@ class TransferService {
         transfer.files.fold<int>(0, (total, file) => total + file.size),
       );
     }
-    await api.sendJson('/api/transfers/${transfer.id}/read', 'POST');
+    try {
+      await api.sendJson('/api/transfers/${transfer.id}/read', 'POST');
+    } catch (_) {
+      if (!transfer.targets.any((target) => target.route == 'LAN')) rethrow;
+    }
     return saved;
   }
 

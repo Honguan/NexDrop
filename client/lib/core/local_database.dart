@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as mobile;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'models.dart';
 
 class WaitingLanTask {
   const WaitingLanTask({
@@ -63,7 +66,7 @@ class LocalDatabase {
     _database = await databaseFactory.openDatabase(
       path.join(support.path, 'nexdrop.db'),
       options: OpenDatabaseOptions(
-        version: 3,
+        version: 4,
         onConfigure: (database) => database.execute('PRAGMA foreign_keys = ON'),
         onCreate: _create,
         onUpgrade: _upgrade,
@@ -137,6 +140,13 @@ class LocalDatabase {
         read_at TEXT NOT NULL
       )
     ''');
+    await database.execute('''
+      CREATE TABLE local_transfers (
+        transfer_id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
   }
 
   Future<void> _upgrade(
@@ -159,6 +169,15 @@ class LocalDatabase {
       await database.execute(
         "ALTER TABLE waiting_lan_tasks ADD COLUMN target_route TEXT NOT NULL DEFAULT 'WAITING_LAN'",
       );
+    }
+    if (oldVersion < 4) {
+      await database.execute('''
+        CREATE TABLE local_transfers (
+          transfer_id TEXT PRIMARY KEY,
+          payload TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      ''');
     }
   }
 
@@ -202,6 +221,68 @@ class LocalDatabase {
       'created_at': createdAt.toUtc().toIso8601String(),
       'updated_at': now,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> cacheLocalTransfer(TransferSummary transfer) async {
+    final database = await open();
+    final payload = jsonEncode({
+      'id': transfer.id,
+      'senderDeviceId': transfer.senderDeviceId,
+      'contentType': transfer.contentType,
+      'content': transfer.encryptedContent,
+      'wrappedContentKeys': transfer.wrappedContentKeys,
+      'status': transfer.status,
+      'createdAt': transfer.createdAt.toUtc().toIso8601String(),
+      'targets': [
+        for (final target in transfer.targets)
+          {
+            'deviceId': target.deviceId,
+            'selectedRoute': target.route,
+            'status': target.status,
+            'bytesTransferred': target.bytesTransferred,
+          },
+      ],
+      'files': [
+        for (final file in transfer.files)
+          {
+            'id': file.id,
+            'name': file.name,
+            'size': file.size,
+            'chunkCount': file.chunkCount,
+            'chunkSize': file.chunkSize,
+            'sha256': file.sha256,
+          },
+      ],
+      'fileTargets': [
+        for (final target in transfer.fileTargets)
+          {
+            'fileIndex': target.fileIndex,
+            'deviceId': target.deviceId,
+            'selectedRoute': target.route,
+            'status': target.status,
+          },
+      ],
+    });
+    await database.insert('local_transfers', {
+      'transfer_id': transfer.id,
+      'payload': payload,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<TransferSummary>> localTransfers() async {
+    final database = await open();
+    final rows = await database.query(
+      'local_transfers',
+      orderBy: 'updated_at DESC',
+    );
+    return rows
+        .map(
+          (row) => TransferSummary.fromJson(
+            jsonDecode(row['payload'] as String) as Map<String, dynamic>,
+          ),
+        )
+        .toList();
   }
 
   Future<void> recordDownload(String fileId, String localPath) async {

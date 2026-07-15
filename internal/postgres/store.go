@@ -738,6 +738,18 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 			return transfer.Transfer{}, err
 		}
 	}
+	if session.DeviceID != nil {
+		if wrappedKey := prepared.WrappedContentKeys[*session.DeviceID]; len(wrappedKey) > 0 {
+			_, err = tx.Exec(ctx, `
+				INSERT INTO transfer_content_keys (transfer_id, target_device_id, wrapped_content_key)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (transfer_id, target_device_id) DO NOTHING
+			`, result.ID, *session.DeviceID, wrappedKey)
+			if err != nil {
+				return transfer.Transfer{}, err
+			}
+		}
+	}
 	if len(prepared.Content) > 0 {
 		var messageID string
 		err = tx.QueryRow(ctx, `

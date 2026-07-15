@@ -190,13 +190,16 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	textTransfer, err := transferService.Create(ctx, session, transfer.Request{
 		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
 		LANAvailableDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentText,
-		Content: []byte("encrypted text"), WrappedContentKeys: map[string][]byte{targetDevice.ID: {1, 2, 3}},
+		Content: []byte("encrypted text"), WrappedContentKeys: map[string][]byte{targetDevice.ID: {1, 2, 3}, created.ID: {9, 8, 7}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(textTransfer.Targets) != 1 || textTransfer.Targets[0].SelectedRoute != domain.SelectedRouteLAN {
 		t.Fatalf("text transfer targets = %+v", textTransfer.Targets)
+	}
+	if !bytes.Equal(textTransfer.WrappedContentKeys[created.ID], []byte{9, 8, 7}) {
+		t.Fatalf("sender wrapped content keys = %+v", textTransfer.WrappedContentKeys)
 	}
 	targetTransfers, err := store.ListTransfers(ctx, targetSession)
 	if err != nil || len(targetTransfers) != 1 {

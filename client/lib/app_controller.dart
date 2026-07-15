@@ -30,6 +30,9 @@ class AppController extends ChangeNotifier {
       unawaited(_updateDesktopStatus());
       notifyListeners();
     });
+    _incomingLanSubscription = lan.incomingTransfers.listen(
+      (incoming) => unawaited(_acceptIncomingLan(incoming)),
+    );
     _shareSubscription = platformShare.shares.listen((share) {
       _pendingShare = share;
       notifyListeners();
@@ -43,6 +46,7 @@ class AppController extends ChangeNotifier {
   final PlatformShareService platformShare;
   late final TransferService transfersService;
   StreamSubscription<Set<String>>? _lanSubscription;
+  StreamSubscription<LanIncomingTransfer>? _incomingLanSubscription;
   StreamSubscription<PlatformSharePayload>? _shareSubscription;
   PlatformSharePayload? _pendingShare;
   UserAccount? account;
@@ -66,6 +70,7 @@ class AppController extends ChangeNotifier {
       await platformShare.initialize();
       await database.open();
       waitingLanTasks = await database.waitingLanTasks();
+      transfers = await database.localTransfers();
       if (await api.restore()) {
         account = await api.account();
         await _synchronize();
@@ -128,7 +133,17 @@ class AppController extends ChangeNotifier {
     ]);
     devices = values[0] as List<Device>;
     groups = values[1] as List<GroupSummary>;
-    transfers = values[2] as List<TransferSummary>;
+    final remoteTransfers = values[2] as List<TransferSummary>;
+    final remoteIds = remoteTransfers.map((transfer) => transfer.id).toSet();
+    final localTransfers = await database.localTransfers();
+    transfers = [
+      ...remoteTransfers,
+      ...localTransfers.where(
+        (transfer) =>
+            !remoteIds.contains(transfer.id) &&
+            transfer.targets.any((target) => target.route == 'LAN'),
+      ),
+    ];
     waitingLanTasks = await database.waitingLanTasks();
     currentDevice =
         devices.where((device) => device.id == currentDevice?.id).firstOrNull ??
@@ -166,24 +181,33 @@ class AppController extends ChangeNotifier {
         final resolved = groupId == null || !groupAll
             ? recipients
             : await transfersService.groupDevices(groupId);
+        late TransferSummary sent;
         if (files.isEmpty) {
-          await transfersService.sendText(
+          sent = await transfersService.sendText(
             content: content,
             devices: resolved,
             groupId: groupId,
             groupAll: groupAll,
             lanAvailable: lan.onlineDeviceIds,
+            nodeAvailable: nodeOnline,
           );
         } else {
-          await transfersService.sendFiles(
+          sent = await transfersService.sendFiles(
             sourcePaths: files,
             devices: resolved,
             groupId: groupId,
             groupAll: groupAll,
             lanAvailable: lan.onlineDeviceIds,
+            nodeAvailable: nodeOnline,
           );
         }
-        await reload();
+        if (nodeOnline) {
+          await reload();
+        } else {
+          transfers = [sent, ...transfers.where((item) => item.id != sent.id)];
+          waitingLanTasks = await database.waitingLanTasks();
+          notifyListeners();
+        }
       } finally {
         await platformShare.stopTransferService();
       }
@@ -336,6 +360,49 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _acceptIncomingLan(LanIncomingTransfer incoming) async {
+    final current = currentDevice;
+    if (current == null) return;
+    final transfer = TransferSummary(
+      id: incoming.id,
+      senderDeviceId: incoming.senderDeviceId,
+      contentType: incoming.contentType,
+      status: 'DELIVERED',
+      createdAt: incoming.receivedAt.toLocal(),
+      encryptedContent: incoming.content,
+      wrappedContentKeys: {current.id: incoming.wrappedContentKey},
+      targets: [
+        TransferTarget(
+          deviceId: current.id,
+          route: 'LAN',
+          status: 'DELIVERED',
+          bytesTransferred: incoming.files.fold<int>(
+            0,
+            (total, file) => total + (file['size'] as int? ?? 0),
+          ),
+        ),
+      ],
+      files: incoming.files.map(TransferFile.fromJson).toList(),
+    );
+    transfers = [
+      transfer,
+      ...transfers.where((item) => item.id != transfer.id),
+    ];
+    await database.cacheTransfer(
+      id: transfer.id,
+      contentType: transfer.contentType,
+      route: 'LAN',
+      status: transfer.status,
+      totalBytes: transfer.files.fold<int>(
+        0,
+        (total, file) => total + file.size,
+      ),
+      createdAt: transfer.createdAt,
+    );
+    await database.cacheLocalTransfer(transfer);
+    notifyListeners();
+  }
+
   Future<void> _disconnect() async {
     _reconnect?.cancel();
     _heartbeat?.cancel();
@@ -378,6 +445,7 @@ class AppController extends ChangeNotifier {
   void dispose() {
     unawaited(_disconnect());
     unawaited(_lanSubscription?.cancel());
+    unawaited(_incomingLanSubscription?.cancel());
     unawaited(_shareSubscription?.cancel());
     unawaited(lan.dispose());
     unawaited(platformShare.dispose());
