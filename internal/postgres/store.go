@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"nexdrop/internal/auth"
+	"nexdrop/internal/device"
 )
 
 type Store struct {
@@ -121,4 +123,164 @@ func (store *Store) RevokeSessionByRefreshToken(ctx context.Context, tokenHash [
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name string, deviceType device.Type, publicKey []byte, algorithm string) (device.Device, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return device.Device{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var result device.Device
+	err = tx.QueryRow(ctx, `
+		INSERT INTO devices (user_id, display_name, device_type)
+		VALUES ($1, $2, $3)
+		RETURNING id::text, display_name, device_type, trust_status, revoked_at, created_at
+	`, session.ID, name, deviceType).Scan(
+		&result.ID, &result.DisplayName, &result.Type, &result.TrustStatus, &result.RevokedAt, &result.CreatedAt,
+	)
+	if err != nil {
+		return device.Device{}, err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO device_keys (device_id, public_key, key_algorithm)
+		VALUES ($1, $2, $3)
+	`, result.ID, publicKey, algorithm)
+	if err != nil {
+		return device.Device{}, err
+	}
+	command, err := tx.Exec(ctx, `
+		UPDATE user_sessions SET device_id = $1
+		WHERE id = $2 AND user_id = $3 AND device_id IS NULL AND revoked_at IS NULL
+	`, result.ID, session.SessionID, session.ID)
+	if err != nil {
+		return device.Device{}, err
+	}
+	if command.RowsAffected() == 0 {
+		return device.Device{}, device.ErrForbidden
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return device.Device{}, err
+	}
+	result.PublicKey = append([]byte(nil), publicKey...)
+	result.Algorithm = algorithm
+	return result, nil
+}
+
+func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.Device, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
+		       d.trust_status, d.revoked_at, d.created_at
+		FROM devices d
+		JOIN device_keys k ON k.device_id = d.id
+		WHERE d.user_id = $1
+		ORDER BY d.created_at
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	devices := make([]device.Device, 0)
+	for rows.Next() {
+		var item device.Device
+		if err := rows.Scan(&item.ID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.TrustStatus, &item.RevokedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		devices = append(devices, item)
+	}
+	return devices, rows.Err()
+}
+
+func (store *Store) RenameDevice(ctx context.Context, userID, deviceID, name string) (device.Device, error) {
+	return scanDevice(store.pool.QueryRow(ctx, `
+		UPDATE devices d SET display_name = $3
+		FROM device_keys k
+		WHERE d.id = $1 AND d.user_id = $2 AND k.device_id = d.id
+		RETURNING d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
+		          d.trust_status, d.revoked_at, d.created_at
+	`, deviceID, userID, name))
+}
+
+func (store *Store) DeleteDevice(ctx context.Context, userID, deviceID string) error {
+	command, err := store.pool.Exec(ctx, `DELETE FROM devices WHERE id = $1 AND user_id = $2`, deviceID, userID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return device.ErrNotFound
+	}
+	return nil
+}
+
+func (store *Store) ApproveDevice(ctx context.Context, session auth.Session, deviceID string) (device.Device, error) {
+	result, err := scanDevice(store.pool.QueryRow(ctx, `
+		UPDATE devices d SET trust_status = 'TRUSTED'
+		FROM device_keys k
+		WHERE d.id = $1 AND k.device_id = d.id AND d.revoked_at IS NULL
+		  AND ($2 OR EXISTS (
+		      SELECT 1 FROM user_sessions s
+		      JOIN devices actor ON actor.id = s.device_id
+		      WHERE s.id = $3 AND s.revoked_at IS NULL
+		        AND actor.user_id = d.user_id
+		        AND actor.trust_status = 'TRUSTED' AND actor.revoked_at IS NULL
+		  ))
+		RETURNING d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
+		          d.trust_status, d.revoked_at, d.created_at
+	`, deviceID, session.Admin, session.SessionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return device.Device{}, device.ErrForbidden
+	}
+	return result, err
+}
+
+func (store *Store) RevokeDevice(ctx context.Context, session auth.Session, deviceID string, now time.Time) (device.Device, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return device.Device{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	result, err := scanDevice(tx.QueryRow(ctx, `
+		UPDATE devices d SET trust_status = 'REVOKED', revoked_at = $3
+		FROM device_keys k
+		WHERE d.id = $1 AND k.device_id = d.id AND ($2 OR d.user_id = $4)
+		RETURNING d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
+		          d.trust_status, d.revoked_at, d.created_at
+	`, deviceID, session.Admin, now, session.ID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return device.Device{}, device.ErrForbidden
+	}
+	if err != nil {
+		return device.Device{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE user_sessions SET revoked_at = $2 WHERE device_id = $1 AND revoked_at IS NULL`, deviceID, now); err != nil {
+		return device.Device{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return device.Device{}, err
+	}
+	return result, nil
+}
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+func scanDevice(row rowScanner) (device.Device, error) {
+	var result device.Device
+	err := row.Scan(
+		&result.ID,
+		&result.DisplayName,
+		&result.Type,
+		&result.PublicKey,
+		&result.Algorithm,
+		&result.TrustStatus,
+		&result.RevokedAt,
+		&result.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return device.Device{}, device.ErrNotFound
+	}
+	return result, err
 }

@@ -12,12 +12,14 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"nexdrop/internal/auth"
+	"nexdrop/internal/device"
 )
 
 type testStore struct {
 	credential auth.Credential
 	accessHash []byte
 	refresh    []byte
+	devices    []device.Device
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -53,6 +55,30 @@ func (store *testStore) RevokeSessionByRefreshToken(_ context.Context, refresh [
 	return nil
 }
 
+func (store *testStore) CreateDevice(_ context.Context, _ auth.Session, name string, kind device.Type, publicKey []byte, algorithm string) (device.Device, error) {
+	item := device.Device{ID: "device-1", DisplayName: name, Type: kind, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: device.TrustPending}
+	store.devices = append(store.devices, item)
+	return item, nil
+}
+
+func (store *testStore) ListDevices(context.Context, string) ([]device.Device, error) {
+	return store.devices, nil
+}
+
+func (store *testStore) RenameDevice(_ context.Context, _, id, name string) (device.Device, error) {
+	return device.Device{ID: id, DisplayName: name}, nil
+}
+
+func (store *testStore) DeleteDevice(context.Context, string, string) error { return nil }
+
+func (store *testStore) ApproveDevice(_ context.Context, _ auth.Session, id string) (device.Device, error) {
+	return device.Device{ID: id, TrustStatus: device.TrustTrusted}, nil
+}
+
+func (store *testStore) RevokeDevice(_ context.Context, _ auth.Session, id string, now time.Time) (device.Device, error) {
+	return device.Device{ID: id, TrustStatus: device.TrustRevoked, RevokedAt: &now}, nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -62,7 +88,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour)).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -91,5 +117,54 @@ func TestLoginAndReadAccount(t *testing.T) {
 	handler.ServeHTTP(accountResponse, account)
 	if accountResponse.Code != http.StatusOK {
 		t.Fatalf("account status = %d, body = %s", accountResponse.Code, accountResponse.Body.String())
+	}
+}
+
+func TestCreateAndListDevice(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testStore{credential: auth.Credential{
+		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
+		PasswordHash: string(passwordHash),
+	}}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, device.NewService(store)).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"displayName":  "Laptop",
+		"type":         device.TypeWindows,
+		"publicKey":    make([]byte, 32),
+		"keyAlgorithm": "X25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/devices", bytes.NewReader(payload))
+	create.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/api/devices", nil)
+	list.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listResponse.Code, listResponse.Body.String())
+	}
+	var devices []device.Device
+	if err := json.NewDecoder(listResponse.Body).Decode(&devices); err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].DisplayName != "Laptop" {
+		t.Fatalf("devices = %+v", devices)
 	}
 }
