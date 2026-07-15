@@ -45,6 +45,8 @@ type GroupDevice struct {
 	OwnerUserID string      `json:"ownerUserId"`
 	DisplayName string      `json:"displayName"`
 	Type        device.Type `json:"type"`
+	PublicKey   []byte      `json:"publicKey"`
+	Algorithm   string      `json:"keyAlgorithm"`
 	AddedAt     time.Time   `json:"addedAt"`
 }
 

@@ -5,6 +5,7 @@ import {
   AuditLog,
   Device,
   Group,
+  GroupDetails,
   NodeSettings,
   Overview,
   StorageOverview,
@@ -16,6 +17,7 @@ import {
 import { decryptText, deviceID, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 
 type View = "send" | "activity" | "devices" | "groups" | "analytics" | "admin";
+type SharedContent = { content: string; groupId: string };
 
 const navItems: Array<{ id: View; label: string; glyph: string }> = [
   { id: "send", label: "傳送", glyph: "↗" },
@@ -196,7 +198,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} initialContent={sharedContent} onSent={async () => { await reload(); setSharedContent(""); }} notify={setNotice} />;
+      case "send": return <SendView user={user} devices={devices} groups={groups} initialShare={sharedContent} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
       case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "groups": return <GroupsView groups={groups} reload={reload} notify={setNotice} />;
@@ -234,26 +236,46 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
-function SendView({ user, devices, initialContent, onSent, notify }: { user: User; devices: Device[]; initialContent: string; onSent: () => Promise<void>; notify: (value: string) => void }) {
+function SendView({ user, devices, groups, initialShare, onSent, notify }: { user: User; devices: Device[]; groups: Group[]; initialShare: SharedContent; onSent: () => Promise<void>; notify: (value: string) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
-  const [content, setContent] = useState(initialContent);
+  const [selectedGroup, setSelectedGroup] = useState(initialShare.groupId);
+  const [groupDetails, setGroupDetails] = useState<GroupDetails | null>(null);
+  const [content, setContent] = useState(initialShare.content);
   const [busy, setBusy] = useState(false);
   const trusted = devices.filter((item) => item.trustStatus === "TRUSTED" && item.publicKey);
 
+  useEffect(() => {
+    if (!selectedGroup) {
+      setGroupDetails(null);
+      return;
+    }
+    api.get<GroupDetails>(`/api/groups/${selectedGroup}`).then(setGroupDetails).catch((reason) => notify(messageFor(reason)));
+  }, [notify, selectedGroup]);
+
   function toggle(id: string) {
+    setSelectedGroup("");
     setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  }
+
+  function chooseGroup(id: string) {
+    setSelected([]);
+    setSelectedGroup((current) => current === id ? "" : id);
   }
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!content.trim() || selected.length === 0) return;
+    if (!content.trim() || (!selectedGroup && selected.length === 0)) return;
     setBusy(true);
     try {
-      const recipients = trusted.filter((item) => selected.includes(item.id)).map((item) => ({ id: item.id, publicKey: item.publicKey! }));
+      const recipients = selectedGroup
+        ? (groupDetails?.devices ?? []).map((item) => ({ id: item.id, publicKey: item.publicKey }))
+        : trusted.filter((item) => selected.includes(item.id)).map((item) => ({ id: item.id, publicKey: item.publicKey! }));
+      if (!recipients.length) throw new Error("群組尚未加入可接收設備");
       const encrypted = await encryptText(content.trim(), recipients);
       await api.send<Transfer>("/api/transfers", "POST", {
-        targetType: selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
+        targetType: selectedGroup ? "GROUP_ALL_DEVICES" : selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
         targetDeviceIds: selected,
+        groupId: selectedGroup || undefined,
         contentType: content.trim().startsWith("http") ? "URL" : "TEXT",
         routeMode: "AUTOMATIC",
         content: encrypted.content,
@@ -261,6 +283,7 @@ function SendView({ user, devices, initialContent, onSent, notify }: { user: Use
       });
       setContent("");
       setSelected([]);
+      setSelectedGroup("");
       await onSent();
       notify("已建立加密傳輸任務");
     } catch (reason) {
@@ -288,7 +311,8 @@ function SendView({ user, devices, initialContent, onSent, notify }: { user: Use
             ))}
             {!trusted.length && <Empty text={user.admin ? "前往「設備」建立並核准這個瀏覽器" : "請由管理員核准這個瀏覽器設備"} />}
           </div>
-          <button className="primary send-button" disabled={busy || !content.trim() || selected.length === 0}>{busy ? "正在加密…" : <>建立安全傳輸 <span>↗</span></>}</button>
+          {!!groups.length && <><div className="divider" /><div className="card-title"><span className="step">03</span><div><h3>或傳送至群組</h3><p>群組與設備目的地不可同時選擇</p></div></div><div className="device-picker">{groups.map((item) => <button type="button" key={item.id} className={selectedGroup === item.id ? "device-option selected" : "device-option"} onClick={() => chooseGroup(item.id)}><span className="group-mark">◎</span><span><strong>{item.name}</strong><small>所有群組設備</small></span><i>{selectedGroup === item.id ? "✓" : "+"}</i></button>)}</div></>}
+          <button className="primary send-button" disabled={busy || !content.trim() || (!selectedGroup && selected.length === 0)}>{busy ? "正在加密…" : <>建立安全傳輸 <span>↗</span></>}</button>
         </form>
         <aside className="route-card card">
           <p className="eyebrow">SMART ROUTING</p>
@@ -467,18 +491,18 @@ function successRate(value: Overview) { const total = value.succeeded + value.fa
 function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 
 function readSharedContent() {
-  if (!location.hash.startsWith("#share=")) return "";
+  if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };
   try {
     const encoded = location.hash.slice(7).replaceAll("-", "+").replaceAll("_", "/");
     const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=");
     const binary = atob(padded);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    const payload = JSON.parse(new TextDecoder().decode(bytes)) as { kind?: string; title?: string; url?: string; text?: string };
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as { kind?: string; title?: string; url?: string; text?: string; groupId?: string };
     history.replaceState(null, "", `${location.pathname}${location.search}`);
-    if (payload.kind === "SELECTION") return [payload.text, payload.url].filter(Boolean).join("\n\n");
-    return payload.url ?? payload.text ?? "";
+    const content = payload.kind === "SELECTION" ? [payload.text, payload.url].filter(Boolean).join("\n\n") : payload.url ?? payload.text ?? "";
+    return { content, groupId: payload.groupId ?? "" };
   } catch {
     history.replaceState(null, "", `${location.pathname}${location.search}`);
-    return "";
+    return { content: "", groupId: "" };
   }
 }

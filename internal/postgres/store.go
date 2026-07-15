@@ -479,8 +479,11 @@ func (store *Store) GetGroup(ctx context.Context, session auth.Session, groupID 
 		return group.Details{}, err
 	}
 	deviceRows, err := store.pool.Query(ctx, `
-		SELECT d.id::text, d.user_id::text, d.display_name, d.device_type, gd.added_at
-		FROM group_devices gd JOIN devices d ON d.id = gd.device_id
+		SELECT d.id::text, d.user_id::text, d.display_name, d.device_type,
+		       k.public_key, k.key_algorithm, gd.added_at
+		FROM group_devices gd
+		JOIN devices d ON d.id = gd.device_id
+		JOIN device_keys k ON k.device_id = d.id
 		WHERE gd.group_id = $1
 		ORDER BY gd.added_at
 	`, groupID)
@@ -491,7 +494,7 @@ func (store *Store) GetGroup(ctx context.Context, session auth.Session, groupID 
 	result.Devices = make([]group.GroupDevice, 0)
 	for deviceRows.Next() {
 		var item group.GroupDevice
-		if err := deviceRows.Scan(&item.ID, &item.OwnerUserID, &item.DisplayName, &item.Type, &item.AddedAt); err != nil {
+		if err := deviceRows.Scan(&item.ID, &item.OwnerUserID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.AddedAt); err != nil {
 			return group.Details{}, err
 		}
 		result.Devices = append(result.Devices, item)
@@ -576,9 +579,11 @@ func (store *Store) AddGroupDevice(ctx context.Context, session auth.Session, gr
 		          (SELECT user_id::text FROM devices WHERE id = device_id),
 		          (SELECT display_name FROM devices WHERE id = device_id),
 		          (SELECT device_type FROM devices WHERE id = device_id),
+		          (SELECT public_key FROM device_keys k WHERE k.device_id = group_devices.device_id),
+		          (SELECT key_algorithm FROM device_keys k WHERE k.device_id = group_devices.device_id),
 		          added_at
 	`, groupID, session.ID, deviceID, addedAt).Scan(
-		&result.ID, &result.OwnerUserID, &result.DisplayName, &result.Type, &result.AddedAt,
+		&result.ID, &result.OwnerUserID, &result.DisplayName, &result.Type, &result.PublicKey, &result.Algorithm, &result.AddedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return group.GroupDevice{}, group.ErrForbidden

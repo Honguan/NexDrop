@@ -23,6 +23,18 @@ export type Group = {
   createdAt: string;
 };
 
+export type GroupDetails = Group & {
+  devices: Array<{
+    id: string;
+    ownerUserId: string;
+    displayName: string;
+    type: string;
+    publicKey: string;
+    keyAlgorithm: string;
+    addedAt: string;
+  }>;
+};
+
 export type TransferTarget = {
   deviceId: string;
   selectedRoute: string;
