@@ -25,6 +25,12 @@ export type Group = {
 };
 
 export type GroupDetails = Group & {
+  members: Array<{
+    userId: string;
+    username: string;
+    role: "OWNER" | "ADMIN" | "MEMBER";
+    joinedAt: string;
+  }>;
   devices: Array<{
     id: string;
     ownerUserId: string;

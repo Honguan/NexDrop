@@ -132,6 +132,14 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || member.Role != group.RoleAdmin {
 		t.Fatalf("AddGroupMember() = %+v, %v", member, err)
 	}
+	member, err = store.AddGroupMember(ctx, session, createdGroup.ID, memberUserID, group.RoleMember)
+	if err != nil || member.Role != group.RoleMember {
+		t.Fatalf("UpdateGroupMember() = %+v, %v", member, err)
+	}
+	member, err = store.AddGroupMember(ctx, session, createdGroup.ID, memberUserID, group.RoleAdmin)
+	if err != nil || member.Role != group.RoleAdmin {
+		t.Fatalf("RestoreGroupMember() = %+v, %v", member, err)
+	}
 	if _, err := store.RenameGroup(ctx, memberSession, createdGroup.ID, "Forbidden"); !errors.Is(err, group.ErrForbidden) {
 		t.Fatalf("admin rename error = %v, want ErrForbidden", err)
 	}

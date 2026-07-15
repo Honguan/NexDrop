@@ -587,6 +587,16 @@ func (store *Store) AddGroupMember(ctx context.Context, session auth.Session, gr
 		JOIN group_members actor ON actor.group_id = $1 AND actor.user_id = $2
 		WHERE target.id = $3
 		  AND (actor.role = 'OWNER' OR (actor.role = 'ADMIN' AND $4 = 'MEMBER'))
+		ON CONFLICT (group_id, user_id) DO UPDATE
+		SET role = EXCLUDED.role
+		WHERE group_members.role <> 'OWNER'
+		  AND (
+		    group_members.role = 'MEMBER'
+		    OR EXISTS (
+		      SELECT 1 FROM group_members owner
+		      WHERE owner.group_id = $1 AND owner.user_id = $2 AND owner.role = 'OWNER'
+		    )
+		  )
 		RETURNING user_id::text, (SELECT username FROM users WHERE id = user_id), role, joined_at
 	`, groupID, session.ID, userID, role).Scan(&result.UserID, &result.Username, &result.Role, &result.JoinedAt)
 	if errors.Is(err, pgx.ErrNoRows) {

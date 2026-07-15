@@ -210,7 +210,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       case "send": return <SendView user={user} devices={devices} groups={groups} initialShare={sharedContent} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
       case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
-      case "groups": return <GroupsView groups={groups} reload={reload} notify={setNotice} />;
+      case "groups": return <GroupsView groups={groups} devices={devices} reload={reload} notify={setNotice} />;
       case "analytics": return <AnalyticsView />;
       case "admin": return <AdminView user={user} notify={setNotice} />;
     }
@@ -462,17 +462,40 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
   );
 }
 
-function GroupsView({ groups, reload, notify }: { groups: Group[]; reload: () => Promise<void>; notify: (value: string) => void }) {
+function GroupsView({ groups, devices, reload, notify }: { groups: Group[]; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
   const [name, setName] = useState("");
+  const [selected, setSelected] = useState("");
+  const [details, setDetails] = useState<GroupDetails | null>(null);
+  const [member, setMember] = useState({ userId: "", role: "MEMBER" });
+  const [deviceId, setDeviceId] = useState("");
+  const loadDetails = useCallback(async (id: string) => {
+    setSelected(id);
+    setDetails(await api.get<GroupDetails>(`/api/groups/${id}`));
+  }, []);
   async function create(event: FormEvent) {
     event.preventDefault();
     try { await api.send("/api/groups", "POST", { name }); setName(""); await reload(); notify("群組已建立"); } catch (reason) { notify(messageFor(reason)); }
+  }
+  async function addMember(event: FormEvent) {
+    event.preventDefault();
+    try { await api.send(`/api/groups/${selected}/members`, "POST", member); setMember({ userId: "", role: "MEMBER" }); await loadDetails(selected); notify("群組成員已更新"); } catch (reason) { notify(messageFor(reason)); }
+  }
+  async function removeMember(userId: string) {
+    try { await api.send(`/api/groups/${selected}/members/${userId}`, "DELETE"); await loadDetails(selected); notify("群組成員已移除"); } catch (reason) { notify(messageFor(reason)); }
+  }
+  async function addDevice(event: FormEvent) {
+    event.preventDefault();
+    try { await api.send(`/api/groups/${selected}/devices`, "POST", { deviceId }); setDeviceId(""); await loadDetails(selected); notify("群組設備已更新"); } catch (reason) { notify(messageFor(reason)); }
+  }
+  async function removeDevice(id: string) {
+    try { await api.send(`/api/groups/${selected}/devices/${id}`, "DELETE"); await loadDetails(selected); notify("群組設備已移除"); } catch (reason) { notify(messageFor(reason)); }
   }
   return (
     <section className="page">
       <PageHeading eyebrow="SHARED SPACES" title="群組" description="將成員與設備組成固定的傳輸目的地。" />
       <form className="inline-create card" onSubmit={create}><label><span>新群組名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：設計團隊" required maxLength={100} /></label><button className="primary">建立群組</button></form>
-      <div className="cards-grid group-grid">{groups.map((item) => <article className="group-card card" key={item.id}><span className="group-mark">◎</span><div><h3>{item.name}</h3><p>{item.role === "OWNER" ? "你是擁有者" : item.role}</p></div><time>{formatDate(item.createdAt)}</time></article>)}{!groups.length && <Empty text="建立第一個群組，讓固定協作更快" />}</div>
+      <div className="cards-grid group-grid">{groups.map((item) => <button type="button" className="group-card card" key={item.id} onClick={() => loadDetails(item.id).catch((reason) => notify(messageFor(reason)))}><span className="group-mark">◎</span><div><h3>{item.name}</h3><p>{item.role === "OWNER" ? "你是擁有者" : item.role}</p></div><time>{formatDate(item.createdAt)}</time></button>)}{!groups.length && <Empty text="建立第一個群組，讓固定協作更快" />}</div>
+      {details && <div className="admin-layout"><div className="card user-list"><div className="list-title"><h3>{details.name}成員</h3><span>{details.members.length} 人</span></div>{details.members.map((item) => <article key={item.userId}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.role}</small></p>{item.role !== "OWNER" && <button className="text-danger" onClick={() => removeMember(item.userId)}>移除</button>}</article>)}</div><form className="card create-user" onSubmit={addMember}><h3>邀請或調整成員</h3><label>使用者 ID<input value={member.userId} onChange={(event) => setMember({ ...member, userId: event.target.value })} required /></label><label>角色<select value={member.role} onChange={(event) => setMember({ ...member, role: event.target.value })}><option value="MEMBER">成員</option><option value="ADMIN">管理員</option></select></label><button className="primary">儲存成員</button></form><div className="card user-list"><div className="list-title"><h3>群組設備</h3><span>{details.devices.length} 台</span></div>{details.devices.map((item) => <article key={item.id}><DeviceGlyph type={item.type} /><p><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></p><button className="text-danger" onClick={() => removeDevice(item.id)}>移除</button></article>)}</div><form className="card create-user" onSubmit={addDevice}><h3>加入設備</h3><label>已信任設備<select value={deviceId} onChange={(event) => setDeviceId(event.target.value)} required><option value="">請選擇</option>{devices.filter((item) => item.trustStatus === "TRUSTED" && !details.devices.some((current) => current.id === item.id)).map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><button className="primary">加入設備</button></form></div>}
     </section>
   );
 }
