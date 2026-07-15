@@ -160,7 +160,7 @@ class TransferService {
     final response =
         await api.sendJson('/api/transfers', 'POST', request)
             as Map<String, dynamic>;
-    final transfer = TransferSummary.fromJson(response);
+    var transfer = TransferSummary.fromJson(response);
     try {
       for (final target in transfer.targets.where(
         (target) => target.route == 'LAN',
@@ -187,13 +187,10 @@ class TransferService {
     } on Exception {
       if (routeMode != 'AUTOMATIC') rethrow;
       await _discardFailedLanTransfer(transfer.id);
-      return sendText(
-        content: content,
-        devices: devices,
-        groupId: groupId,
-        groupAll: groupAll,
-        nodeAvailable: true,
-        routeMode: routeMode,
+      request['lanAvailableDeviceIds'] = <String>[];
+      transfer = TransferSummary.fromJson(
+        await api.sendJson('/api/transfers', 'POST', request)
+            as Map<String, dynamic>,
       );
     }
     await _cache(transfer);
@@ -224,7 +221,9 @@ class TransferService {
       final regularPaths = <String>[];
       for (final sourcePath in sourcePaths) {
         final size = await File(sourcePath).length();
-        (size > _largeFileThreshold ? largePaths : regularPaths).add(sourcePath);
+        (size > _largeFileThreshold ? largePaths : regularPaths).add(
+          sourcePath,
+        );
       }
       if (largePaths.isNotEmpty && regularPaths.isNotEmpty) {
         final waiting = await sendFiles(
@@ -301,39 +300,8 @@ class TransferService {
       final response =
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>;
-      final transfer = TransferSummary.fromJson(response);
-      final waitingTargets = transfer.fileTargets
-          .where((target) => target.route == 'WAITING_LAN')
-          .toList();
-      if (waitingTargets.isNotEmpty) {
-        await _storage.write(
-          key: '$_waitingRecipePrefix${transfer.id}',
-          value: jsonEncode({
-            'contentKey': base64Encode(encrypted.contentKey),
-            'files': {
-              for (final (index, file) in encrypted.files.indexed)
-                '$index': {'nonces': file.nonces, 'sha256': file.sha256},
-            },
-          }),
-        );
-        for (final target in waitingTargets) {
-          final source = encrypted.files[target.fileIndex];
-          await database.saveWaitingLanTask(
-            id: '${transfer.id}:${target.fileIndex}:${target.deviceId}',
-            transferId: transfer.id,
-            fileId: transfer.files[target.fileIndex].id,
-            fileIndex: target.fileIndex,
-            targetDeviceId: target.deviceId,
-            targetRoute: transfer.targets
-                .firstWhere((item) => item.deviceId == target.deviceId)
-                .route,
-            sourcePath: sourcePaths[target.fileIndex],
-            sourceSize: source.originalSize,
-            sourceModifiedAt: source.originalModifiedAt,
-            sourceSha256: source.originalSha256,
-          );
-        }
-      }
+      var transfer = TransferSummary.fromJson(response);
+      await _saveServerWaitingTargets(transfer, encrypted, sourcePaths);
       final lanBytes = <String, int>{};
       try {
         for (final target in transfer.fileTargets.where(
@@ -362,15 +330,13 @@ class TransferService {
       } on Exception {
         if (routeMode != 'AUTOMATIC') rethrow;
         await _discardFailedLanTransfer(transfer.id);
-        return sendFiles(
-          sourcePaths: sourcePaths,
-          devices: devices,
-          groupId: groupId,
-          groupAll: groupAll,
-          nodeAvailable: true,
-          routeMode: routeMode,
-          allowLargeFileViaNode: allowLargeFileViaNode,
+        request['lanAvailableDeviceIds'] = <String>[];
+        transfer = TransferSummary.fromJson(
+          await api.sendJson('/api/transfers', 'POST', request)
+              as Map<String, dynamic>,
         );
+        lanBytes.clear();
+        await _saveServerWaitingTargets(transfer, encrypted, sourcePaths);
       }
       for (final (fileIndex, encryptedFile) in encrypted.files.indexed) {
         if (!transfer.fileTargets.any(
@@ -662,6 +628,44 @@ class TransferService {
         rows.map((row) => row['eventId'] as String),
       );
       if (rows.length < 500) return;
+    }
+  }
+
+  Future<void> _saveServerWaitingTargets(
+    TransferSummary transfer,
+    EncryptedFileTransfer encrypted,
+    List<String> sourcePaths,
+  ) async {
+    final waitingTargets = transfer.fileTargets
+        .where((target) => target.route == 'WAITING_LAN')
+        .toList();
+    if (waitingTargets.isEmpty) return;
+    await _storage.write(
+      key: '$_waitingRecipePrefix${transfer.id}',
+      value: jsonEncode({
+        'contentKey': base64Encode(encrypted.contentKey),
+        'files': {
+          for (final (index, file) in encrypted.files.indexed)
+            '$index': {'nonces': file.nonces, 'sha256': file.sha256},
+        },
+      }),
+    );
+    for (final target in waitingTargets) {
+      final source = encrypted.files[target.fileIndex];
+      await database.saveWaitingLanTask(
+        id: '${transfer.id}:${target.fileIndex}:${target.deviceId}',
+        transferId: transfer.id,
+        fileId: transfer.files[target.fileIndex].id,
+        fileIndex: target.fileIndex,
+        targetDeviceId: target.deviceId,
+        targetRoute: transfer.targets
+            .firstWhere((item) => item.deviceId == target.deviceId)
+            .route,
+        sourcePath: sourcePaths[target.fileIndex],
+        sourceSize: source.originalSize,
+        sourceModifiedAt: source.originalModifiedAt,
+        sourceSha256: source.originalSha256,
+      );
     }
   }
 
