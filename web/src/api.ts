@@ -74,6 +74,35 @@ export type Overview = {
   routeBytes: Record<string, number>;
 };
 
+export type DailyTransfer = {
+  date: string;
+  count: number;
+  totalBytes: number;
+  lanBytes: number;
+  nodeBytes: number;
+  failed: number;
+};
+
+export type DeviceStatistic = {
+  deviceId: string;
+  displayName: string;
+  sentCount: number;
+  receivedCount: number;
+  sentBytes: number;
+  receivedBytes: number;
+  averageBytesPerSecond: number;
+};
+
+export type GroupStatistic = {
+  groupId: string;
+  name: string;
+  messageCount: number;
+  fileCount: number;
+  transferBytes: number;
+  activeDevices: number;
+  activeUsers: number;
+};
+
 export type AdminUser = User & { disabledAt?: string; createdAt: string };
 
 export type StorageOverview = {
@@ -117,6 +146,8 @@ export type NodeMetric = {
   memoryBytes: number;
   diskBytes: number;
   cacheBytes: number;
+  networkUploadBytes: number;
+  networkDownloadBytes: number;
   onlineDevices: number;
   activeTransfers: number;
 };

@@ -4,9 +4,12 @@ import {
   AdminUser,
   APIError,
   AuditLog,
+  DailyTransfer,
   Device,
+  DeviceStatistic,
   Group,
   GroupDetails,
+  GroupStatistic,
   NodeMetric,
   NodeSettings,
   Overview,
@@ -213,7 +216,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "groups": return <GroupsView groups={groups} devices={devices} reload={reload} notify={setNotice} />;
-      case "analytics": return <AnalyticsView />;
+      case "analytics": return <AnalyticsView user={user} />;
       case "admin": return <AdminView user={user} notify={setNotice} />;
     }
   })();
@@ -502,14 +505,35 @@ function GroupsView({ groups, devices, reload, notify }: { groups: Group[]; devi
   );
 }
 
-function AnalyticsView() {
+function AnalyticsView({ user }: { user: User }) {
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [daily, setDaily] = useState<DailyTransfer[]>([]);
+  const [deviceStats, setDeviceStats] = useState<DeviceStatistic[]>([]);
+  const [groupStats, setGroupStats] = useState<GroupStatistic[]>([]);
+  const [nodeStats, setNodeStats] = useState<NodeMetric[]>([]);
   const [error, setError] = useState("");
-  useEffect(() => { api.get<Overview>(statisticsPath("/api/statistics/overview")).then(setOverview).catch((reason) => setError(messageFor(reason))); }, []);
+  const [range, setRange] = useState({ preset: "7", from: "", to: "" });
+  const load = useCallback(async () => {
+    setError("");
+    const path = (endpoint: string) => range.preset === "custom" && range.from && range.to
+      ? `${endpoint}?${new URLSearchParams({ from: new Date(`${range.from}T00:00:00`).toISOString(), to: new Date(`${range.to}T23:59:59.999`).toISOString() })}`
+      : statisticsPath(endpoint, Number(range.preset));
+    try {
+      const [nextOverview, nextDaily, nextDevices, nextGroups, nextNode] = await Promise.all([
+        api.get<Overview>(path("/api/statistics/overview")), api.get<DailyTransfer[]>(path("/api/statistics/transfers")),
+        api.get<DeviceStatistic[]>(path("/api/statistics/devices")), api.get<GroupStatistic[]>(path("/api/statistics/groups")),
+        user.admin ? api.get<NodeMetric[]>(path("/api/statistics/node")) : Promise.resolve([]),
+      ]);
+      setOverview(nextOverview); setDaily(nextDaily); setDeviceStats(nextDevices); setGroupStats(nextGroups); setNodeStats(nextNode);
+    } catch (reason) { setError(messageFor(reason)); }
+  }, [range, user.admin]);
+  useEffect(() => { void load(); }, [load]);
+  const peak = Math.max(1, ...daily.map((item) => item.totalBytes));
+  const latestNode = nodeStats.at(-1);
   return (
     <section className="page">
-      <PageHeading eyebrow="7 DAY OVERVIEW" title="傳輸統計" description="掌握流量、成功率與實際使用的傳輸路徑。" />
-      {error ? <Empty text={error} /> : !overview ? <PanelLoader /> : <><div className="metric-grid"><Metric label="傳輸任務" value={overview.transferCount.toLocaleString()} note="最近 7 天" /><Metric label="傳輸容量" value={formatBytes(overview.totalBytes)} note="全部路徑" /><Metric label="成功交付" value={overview.succeeded.toLocaleString()} note={`${successRate(overview)}% 成功率`} /><Metric label="失敗" value={overview.failed.toLocaleString()} note="可於紀錄中追蹤" danger={overview.failed > 0} /></div><div className="card route-summary"><div><p className="eyebrow">ROUTE MIX</p><h3>傳輸路徑分布</h3></div>{Object.entries(overview.routeCounts ?? {}).map(([route, count]) => <div className="route-bar" key={route}><span>{route}</span><i><b style={{ width: `${Math.max(4, (count / Math.max(overview.transferCount, 1)) * 100)}%` }} /></i><strong>{count}</strong></div>)}{!Object.keys(overview.routeCounts ?? {}).length && <Empty text="尚無足夠資料" />}</div></>}
+      <PageHeading eyebrow="TRANSFER ANALYTICS" title="傳輸統計" description="掌握流量、成功率與實際使用的傳輸路徑。" action={<div className="admin-tabs"><select value={range.preset} onChange={(event) => setRange({ ...range, preset: event.target.value })}><option value="1">24 小時</option><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="custom">自訂</option></select>{range.preset === "custom" && <><input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })} /><input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })} /></>}</div>} />
+      {error ? <Empty text={error} /> : !overview ? <PanelLoader /> : <><div className="metric-grid"><Metric label="傳輸任務" value={overview.transferCount.toLocaleString()} note="選定期間" /><Metric label="傳輸容量" value={formatBytes(overview.totalBytes)} note="全部路徑" /><Metric label="成功交付" value={overview.succeeded.toLocaleString()} note={`${successRate(overview)}% 成功率`} /><Metric label="失敗" value={overview.failed.toLocaleString()} note="可於紀錄中追蹤" danger={overview.failed > 0} /></div><div className="admin-layout"><div className="card route-summary"><div><p className="eyebrow">DAILY TREND</p><h3>每日流量</h3></div>{daily.map((item) => <div className="route-bar" key={item.date}><span>{item.date.slice(5)}</span><i><b style={{ width: `${Math.max(2, item.totalBytes / peak * 100)}%` }} /></i><strong>{formatBytes(item.totalBytes)}</strong></div>)}{!daily.length && <Empty text="尚無每日資料" />}</div><div className="card route-summary"><div><p className="eyebrow">ROUTE MIX</p><h3>傳輸路徑分布</h3></div>{Object.entries(overview.routeCounts ?? {}).map(([route, count]) => <div className="route-bar" key={route}><span>{route}</span><i><b style={{ width: `${Math.max(4, (count / Math.max(overview.transferCount, 1)) * 100)}%` }} /></i><strong>{count}</strong></div>)}{!Object.keys(overview.routeCounts ?? {}).length && <Empty text="尚無足夠資料" />}</div><div className="card user-list"><div className="list-title"><h3>設備使用量</h3><span>{deviceStats.length} 台</span></div>{deviceStats.map((item) => <article key={item.deviceId}><DeviceGlyph type="DEVICE" /><p><strong>{item.displayName}</strong><small>傳送 {item.sentCount} · 接收 {item.receivedCount} · {formatBytes(item.sentBytes + item.receivedBytes)}</small></p><span>{formatBytes(item.averageBytesPerSecond)}/s</span></article>)}{!deviceStats.length && <Empty text="尚無設備統計" />}</div><div className="card user-list"><div className="list-title"><h3>群組使用量</h3><span>{groupStats.length} 組</span></div>{groupStats.map((item) => <article key={item.groupId}><span className="group-mark">◎</span><p><strong>{item.name}</strong><small>訊息 {item.messageCount} · 檔案 {item.fileCount} · {formatBytes(item.transferBytes)}</small></p><span>{item.activeUsers} 人</span></article>)}{!groupStats.length && <Empty text="尚無群組統計" />}</div></div>{latestNode && <div className="metric-grid"><Metric label="CPU" value={`${latestNode.cpuPercent.toFixed(1)}%`} note="節點資源" /><Metric label="記憶體" value={formatBytes(latestNode.memoryBytes)} note="系統使用量" /><Metric label="磁碟／快取" value={formatBytes(latestNode.diskBytes)} note={`快取 ${formatBytes(latestNode.cacheBytes)}`} /><Metric label="網路流量" value={formatBytes(latestNode.networkUploadBytes + latestNode.networkDownloadBytes)} note={`上傳 ${formatBytes(latestNode.networkUploadBytes)}`} /></div>}</>}
     </section>
   );
 }
