@@ -1767,9 +1767,38 @@ func (store *Store) NodeStatistics(ctx context.Context, session auth.Session, ti
 func (store *Store) ExpiredFiles(ctx context.Context, now time.Time, limit int) ([]maintenance.ExpiredFile, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT id::text, storage_path
-		FROM files
-		WHERE expires_at <= $1 AND status <> 'EXPIRED'
-		ORDER BY expires_at
+		FROM files file
+		WHERE file.status <> 'EXPIRED'
+		  AND (
+		    file.expires_at <= $1
+		    OR (
+		      file.status = 'AVAILABLE_ON_NODE'
+		      AND EXISTS (
+		        SELECT 1 FROM transfer_file_targets
+		        WHERE file_id = file.id AND selected_route = 'NODE'
+		      )
+		      AND NOT EXISTS (
+		        SELECT 1
+		        FROM transfer_file_targets file_target
+		        JOIN transfer_targets target
+		          ON target.transfer_id = file.transfer_id
+		         AND target.target_device_id = file_target.target_device_id
+		        WHERE file_target.file_id = file.id
+		          AND file_target.selected_route = 'NODE'
+		          AND target.status NOT IN ('DELIVERED', 'READ')
+		      )
+		      AND (
+		        SELECT MAX(target.completed_at)
+		        FROM transfer_file_targets file_target
+		        JOIN transfer_targets target
+		          ON target.transfer_id = file.transfer_id
+		         AND target.target_device_id = file_target.target_device_id
+		        WHERE file_target.file_id = file.id
+		          AND file_target.selected_route = 'NODE'
+		      ) <= $1 - interval '24 hours'
+		    )
+		  )
+		ORDER BY file.expires_at
 		LIMIT $2
 	`, now, limit)
 	if err != nil {
