@@ -833,9 +833,11 @@ class TransferService {
     final decryptor = await crypto.fileChunkDecryptor(account.id, wrapped);
     final downloads = await getDownloadsDirectory();
     final support = await getApplicationSupportDirectory();
-    final destination = Directory(
-      path.join((downloads ?? support).path, 'NexDrop'),
-    );
+    final configuredDirectory = await database.setting('receive_directory');
+    final destination =
+        configuredDirectory == null || configuredDirectory.isEmpty
+        ? Directory(path.join((downloads ?? support).path, 'NexDrop'))
+        : Directory(configuredDirectory);
     await destination.create(recursive: true);
     final saved = <String>[];
     var usedNode = false;

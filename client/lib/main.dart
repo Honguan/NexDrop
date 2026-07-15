@@ -949,6 +949,24 @@ class SettingsView extends StatelessWidget {
                 controller.setAllowLargeFileViaNode(value).catchError((_) {}),
               ),
             ),
+            if (Platform.isWindows)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.folder_rounded),
+                title: const Text('接收檔案位置'),
+                subtitle: Text(
+                  controller.receiveDirectory ?? 'Downloads\\NexDrop',
+                ),
+                trailing: const Icon(Icons.edit_outlined),
+                onTap: () async {
+                  final selected = await FilePicker.getDirectoryPath(
+                    dialogTitle: '選擇 NexDrop 接收位置',
+                  );
+                  if (selected != null) {
+                    await controller.setReceiveDirectory(selected);
+                  }
+                },
+              ),
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.person_rounded),

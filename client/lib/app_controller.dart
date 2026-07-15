@@ -59,6 +59,7 @@ class AppController extends ChangeNotifier {
   bool busy = false;
   bool nodeOnline = false;
   bool allowLargeFileViaNode = false;
+  String? receiveDirectory;
   Set<String> get lanOnlineDeviceIds => lan.onlineDeviceIds;
   String? error;
   WebSocketChannel? _socket;
@@ -72,6 +73,7 @@ class AppController extends ChangeNotifier {
       await database.open();
       allowLargeFileViaNode =
           await database.setting('allow_large_file_via_node') == 'true';
+      receiveDirectory = await database.setting('receive_directory');
       waitingLanTasks = await database.waitingLanTasks();
       transfers = await database.localTransfers();
       if (await api.restore()) {
@@ -228,6 +230,12 @@ class AppController extends ChangeNotifier {
   Future<void> setAllowLargeFileViaNode(bool value) async {
     allowLargeFileViaNode = value;
     await database.saveSetting('allow_large_file_via_node', value.toString());
+    notifyListeners();
+  }
+
+  Future<void> setReceiveDirectory(String value) async {
+    receiveDirectory = value;
+    await database.saveSetting('receive_directory', value);
     notifyListeners();
   }
 
