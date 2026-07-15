@@ -489,6 +489,7 @@ class _SendViewState extends State<SendView> {
                     value: 'NODE_ONLY',
                     child: Text('僅 Linux 節點'),
                   ),
+                  DropdownMenuItem(value: 'WAIT_LAN', child: Text('等待區域網路')),
                 ],
                 onChanged: (value) => setState(() => routeMode = value!),
               ),

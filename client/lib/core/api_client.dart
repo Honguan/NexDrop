@@ -181,13 +181,29 @@ class ApiClient {
     Future<http.Response> Function() send, {
     bool retry = true,
   }) async {
-    var response = await send();
+    var response = await _sendWithRetry(send);
     if (response.statusCode == HttpStatus.unauthorized &&
         retry &&
         await _refresh()) {
-      response = await send();
+      response = await _sendWithRetry(send);
     }
     return response;
+  }
+
+  Future<http.Response> _sendWithRetry(
+    Future<http.Response> Function() send,
+  ) async {
+    for (var attempt = 0; ; attempt++) {
+      try {
+        final response = await send();
+        if (response.statusCode < 500 || attempt >= 2) return response;
+      } on SocketException {
+        if (attempt >= 2) rethrow;
+      } on http.ClientException {
+        if (attempt >= 2) rethrow;
+      }
+      await Future<void>.delayed(Duration(seconds: 1 << attempt));
+    }
   }
 
   Future<bool> _refresh() {
