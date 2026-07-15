@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:workmanager/workmanager.dart';
@@ -744,14 +745,23 @@ class DevicesView extends StatelessWidget {
                 subtitle: Text(
                   '${device.type} · ${device.trustStatus}${device.lanCapable ? ' · LAN' : ''}',
                 ),
-                trailing:
-                    device.trustStatus == 'PENDING' &&
-                        controller.account?.admin == true
-                    ? FilledButton.tonal(
-                        onPressed: () => unawaited(
-                          controller.approve(device).catchError((_) {}),
-                        ),
-                        child: const Text('核准'),
+                trailing: device.trustStatus == 'PENDING'
+                    ? Wrap(
+                        spacing: 8,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () =>
+                                _showPairingCode(context, controller, device),
+                            child: const Text('配對碼'),
+                          ),
+                          if (controller.account?.admin == true)
+                            FilledButton.tonal(
+                              onPressed: () => unawaited(
+                                controller.approve(device).catchError((_) {}),
+                              ),
+                              child: const Text('核准'),
+                            ),
+                        ],
                       )
                     : const Icon(Icons.verified_user_rounded),
               ),
@@ -760,6 +770,53 @@ class DevicesView extends StatelessWidget {
       ),
     ),
   );
+}
+
+Future<void> _showPairingCode(
+  BuildContext context,
+  AppController controller,
+  Device device,
+) async {
+  try {
+    final pairing = await controller.createPairingCode(device);
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('配對 ${device.displayName}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            QrImageView(
+              data: pairing['qrPayload'] as String,
+              size: 220,
+              backgroundColor: Colors.white,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              pairing['code'] as String,
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              pairing['id'] as String,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            const Text('請在 10 分鐘內由待核准設備掃描，或輸入配對資料。'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('關閉'),
+          ),
+        ],
+      ),
+    );
+  } catch (_) {
+    // AppController displays the actionable error banner.
+  }
 }
 
 class GroupsView extends StatelessWidget {
@@ -850,6 +907,7 @@ Future<void> _showPairDialog(
 ) async {
   final challenge = TextEditingController();
   final code = TextEditingController();
+  final payload = TextEditingController();
   await showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
@@ -857,6 +915,18 @@ Future<void> _showPairDialog(
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          TextField(
+            controller: payload,
+            decoration: const InputDecoration(labelText: 'QR 配對資料'),
+            onChanged: (value) {
+              final uri = Uri.tryParse(value.trim());
+              if (uri?.scheme == 'nexdrop' && uri?.host == 'pair') {
+                challenge.text = uri!.queryParameters['id'] ?? '';
+                code.text = uri.queryParameters['code'] ?? '';
+              }
+            },
+          ),
+          const SizedBox(height: 12),
           TextField(
             controller: challenge,
             decoration: const InputDecoration(labelText: '挑戰 ID'),
