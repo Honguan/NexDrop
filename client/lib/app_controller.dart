@@ -185,9 +185,8 @@ class AppController extends ChangeNotifier {
         final resolved = groupId == null || !groupAll
             ? recipients
             : await transfersService.groupDevices(groupId);
-        late TransferSummary sent;
         if (files.isEmpty) {
-          sent = await transfersService.sendText(
+          await transfersService.sendText(
             content: content,
             devices: resolved,
             groupId: groupId,
@@ -197,7 +196,7 @@ class AppController extends ChangeNotifier {
             routeMode: routeMode,
           );
         } else {
-          sent = await transfersService.sendFiles(
+          await transfersService.sendFiles(
             sourcePaths: files,
             devices: resolved,
             groupId: groupId,
@@ -211,7 +210,12 @@ class AppController extends ChangeNotifier {
         if (nodeOnline) {
           await reload();
         } else {
-          transfers = [sent, ...transfers.where((item) => item.id != sent.id)];
+          final local = await database.localTransfers();
+          final localIds = local.map((item) => item.id).toSet();
+          transfers = [
+            ...local,
+            ...transfers.where((item) => !localIds.contains(item.id)),
+          ];
           waitingLanTasks = await database.waitingLanTasks();
           notifyListeners();
         }

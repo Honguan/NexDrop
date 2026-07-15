@@ -200,6 +200,42 @@ class TransferService {
         .where((device) => device.trusted && device.publicKey != null)
         .map((device) => (id: device.id, publicKey: device.publicKey!))
         .toList();
+    if (!nodeAvailable &&
+        routeMode == 'AUTOMATIC' &&
+        !allowLargeFileViaNode &&
+        !recipients.every(
+          (recipient) => lan.endpointFor(recipient.id) != null,
+        )) {
+      final largePaths = <String>[];
+      final regularPaths = <String>[];
+      for (final sourcePath in sourcePaths) {
+        final size = await File(sourcePath).length();
+        (size > 100 * 1024 * 1024 ? largePaths : regularPaths).add(sourcePath);
+      }
+      if (largePaths.isNotEmpty && regularPaths.isNotEmpty) {
+        final waiting = await sendFiles(
+          sourcePaths: largePaths,
+          devices: devices,
+          groupId: groupId,
+          groupAll: groupAll,
+          lanAvailable: lanAvailable,
+          nodeAvailable: false,
+          routeMode: routeMode,
+          allowLargeFileViaNode: false,
+        );
+        await sendFiles(
+          sourcePaths: regularPaths,
+          devices: devices,
+          groupId: groupId,
+          groupAll: groupAll,
+          lanAvailable: lanAvailable,
+          nodeAvailable: false,
+          routeMode: routeMode,
+          allowLargeFileViaNode: false,
+        );
+        return waiting;
+      }
+    }
     final encryptionRecipients = [...recipients];
     final sender = _currentDevice;
     if (sender != null &&
