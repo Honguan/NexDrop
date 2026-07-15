@@ -1,0 +1,5 @@
+{$NEXDROP_DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy nexdrop:8080
+}
+

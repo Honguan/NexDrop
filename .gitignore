@@ -1,0 +1,9 @@
+.env
+bin/
+coverage.out
+dist/
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+
