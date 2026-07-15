@@ -18,6 +18,7 @@ import (
 	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/lan"
 	"nexdrop/internal/maintenance"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/presence"
@@ -149,11 +150,15 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatalf("owner RemoveGroupMember() error = %v", err)
 	}
 	session.DeviceID = &created.ID
-	if err := store.RegisterLANIdentity(ctx, session, created.ID, strings.ReplaceAll(created.ID, "-", "")[:12], strings.Repeat("a", 64), time.Now().UTC()); err != nil {
+	lanIdentity, err := lan.GenerateIdentity(strings.ReplaceAll(created.ID, "-", "")[:12], time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterLANIdentity(ctx, session, created.ID, lanIdentity.ShortDeviceID, lanIdentity.Fingerprint, lanIdentity.CertificatePEM, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	listed, err = store.ListDevices(ctx, userID)
-	if err != nil || listed[0].LANFingerprint != strings.Repeat("a", 64) {
+	if err != nil || listed[0].LANFingerprint != lanIdentity.Fingerprint || listed[0].LANCertificate != lanIdentity.CertificatePEM {
 		t.Fatalf("LAN identity list = %+v, %v", listed, err)
 	}
 	var targetSessionID string

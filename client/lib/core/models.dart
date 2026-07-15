@@ -28,6 +28,7 @@ class Device {
     this.publicKey,
     this.lanShortId,
     this.lanCertificateFingerprint,
+    this.lanCertificate,
   });
 
   factory Device.fromJson(Map<String, dynamic> json) => Device(
@@ -38,6 +39,7 @@ class Device {
     publicKey: json['publicKey'] as String?,
     lanShortId: json['lanShortId'] as String?,
     lanCertificateFingerprint: json['lanCertificateFingerprint'] as String?,
+    lanCertificate: json['lanCertificate'] as String?,
   );
 
   final String id;
@@ -47,10 +49,13 @@ class Device {
   final String? publicKey;
   final String? lanShortId;
   final String? lanCertificateFingerprint;
+  final String? lanCertificate;
 
   bool get trusted => trustStatus == 'TRUSTED';
   bool get lanCapable =>
-      lanShortId != null && lanCertificateFingerprint != null;
+      lanShortId != null &&
+      lanCertificateFingerprint != null &&
+      lanCertificate != null;
 }
 
 class GroupSummary {

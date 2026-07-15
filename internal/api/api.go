@@ -190,18 +190,18 @@ func (api *API) registerDeviceLANIdentity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var request struct {
-		CertificateFingerprint string `json:"certificateFingerprint"`
+		Certificate string `json:"certificate"`
 	}
 	if decodeJSON(r, &request) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
 	}
-	shortID, err := api.devices.RegisterLANIdentity(r.Context(), session, r.PathValue("id"), request.CertificateFingerprint)
+	identity, err := api.devices.RegisterLANIdentity(r.Context(), session, r.PathValue("id"), request.Certificate)
 	if err != nil {
 		writeDeviceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"shortDeviceId": shortID, "certificateFingerprint": strings.ToLower(request.CertificateFingerprint)})
+	writeJSON(w, http.StatusOK, identity)
 }
 
 func (api *API) renameDevice(w http.ResponseWriter, r *http.Request) {

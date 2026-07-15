@@ -50,6 +50,7 @@ CREATE TABLE device_lan_identities (
     device_id uuid PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     short_device_id text NOT NULL UNIQUE,
     certificate_fingerprint text NOT NULL UNIQUE,
+    certificate_pem text NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 

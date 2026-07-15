@@ -5,11 +5,11 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"nexdrop/internal/auth"
+	"nexdrop/internal/lan"
 )
 
 type fakeStore struct {
@@ -55,7 +55,7 @@ func (*fakeStore) RedeemDeviceSessionChallenge(context.Context, auth.Session, st
 	return nil
 }
 
-func (store *fakeStore) RegisterLANIdentity(_ context.Context, _ auth.Session, _, shortID, _ string, _ time.Time) error {
+func (store *fakeStore) RegisterLANIdentity(_ context.Context, _ auth.Session, _, shortID, _, _ string, _ time.Time) error {
 	store.lanID = shortID
 	return nil
 }
@@ -117,15 +117,19 @@ func TestRegisterLANIdentityRequiresOwningDeviceSession(t *testing.T) {
 	service := NewService(store)
 	deviceID := "12345678-abcd-4000-8000-123456789abc"
 	session := auth.Session{DeviceID: &deviceID}
-	shortID, err := service.RegisterLANIdentity(context.Background(), session, deviceID, strings.Repeat("a", 64))
+	identity, err := lan.GenerateIdentity("12345678abcd", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shortID != "12345678abcd" || store.lanID != shortID {
-		t.Fatalf("short ID = %q, stored = %q", shortID, store.lanID)
+	registered, err := service.RegisterLANIdentity(context.Background(), session, deviceID, identity.CertificatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.ShortDeviceID != "12345678abcd" || store.lanID != registered.ShortDeviceID || registered.Fingerprint != identity.Fingerprint {
+		t.Fatalf("identity = %+v, stored = %q", registered, store.lanID)
 	}
 	otherID := "aaaaaaaa-bbbb-4000-8000-123456789abc"
-	if _, err := service.RegisterLANIdentity(context.Background(), session, otherID, strings.Repeat("a", 64)); !errors.Is(err, ErrForbidden) {
+	if _, err := service.RegisterLANIdentity(context.Background(), session, otherID, identity.CertificatePEM); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("other device error = %v, want ErrForbidden", err)
 	}
 }

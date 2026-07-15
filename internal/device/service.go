@@ -6,6 +6,9 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -45,6 +48,7 @@ type Device struct {
 	Algorithm      string      `json:"keyAlgorithm,omitempty"`
 	LANShortID     string      `json:"lanShortId,omitempty"`
 	LANFingerprint string      `json:"lanCertificateFingerprint,omitempty"`
+	LANCertificate string      `json:"lanCertificate,omitempty"`
 	TrustStatus    TrustStatus `json:"trustStatus"`
 	RevokedAt      *time.Time  `json:"revokedAt,omitempty"`
 	CreatedAt      time.Time   `json:"createdAt"`
@@ -68,7 +72,7 @@ type Store interface {
 	DevicePublicKeyForSession(context.Context, auth.Session, string) ([]byte, error)
 	CreateDeviceSessionChallenge(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error)
 	RedeemDeviceSessionChallenge(context.Context, auth.Session, string, string, []byte, time.Time, int) error
-	RegisterLANIdentity(context.Context, auth.Session, string, string, string, time.Time) error
+	RegisterLANIdentity(context.Context, auth.Session, string, string, string, string, time.Time) error
 }
 
 const (
@@ -177,25 +181,42 @@ func (service *Service) Revoke(ctx context.Context, session auth.Session, id str
 	return service.store.RevokeDevice(ctx, session, id, service.now().UTC())
 }
 
-func (service *Service) RegisterLANIdentity(ctx context.Context, session auth.Session, id, fingerprint string) (string, error) {
-	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+type LANIdentity struct {
+	ShortDeviceID string `json:"shortDeviceId"`
+	Fingerprint   string `json:"certificateFingerprint"`
+	Certificate   string `json:"certificate"`
+}
+
+func (service *Service) RegisterLANIdentity(ctx context.Context, session auth.Session, id, certificatePEM string) (LANIdentity, error) {
 	compactID := strings.ReplaceAll(id, "-", "")
 	if session.DeviceID == nil || *session.DeviceID != id {
-		return "", ErrForbidden
+		return LANIdentity{}, ErrForbidden
 	}
-	if len(compactID) != 32 || len(fingerprint) != 64 {
-		return "", ErrInvalid
+	if len(compactID) != 32 || len(certificatePEM) > 16384 {
+		return LANIdentity{}, ErrInvalid
 	}
-	for _, character := range compactID + fingerprint {
+	for _, character := range compactID {
 		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return "", ErrInvalid
+			return LANIdentity{}, ErrInvalid
 		}
 	}
 	shortID := compactID[:12]
-	if err := service.store.RegisterLANIdentity(ctx, session, id, shortID, fingerprint, service.now().UTC()); err != nil {
-		return "", err
+	block, remainder := pem.Decode([]byte(certificatePEM))
+	if block == nil || block.Type != "CERTIFICATE" || len(strings.TrimSpace(string(remainder))) != 0 {
+		return LANIdentity{}, ErrInvalid
 	}
-	return shortID, nil
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	now := service.now().UTC()
+	if err != nil || certificate.Subject.CommonName != "nexdrop:"+shortID || now.Before(certificate.NotBefore) || now.After(certificate.NotAfter) || certificate.CheckSignature(certificate.SignatureAlgorithm, certificate.RawTBSCertificate, certificate.Signature) != nil {
+		return LANIdentity{}, ErrInvalid
+	}
+	digest := sha256.Sum256(block.Bytes)
+	fingerprint := hex.EncodeToString(digest[:])
+	normalized := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes}))
+	if err := service.store.RegisterLANIdentity(ctx, session, id, shortID, fingerprint, normalized, now); err != nil {
+		return LANIdentity{}, err
+	}
+	return LANIdentity{ShortDeviceID: shortID, Fingerprint: fingerprint, Certificate: normalized}, nil
 }
 
 func validType(value Type) bool {

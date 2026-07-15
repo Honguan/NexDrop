@@ -104,7 +104,7 @@ func (*testStore) RedeemDeviceSessionChallenge(context.Context, auth.Session, st
 	return nil
 }
 
-func (*testStore) RegisterLANIdentity(context.Context, auth.Session, string, string, string, time.Time) error {
+func (*testStore) RegisterLANIdentity(context.Context, auth.Session, string, string, string, string, time.Time) error {
 	return nil
 }
 

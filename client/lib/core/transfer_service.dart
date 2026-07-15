@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'api_client.dart';
 import 'crypto_service.dart';
+import 'lan_identity.dart';
 import 'local_database.dart';
 import 'models.dart';
 
@@ -23,13 +24,16 @@ class TransferService {
     required this.crypto,
     required this.database,
     FlutterSecureStorage? storage,
-  }) : _storage = storage ?? const FlutterSecureStorage();
+    LanIdentityStore? lanIdentityStore,
+  }) : _storage = storage ?? const FlutterSecureStorage(),
+       _lanIdentityStore = lanIdentityStore ?? LanIdentityStore();
 
   static const _deviceKeyPrefix = 'nexdrop.device_id.';
   final ApiClient api;
   final CryptoService crypto;
   final LocalDatabase database;
   final FlutterSecureStorage _storage;
+  final LanIdentityStore _lanIdentityStore;
 
   Future<DeviceSession> synchronizeDevice(UserAccount account) async {
     final allDevices = await api.devices();
@@ -72,6 +76,15 @@ class TransferService {
         'challengeId': challenge['id'],
         'proof': proof,
       });
+    }
+    final identity = await _lanIdentityStore.ensure(current.id);
+    if (current.lanCertificateFingerprint != identity.fingerprint) {
+      await api.sendJson('/api/devices/${current.id}/lan-identity', 'PUT', {
+        'certificate': identity.certificate,
+      });
+      current = (await api.devices()).firstWhere(
+        (device) => device.id == current!.id,
+      );
     }
     return DeviceSession(account: account, device: current);
   }

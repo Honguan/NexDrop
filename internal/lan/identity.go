@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"strings"
@@ -16,9 +17,10 @@ import (
 )
 
 type Identity struct {
-	ShortDeviceID string
-	Certificate   tls.Certificate
-	Fingerprint   string
+	ShortDeviceID  string
+	Certificate    tls.Certificate
+	Fingerprint    string
+	CertificatePEM string
 }
 
 type TrustDirectory interface {
@@ -64,9 +66,10 @@ func GenerateIdentity(shortDeviceID string, now time.Time) (Identity, error) {
 	}
 	fingerprint := sha256.Sum256(certificateDER)
 	return Identity{
-		ShortDeviceID: shortDeviceID,
-		Certificate:   tls.Certificate{Certificate: [][]byte{certificateDER}, PrivateKey: privateKey, Leaf: leaf},
-		Fingerprint:   hex.EncodeToString(fingerprint[:]),
+		ShortDeviceID:  shortDeviceID,
+		Certificate:    tls.Certificate{Certificate: [][]byte{certificateDER}, PrivateKey: privateKey, Leaf: leaf},
+		Fingerprint:    hex.EncodeToString(fingerprint[:]),
+		CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})),
 	}, nil
 }
 

@@ -49,6 +49,7 @@ type GroupDevice struct {
 	Algorithm      string      `json:"keyAlgorithm"`
 	LANShortID     string      `json:"lanShortId,omitempty"`
 	LANFingerprint string      `json:"lanCertificateFingerprint,omitempty"`
+	LANCertificate string      `json:"lanCertificate,omitempty"`
 	AddedAt        time.Time   `json:"addedAt"`
 }
 
