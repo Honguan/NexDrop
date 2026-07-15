@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"os"
 	"time"
+
+	"nexdrop/internal/api"
+	"nexdrop/internal/auth"
+	"nexdrop/internal/postgres"
 )
 
 const defaultAddress = ":8080"
@@ -22,9 +27,28 @@ func main() {
 		address = defaultAddress
 	}
 
+	databaseURL := os.Getenv("NEXDROP_DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("NEXDROP_DATABASE_URL is required")
+	}
+	store, err := postgres.Open(context.Background(), databaseURL)
+	if err != nil {
+		log.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	defer store.Close()
+
+	authService := auth.NewService(store, 15*time.Minute, 30*24*time.Hour)
+	applicationAPI := api.New(authService)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
-	mux.HandleFunc("GET /readyz", healthHandler)
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := store.Ping(r.Context()); err != nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		healthHandler(w, r)
+	})
+	mux.Handle("/api/", applicationAPI.Routes())
 
 	server := &http.Server{
 		Addr:              address,

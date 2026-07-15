@@ -5,13 +5,17 @@ CREATE TABLE users (
     username text NOT NULL UNIQUE,
     email text NOT NULL UNIQUE,
     password_hash text NOT NULL,
+    is_admin boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE user_sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    refresh_token_hash text NOT NULL UNIQUE,
+    device_id uuid,
+    access_token_hash bytea NOT NULL UNIQUE,
+    access_expires_at timestamptz NOT NULL,
+    refresh_token_hash bytea NOT NULL UNIQUE,
     expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
@@ -26,6 +30,10 @@ CREATE TABLE devices (
     revoked_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE user_sessions
+    ADD CONSTRAINT user_sessions_device_fk
+    FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE;
 
 CREATE TABLE device_keys (
     device_id uuid PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
