@@ -62,6 +62,13 @@ func main() {
 		log.Fatalf("connect to PostgreSQL: %v", err)
 	}
 	defer store.Close()
+	migrationsPath := os.Getenv("NEXDROP_MIGRATIONS_PATH")
+	if migrationsPath == "" {
+		migrationsPath = "/usr/share/nexdrop/migrations"
+	}
+	if err := store.ApplyMigrations(context.Background(), migrationsPath); err != nil {
+		log.Fatalf("apply database migrations: %v", err)
+	}
 
 	authService := auth.NewService(store, 15*time.Minute, 30*24*time.Hour)
 	deviceService := device.NewService(store)
