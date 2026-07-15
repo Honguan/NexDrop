@@ -376,6 +376,7 @@ class _SendViewState extends State<SendView> {
   bool groupAll = true;
   List<Device> groupDevices = const [];
   List<String> files = const [];
+  String routeMode = 'AUTOMATIC';
 
   @override
   void initState() {
@@ -477,6 +478,20 @@ class _SendViewState extends State<SendView> {
                     }),
                   ),
               ],
+              const SizedBox(height: 18),
+              DropdownButtonFormField<String>(
+                initialValue: routeMode,
+                decoration: const InputDecoration(labelText: '傳輸路由'),
+                items: const [
+                  DropdownMenuItem(value: 'AUTOMATIC', child: Text('自動（區網優先）')),
+                  DropdownMenuItem(value: 'LAN_ONLY', child: Text('僅區域網路')),
+                  DropdownMenuItem(
+                    value: 'NODE_ONLY',
+                    child: Text('僅 Linux 節點'),
+                  ),
+                ],
+                onChanged: (value) => setState(() => routeMode = value!),
+              ),
               const SizedBox(height: 24),
               FilledButton.icon(
                 onPressed: _canSend && !widget.controller.busy ? _send : null,
@@ -518,6 +533,7 @@ class _SendViewState extends State<SendView> {
             groupId: groupId,
             groupAll: groupAll,
             files: files,
+            routeMode: routeMode,
           )
           .then((_) {
             if (!mounted) return;
@@ -528,6 +544,7 @@ class _SendViewState extends State<SendView> {
               groupId = null;
               groupAll = true;
               groupDevices = const [];
+              routeMode = 'AUTOMATIC';
             });
             ScaffoldMessenger.of(
               context,
@@ -865,6 +882,16 @@ class SettingsView extends StatelessWidget {
               leading: const Icon(Icons.dns_rounded),
               title: Text(controller.api.node.toString()),
               subtitle: Text(controller.nodeOnline ? '節點在線' : '節點離線'),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              secondary: const Icon(Icons.cloud_upload_rounded),
+              title: const Text('允許透過非區域網路傳送大檔案'),
+              subtitle: const Text('預設關閉；單一檔案超過 100 MB 時適用。'),
+              value: controller.allowLargeFileViaNode,
+              onChanged: (value) => unawaited(
+                controller.setAllowLargeFileViaNode(value).catchError((_) {}),
+              ),
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,

@@ -58,6 +58,7 @@ class AppController extends ChangeNotifier {
   bool loading = true;
   bool busy = false;
   bool nodeOnline = false;
+  bool allowLargeFileViaNode = false;
   Set<String> get lanOnlineDeviceIds => lan.onlineDeviceIds;
   String? error;
   WebSocketChannel? _socket;
@@ -69,6 +70,8 @@ class AppController extends ChangeNotifier {
     try {
       await platformShare.initialize();
       await database.open();
+      allowLargeFileViaNode =
+          await database.setting('allow_large_file_via_node') == 'true';
       waitingLanTasks = await database.waitingLanTasks();
       transfers = await database.localTransfers();
       if (await api.restore()) {
@@ -174,6 +177,7 @@ class AppController extends ChangeNotifier {
     String? groupId,
     List<String> files = const [],
     bool groupAll = true,
+    String routeMode = 'AUTOMATIC',
   }) async {
     await _run(() async {
       await platformShare.startTransferService();
@@ -190,6 +194,7 @@ class AppController extends ChangeNotifier {
             groupAll: groupAll,
             lanAvailable: lan.onlineDeviceIds,
             nodeAvailable: nodeOnline,
+            routeMode: routeMode,
           );
         } else {
           sent = await transfersService.sendFiles(
@@ -199,6 +204,8 @@ class AppController extends ChangeNotifier {
             groupAll: groupAll,
             lanAvailable: lan.onlineDeviceIds,
             nodeAvailable: nodeOnline,
+            routeMode: routeMode,
+            allowLargeFileViaNode: allowLargeFileViaNode,
           );
         }
         if (nodeOnline) {
@@ -212,6 +219,12 @@ class AppController extends ChangeNotifier {
         await platformShare.stopTransferService();
       }
     });
+  }
+
+  Future<void> setAllowLargeFileViaNode(bool value) async {
+    allowLargeFileViaNode = value;
+    await database.saveSetting('allow_large_file_via_node', value.toString());
+    notifyListeners();
   }
 
   Future<void> approve(Device device) => _run(() async {

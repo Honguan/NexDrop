@@ -107,6 +107,7 @@ class TransferService {
     bool groupAll = true,
     Set<String> lanAvailable = const {},
     bool nodeAvailable = true,
+    String routeMode = 'AUTOMATIC',
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
@@ -124,6 +125,7 @@ class TransferService {
       encryptionRecipients,
     );
     if (!nodeAvailable &&
+        routeMode != 'NODE_ONLY' &&
         recipients.every(
           (recipient) => lan.endpointFor(recipient.id) != null,
         )) {
@@ -145,7 +147,7 @@ class TransferService {
           .map((recipient) => recipient.id)
           .toList(),
       'contentType': content.trim().startsWith('http') ? 'URL' : 'TEXT',
-      'routeMode': 'AUTOMATIC',
+      'routeMode': routeMode,
       'content': encrypted.content,
       'wrappedContentKeys': encrypted.wrappedContentKeys,
     };
@@ -191,6 +193,8 @@ class TransferService {
     bool groupAll = true,
     Set<String> lanAvailable = const {},
     bool nodeAvailable = true,
+    String routeMode = 'AUTOMATIC',
+    bool allowLargeFileViaNode = false,
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
@@ -211,6 +215,7 @@ class TransferService {
     );
     try {
       if (!nodeAvailable &&
+          routeMode != 'NODE_ONLY' &&
           recipients.every(
             (recipient) => lan.endpointFor(recipient.id) != null,
           )) {
@@ -232,8 +237,8 @@ class TransferService {
             .map((recipient) => recipient.id)
             .toList(),
         'contentType': 'FILE',
-        'routeMode': 'AUTOMATIC',
-        'allowLargeFileViaNode': false,
+        'routeMode': routeMode,
+        'allowLargeFileViaNode': allowLargeFileViaNode,
         'content': encrypted.content,
         'wrappedContentKeys': encrypted.wrappedContentKeys,
         'files': encrypted.files.map((file) => file.record).toList(),
