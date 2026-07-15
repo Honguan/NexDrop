@@ -46,6 +46,7 @@ CREATE TABLE device_connections (
     device_id uuid PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     connected_at timestamptz NOT NULL,
     last_seen_at timestamptz NOT NULL,
+    disconnected_at timestamptz,
     protocol_version text NOT NULL,
     client_version text NOT NULL
 );

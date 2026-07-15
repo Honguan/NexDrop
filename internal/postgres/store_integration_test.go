@@ -17,6 +17,7 @@ import (
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
+	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
 )
 
@@ -168,6 +169,12 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	targetSession.DeviceID = &targetDevice.ID
+	if err := store.ConnectDevice(ctx, targetDevice.ID, time.Now().UTC(), presence.ProtocolVersion, "integration"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.HeartbeatDevice(ctx, targetDevice.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	transferService := transfer.NewService(store)
 	textTransfer, err := transferService.Create(ctx, session, transfer.Request{
 		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
@@ -247,6 +254,20 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || !bytes.Equal(downloaded, smallContent) {
 		t.Fatalf("downloaded chunk = %q, %v", downloaded, err)
 	}
+	notifications, err := store.PendingNotifications(ctx, targetDevice.ID)
+	if err != nil || len(notifications) < 2 {
+		t.Fatalf("PendingNotifications() = %+v, %v", notifications, err)
+	}
+	if err := store.AcknowledgeNotification(ctx, targetDevice.ID, notifications[0].ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	remainingNotifications, err := store.PendingNotifications(ctx, targetDevice.ID)
+	if err != nil || len(remainingNotifications) != len(notifications)-1 {
+		t.Fatalf("remaining notifications = %+v, %v", remainingNotifications, err)
+	}
+	if err := store.DisconnectDevice(ctx, targetDevice.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	cancelled, err := transferService.Cancel(ctx, session, fileTransfer.ID)
 	if err != nil || cancelled.Status != domain.TransferCancelled {
 		t.Fatalf("Cancel() = %+v, %v", cancelled, err)
@@ -256,11 +277,20 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || renamed.DisplayName != "Workstation" {
 		t.Fatalf("RenameDevice() = %+v, %v", renamed, err)
 	}
+	if err := store.ConnectDevice(ctx, created.ID, time.Now().UTC(), presence.ProtocolVersion, "integration"); err != nil {
+		t.Fatal(err)
+	}
 	revoked, err := store.RevokeDevice(ctx, session, created.ID, time.Now().UTC())
 	if err != nil || revoked.TrustStatus != device.TrustRevoked {
 		t.Fatalf("RevokeDevice() = %+v, %v", revoked, err)
 	}
 	if _, err := store.SessionByAccessToken(ctx, accessHash, time.Now().UTC()); err == nil {
 		t.Fatal("device revocation did not revoke its session")
+	}
+	if _, err := store.PendingNotifications(ctx, created.ID); !errors.Is(err, device.ErrForbidden) {
+		t.Fatalf("revoked device notifications error = %v, want ErrForbidden", err)
+	}
+	if err := store.HeartbeatDevice(ctx, created.ID, time.Now().UTC()); !errors.Is(err, device.ErrNotFound) {
+		t.Fatalf("revoked device heartbeat error = %v, want ErrNotFound", err)
 	}
 }

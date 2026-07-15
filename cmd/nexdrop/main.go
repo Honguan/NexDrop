@@ -16,6 +16,7 @@ import (
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
+	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
 )
 
@@ -56,6 +57,7 @@ func main() {
 		log.Fatalf("configure file storage: %v", err)
 	}
 	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService)
+	presenceHub := presence.NewHub(authService, store)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +68,7 @@ func main() {
 		healthHandler(w, r)
 	})
 	mux.Handle("/api/", applicationAPI.Routes())
+	mux.Handle("/ws", presenceHub)
 
 	server := &http.Server{
 		Addr:              address,

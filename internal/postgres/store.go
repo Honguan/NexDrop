@@ -14,6 +14,7 @@ import (
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
+	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
 )
 
@@ -747,6 +748,13 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 		if err != nil {
 			return transfer.Transfer{}, err
 		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO notifications (device_id, notification_type, payload, created_at)
+			VALUES ($1, 'TRANSFER', jsonb_build_object('transferId', $2::text), $3)
+		`, target.DeviceID, result.ID, prepared.CreatedAt)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
 	}
 	for _, target := range prepared.FileTargets {
 		_, err = tx.Exec(ctx, `
@@ -1131,6 +1139,105 @@ func (store *Store) CompleteFile(ctx context.Context, session auth.Session, file
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (store *Store) ConnectDevice(ctx context.Context, deviceID string, connectedAt time.Time, protocolVersion, clientVersion string) error {
+	command, err := store.pool.Exec(ctx, `
+		INSERT INTO device_connections (
+			device_id, connected_at, last_seen_at, disconnected_at, protocol_version, client_version
+		)
+		SELECT id, $2, $2, NULL, $3, $4
+		FROM devices
+		WHERE id = $1 AND trust_status = 'TRUSTED' AND revoked_at IS NULL
+		ON CONFLICT (device_id) DO UPDATE SET
+			connected_at = EXCLUDED.connected_at,
+			last_seen_at = EXCLUDED.last_seen_at,
+			disconnected_at = NULL,
+			protocol_version = EXCLUDED.protocol_version,
+			client_version = EXCLUDED.client_version
+	`, deviceID, connectedAt, protocolVersion, clientVersion)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return device.ErrForbidden
+	}
+	return nil
+}
+
+func (store *Store) HeartbeatDevice(ctx context.Context, deviceID string, seenAt time.Time) error {
+	command, err := store.pool.Exec(ctx, `
+		UPDATE device_connections connection SET last_seen_at = $2
+		FROM devices d
+		WHERE connection.device_id = $1 AND d.id = connection.device_id
+		  AND connection.disconnected_at IS NULL
+		  AND d.trust_status = 'TRUSTED' AND d.revoked_at IS NULL
+	`, deviceID, seenAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return device.ErrNotFound
+	}
+	return nil
+}
+
+func (store *Store) DisconnectDevice(ctx context.Context, deviceID string, disconnectedAt time.Time) error {
+	_, err := store.pool.Exec(ctx, `
+		UPDATE device_connections SET disconnected_at = $2
+		WHERE device_id = $1 AND disconnected_at IS NULL
+	`, deviceID, disconnectedAt)
+	return err
+}
+
+func (store *Store) PendingNotifications(ctx context.Context, deviceID string) ([]presence.Notification, error) {
+	var available bool
+	err := store.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM devices
+			WHERE id = $1 AND trust_status = 'TRUSTED' AND revoked_at IS NULL
+		)
+	`, deviceID).Scan(&available)
+	if err != nil {
+		return nil, err
+	}
+	if !available {
+		return nil, device.ErrForbidden
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT id::text, notification_type, payload
+		FROM notifications
+		WHERE device_id = $1 AND acknowledged_at IS NULL
+		ORDER BY created_at
+		LIMIT 100
+	`, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]presence.Notification, 0)
+	for rows.Next() {
+		var notification presence.Notification
+		if err := rows.Scan(&notification.ID, &notification.Type, &notification.Payload); err != nil {
+			return nil, err
+		}
+		result = append(result, notification)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) AcknowledgeNotification(ctx context.Context, deviceID, notificationID string, acknowledgedAt time.Time) error {
+	command, err := store.pool.Exec(ctx, `
+		UPDATE notifications SET acknowledged_at = $3
+		WHERE id = $1 AND device_id = $2 AND acknowledged_at IS NULL
+	`, notificationID, deviceID, acknowledgedAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return device.ErrNotFound
+	}
+	return nil
 }
 
 type rowScanner interface {
