@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'core/api_client.dart';
 import 'core/crypto_service.dart';
 import 'core/local_database.dart';
+import 'core/lan_service.dart';
 import 'core/models.dart';
 import 'core/transfer_service.dart';
 
@@ -14,18 +15,23 @@ class AppController extends ChangeNotifier {
   AppController()
     : api = ApiClient(),
       crypto = CryptoService(),
-      database = LocalDatabase() {
+      database = LocalDatabase(),
+      lan = LanService() {
     transfersService = TransferService(
       api: api,
       crypto: crypto,
       database: database,
+      lan: lan,
     );
+    _lanSubscription = lan.changes.listen((_) => notifyListeners());
   }
 
   final ApiClient api;
   final CryptoService crypto;
   final LocalDatabase database;
+  final LanService lan;
   late final TransferService transfersService;
+  StreamSubscription<Set<String>>? _lanSubscription;
   UserAccount? account;
   Device? currentDevice;
   List<Device> devices = const [];
@@ -34,6 +40,7 @@ class AppController extends ChangeNotifier {
   bool loading = true;
   bool busy = false;
   bool nodeOnline = false;
+  Set<String> get lanOnlineDeviceIds => lan.onlineDeviceIds;
   String? error;
   WebSocketChannel? _socket;
   StreamSubscription<dynamic>? _socketSubscription;
@@ -64,6 +71,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> logout() async {
     await _disconnect();
+    await lan.stop();
     await api.logout();
     account = null;
     currentDevice = null;
@@ -86,6 +94,7 @@ class AppController extends ChangeNotifier {
     currentDevice =
         devices.where((device) => device.id == currentDevice?.id).firstOrNull ??
         currentDevice;
+    await lan.updateTrustedDevices(devices);
     for (final transfer in transfers) {
       await database.cacheTransfer(
         id: transfer.id,
@@ -120,12 +129,14 @@ class AppController extends ChangeNotifier {
           content: content,
           devices: resolved,
           groupId: groupId,
+          lanAvailable: lan.onlineDeviceIds,
         );
       } else {
         await transfersService.sendFiles(
           sourcePaths: files,
           devices: resolved,
           groupId: groupId,
+          lanAvailable: lan.onlineDeviceIds,
         );
       }
       await reload();
@@ -161,6 +172,7 @@ class AppController extends ChangeNotifier {
     final session = await transfersService.synchronizeDevice(account!);
     currentDevice = session.device;
     await reload();
+    await lan.start(current: currentDevice!, trustedDevices: devices);
     await _connect();
   }
 
@@ -249,6 +261,8 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     unawaited(_disconnect());
+    unawaited(_lanSubscription?.cancel());
+    unawaited(lan.dispose());
     unawaited(database.close());
     api.close();
     super.dispose();

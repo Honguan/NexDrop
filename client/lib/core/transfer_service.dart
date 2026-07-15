@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'api_client.dart';
 import 'crypto_service.dart';
 import 'lan_identity.dart';
+import 'lan_service.dart';
 import 'local_database.dart';
 import 'models.dart';
 
@@ -23,6 +24,7 @@ class TransferService {
     required this.api,
     required this.crypto,
     required this.database,
+    required this.lan,
     FlutterSecureStorage? storage,
     LanIdentityStore? lanIdentityStore,
   }) : _storage = storage ?? const FlutterSecureStorage(),
@@ -32,6 +34,7 @@ class TransferService {
   final ApiClient api;
   final CryptoService crypto;
   final LocalDatabase database;
+  final LanService lan;
   final FlutterSecureStorage _storage;
   final LanIdentityStore _lanIdentityStore;
 
@@ -123,6 +126,28 @@ class TransferService {
         await api.sendJson('/api/transfers', 'POST', request)
             as Map<String, dynamic>;
     final transfer = TransferSummary.fromJson(response);
+    for (final target in transfer.targets.where(
+      (target) => target.route == 'LAN',
+    )) {
+      final endpoint = lan.endpointFor(target.deviceId);
+      final wrappedKey = encrypted.wrappedContentKeys[target.deviceId];
+      if (endpoint == null || wrappedKey == null) {
+        throw const HttpException('區網目標已離線');
+      }
+      await lan.sendMessage(
+        endpoint,
+        transfer.id,
+        contentType: request['contentType'] as String,
+        content: encrypted.content,
+        wrappedContentKey: wrappedKey,
+      );
+      await _reportProgress(
+        transfer.id,
+        target.deviceId,
+        'DELIVERED',
+        utf8.encode(encrypted.content).length,
+      );
+    }
     await _cache(transfer);
     return transfer;
   }
@@ -169,6 +194,30 @@ class TransferService {
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>;
       final transfer = TransferSummary.fromJson(response);
+      final lanBytes = <String, int>{};
+      for (final target in transfer.fileTargets.where(
+        (target) => target.route == 'LAN',
+      )) {
+        final endpoint = lan.endpointFor(target.deviceId);
+        if (endpoint == null) {
+          throw const HttpException('區網目標已離線');
+        }
+        final encryptedFile = encrypted.files[target.fileIndex];
+        final remoteFile = transfer.files[target.fileIndex];
+        await _reportProgress(
+          transfer.id,
+          target.deviceId,
+          'TRANSFERRING_LAN',
+          lanBytes[target.deviceId] ?? 0,
+        );
+        final sent = await _uploadLanFile(
+          endpoint,
+          transfer.id,
+          remoteFile.id,
+          encryptedFile,
+        );
+        lanBytes[target.deviceId] = (lanBytes[target.deviceId] ?? 0) + sent;
+      }
       for (final (fileIndex, encryptedFile) in encrypted.files.indexed) {
         if (!transfer.fileTargets.any(
           (target) => target.fileIndex == fileIndex && target.route == 'NODE',
@@ -208,6 +257,17 @@ class TransferService {
           },
         );
       }
+      for (final entry in lanBytes.entries) {
+        final allLan = transfer.fileTargets
+            .where((target) => target.deviceId == entry.key)
+            .every((target) => target.route == 'LAN');
+        await _reportProgress(
+          transfer.id,
+          entry.key,
+          allLan ? 'DELIVERED' : 'AVAILABLE_ON_NODE',
+          entry.value,
+        );
+      }
       await _cache(transfer);
       return transfer;
     } finally {
@@ -224,6 +284,52 @@ class TransferService {
     return (details['devices'] as List<dynamic>)
         .map((value) => Device.fromJson(value as Map<String, dynamic>))
         .toList();
+  }
+
+  Future<int> _uploadLanFile(
+    LanEndpoint endpoint,
+    String transferId,
+    String fileId,
+    EncryptedFileUpload file,
+  ) async {
+    final completed = (await lan.completedChunks(
+      endpoint,
+      transferId,
+      fileId,
+    )).toSet();
+    final input = await File(file.tempPath).open();
+    var sent = 0;
+    try {
+      for (final (index, chunk) in file.chunks.indexed) {
+        final bytes = await input.read(chunk.size);
+        if (!completed.contains(index)) {
+          await lan.putChunk(endpoint, transferId, fileId, index, bytes);
+        }
+        sent += bytes.length;
+      }
+    } finally {
+      await input.close();
+    }
+    await lan.complete(
+      endpoint,
+      transferId,
+      fileId,
+      file.chunks.length,
+      file.sha256,
+    );
+    return sent;
+  }
+
+  Future<void> _reportProgress(
+    String transferId,
+    String deviceId,
+    String status,
+    int bytes,
+  ) async {
+    await api.sendJson('/api/transfers/$transferId/targets/$deviceId', 'PUT', {
+      'status': status,
+      'bytesTransferred': bytes,
+    });
   }
 
   Future<void> _cache(TransferSummary transfer) => database.cacheTransfer(
