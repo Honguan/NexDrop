@@ -269,6 +269,19 @@ class AppController extends ChangeNotifier {
     await reload();
   });
 
+  Future<void> hideTransfer(TransferSummary transfer) => _run(() async {
+    if (nodeOnline) {
+      try {
+        await api.sendJson('/api/transfers/${transfer.id}', 'DELETE');
+      } catch (_) {
+        if (!transfer.targets.every((target) => target.route == 'LAN')) rethrow;
+      }
+    }
+    await database.deleteLocalTransfer(transfer.id);
+    transfers = transfers.where((item) => item.id != transfer.id).toList();
+    notifyListeners();
+  });
+
   Future<void> setWaitingPaused(WaitingLanTask task, bool paused) =>
       _run(() async {
         await transfersService.setWaitingPaused(task, paused);

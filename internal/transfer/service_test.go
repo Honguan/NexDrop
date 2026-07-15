@@ -30,6 +30,10 @@ func (*fakeStore) GetTransfer(context.Context, auth.Session, string) (Transfer, 
 func (*fakeStore) CancelTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error) {
 	return Transfer{}, nil
 }
+
+func (*fakeStore) HideTransfer(context.Context, auth.Session, string, time.Time) error {
+	return nil
+}
 func (*fakeStore) ReadTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error) {
 	return Transfer{}, nil
 }

@@ -71,6 +71,7 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/transfers", api.listTransfers)
 	mux.HandleFunc("GET /api/transfers/{id}", api.getTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/cancel", api.cancelTransfer)
+	mux.HandleFunc("DELETE /api/transfers/{id}", api.hideTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/read", api.readTransfer)
 	mux.HandleFunc("PUT /api/transfers/{id}/targets/{deviceId}", api.reportTransferProgress)
 	mux.HandleFunc("POST /api/files/{id}/chunks/{index}", api.uploadChunk)
@@ -556,6 +557,18 @@ func (api *API) cancelTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) hideTransfer(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if err := api.transfers.Hide(r.Context(), session, r.PathValue("id")); err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (api *API) readTransfer(w http.ResponseWriter, r *http.Request) {

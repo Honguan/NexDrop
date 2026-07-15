@@ -119,6 +119,7 @@ type Store interface {
 	ListTransfers(context.Context, auth.Session) ([]Transfer, error)
 	GetTransfer(context.Context, auth.Session, string) (Transfer, error)
 	CancelTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error)
+	HideTransfer(context.Context, auth.Session, string, time.Time) error
 	ReadTransfer(context.Context, auth.Session, string, time.Time) (Transfer, error)
 	ReportTransferProgress(context.Context, auth.Session, string, Progress, time.Time) (Transfer, error)
 }
@@ -202,6 +203,13 @@ func (service *Service) Cancel(ctx context.Context, session auth.Session, id str
 		return Transfer{}, ErrInvalid
 	}
 	return service.store.CancelTransfer(ctx, session, id, service.now().UTC())
+}
+
+func (service *Service) Hide(ctx context.Context, session auth.Session, id string) error {
+	if id == "" {
+		return ErrInvalid
+	}
+	return service.store.HideTransfer(ctx, session, id, service.now().UTC())
 }
 
 func (service *Service) Read(ctx context.Context, session auth.Session, id string) (Transfer, error) {

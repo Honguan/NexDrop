@@ -630,6 +630,11 @@ class _ActivityViewState extends State<ActivityView> {
                       icon: const Icon(Icons.cancel_outlined),
                       onPressed: () => _cancel(transfer),
                     ),
+                  IconButton(
+                    tooltip: '從我的紀錄隱藏',
+                    icon: const Icon(Icons.delete_outline_rounded),
+                    onPressed: () => _hide(transfer),
+                  ),
                 ],
               ),
             ),
@@ -719,6 +724,18 @@ class _ActivityViewState extends State<ActivityView> {
     setState(() => busyId = transfer.id);
     try {
       await widget.controller.cancelTransfer(transfer);
+    } catch (_) {
+      // AppController displays the actionable error banner.
+    } finally {
+      if (mounted) setState(() => busyId = null);
+    }
+  }
+
+  Future<void> _hide(TransferSummary transfer) async {
+    if (busyId != null) return;
+    setState(() => busyId = transfer.id);
+    try {
+      await widget.controller.hideTransfer(transfer);
     } catch (_) {
       // AppController displays the actionable error banner.
     } finally {

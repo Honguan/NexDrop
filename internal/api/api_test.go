@@ -188,6 +188,10 @@ func (*testStore) CancelTransfer(context.Context, auth.Session, string, time.Tim
 	return transfer.Transfer{ID: "transfer-1", Status: domain.TransferCancelled}, nil
 }
 
+func (*testStore) HideTransfer(context.Context, auth.Session, string, time.Time) error {
+	return nil
+}
+
 func (*testStore) ReadTransfer(context.Context, auth.Session, string, time.Time) (transfer.Transfer, error) {
 	return transfer.Transfer{ID: "transfer-1"}, nil
 }

@@ -1072,6 +1072,7 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
 		FROM transfer_tasks t
 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
 		WHERE t.group_deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $1)
 		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
 		ORDER BY t.created_at DESC
 	`, session.ID, session.DeviceID)
@@ -1112,7 +1113,9 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 		       t.group_id::text, t.content_type, m.encrypted_content, t.status, t.created_at, t.expires_at
 		FROM transfer_tasks t
 		LEFT JOIN messages m ON m.transfer_id = t.id
-		WHERE t.id = $1 AND t.group_deleted_at IS NULL AND (
+		WHERE t.id = $1 AND t.group_deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $2)
+		  AND (
 			t.sender_user_id = $2 OR ($3::uuid IS NOT NULL AND EXISTS (
 				SELECT 1 FROM transfer_targets access_target
 				WHERE access_target.transfer_id = t.id AND access_target.target_device_id = $3
@@ -1261,6 +1264,34 @@ func (store *Store) CancelTransfer(ctx context.Context, session auth.Session, tr
 		return transfer.Transfer{}, err
 	}
 	return store.GetTransfer(ctx, session, transferID)
+}
+
+func (store *Store) HideTransfer(ctx context.Context, session auth.Session, transferID string, now time.Time) error {
+	command, err := store.pool.Exec(ctx, `
+		INSERT INTO transfer_hidden_users (transfer_id, user_id, hidden_at)
+		SELECT t.id, $2, $4 FROM transfer_tasks t
+		WHERE t.id = $1 AND t.group_deleted_at IS NULL AND (
+			t.sender_user_id = $2 OR ($3::uuid IS NOT NULL AND EXISTS (
+				SELECT 1 FROM transfer_targets target
+				JOIN devices device ON device.id = target.target_device_id
+				WHERE target.transfer_id = t.id AND device.user_id = $2
+			))
+		)
+		ON CONFLICT (transfer_id, user_id) DO NOTHING
+	`, transferID, session.ID, session.DeviceID, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		var exists bool
+		if err := store.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM transfer_hidden_users WHERE transfer_id = $1 AND user_id = $2)`, transferID, session.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return transfer.ErrForbidden
+		}
+	}
+	return nil
 }
 
 func (store *Store) ReadTransfer(ctx context.Context, session auth.Session, transferID string, now time.Time) (transfer.Transfer, error) {

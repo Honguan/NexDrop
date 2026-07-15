@@ -174,6 +174,13 @@ CREATE TABLE transfer_targets (
     UNIQUE (transfer_id, target_device_id)
 );
 
+CREATE TABLE transfer_hidden_users (
+    transfer_id uuid NOT NULL REFERENCES transfer_tasks(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    hidden_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (transfer_id, user_id)
+);
+
 CREATE TABLE transfer_routes (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     transfer_target_id uuid NOT NULL REFERENCES transfer_targets(id) ON DELETE CASCADE,

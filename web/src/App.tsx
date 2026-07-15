@@ -208,7 +208,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
       case "send": return <SendView user={user} devices={devices} groups={groups} initialShare={sharedContent} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
-      case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} />;
+      case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "groups": return <GroupsView groups={groups} reload={reload} notify={setNotice} />;
       case "analytics": return <AnalyticsView />;
@@ -363,7 +363,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
   );
 }
 
-function ActivityView({ user, devices, transfers }: { user: User; devices: Device[]; transfers: Transfer[] }) {
+function ActivityView({ user, devices, transfers, reload }: { user: User; devices: Device[]; transfers: Transfer[]; reload: () => Promise<void> }) {
   const [decrypted, setDecrypted] = useState<Record<string, string>>({});
   const [downloading, setDownloading] = useState("");
   const names = useMemo(() => Object.fromEntries(devices.map((item) => [item.id, item.displayName])), [devices]);
@@ -403,6 +403,11 @@ function ActivityView({ user, devices, transfers }: { user: User; devices: Devic
     }
   }
 
+  async function hide(transferId: string) {
+    await api.send(`/api/transfers/${transferId}`, "DELETE");
+    await reload();
+  }
+
   return (
     <section className="page">
       <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />
@@ -414,7 +419,7 @@ function ActivityView({ user, devices, transfers }: { user: User; devices: Devic
             <span>{item.targets.map((target) => names[target.deviceId] ?? target.deviceId.slice(0, 8)).join("、")}</span>
             <span className="route-label">{item.targets[0]?.selectedRoute ?? "—"}</span>
             <Status value={item.status} />
-            <time>{formatDate(item.createdAt)}</time>
+            <div><time>{formatDate(item.createdAt)}</time><button className="text-button" onClick={() => hide(item.id)}>隱藏</button></div>
           </article>
         ))}
         {!transfers.length && <Empty text="還沒有傳輸紀錄" />}
