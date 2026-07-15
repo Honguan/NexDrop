@@ -53,7 +53,7 @@ func NewClient(baseURL, token string) (*Client, error) {
 }
 
 func (client *Client) Handle(ctx context.Context, request Request) Response {
-	if err := validateRequest(request); err != nil {
+	if err := ValidateRequest(request); err != nil {
 		return Response{ID: request.ID, Error: "INVALID_REQUEST"}
 	}
 	path := "/v1/status"
@@ -70,6 +70,7 @@ func (client *Client) Handle(ctx context.Context, request Request) Response {
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+client.token)
 	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("X-NexDrop-Client", "native-messaging")
 	response, err := client.http.Do(httpRequest)
 	if err != nil {
 		return Response{ID: request.ID, Error: "DESKTOP_UNAVAILABLE"}
@@ -89,7 +90,7 @@ func (client *Client) Handle(ctx context.Context, request Request) Response {
 	return result
 }
 
-func validateRequest(request Request) error {
+func ValidateRequest(request Request) error {
 	if request.ID == "" || len(request.ID) > 100 {
 		return ErrInvalidMessage
 	}
@@ -101,7 +102,9 @@ func validateRequest(request Request) error {
 		return nil
 	case "share":
 		var payload SharePayload
-		if json.Unmarshal(request.Payload, &payload) != nil || !validShare(payload) {
+		decoder := json.NewDecoder(bytes.NewReader(request.Payload))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&payload) != nil || !validShare(payload) {
 			return ErrInvalidMessage
 		}
 		return nil
