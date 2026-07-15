@@ -38,3 +38,10 @@ func TestAdminValidation(t *testing.T) {
 		t.Fatal("validSettings() accepted overlapping thresholds")
 	}
 }
+
+func TestCLIResetPasswordValidation(t *testing.T) {
+	service := NewService(nil)
+	if err := service.ResetPasswordByIdentifier(context.Background(), "", "a-valid-password"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ResetPasswordByIdentifier() error = %v, want ErrInvalid", err)
+	}
+}

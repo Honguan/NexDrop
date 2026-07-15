@@ -236,6 +236,10 @@ func (*testStore) ResetAdminPassword(context.Context, auth.Session, string, stri
 	return nil
 }
 
+func (*testStore) ResetAdminPasswordByIdentifier(context.Context, string, string, time.Time) error {
+	return nil
+}
+
 func (*testStore) AdminNodeSettings(context.Context) (admin.NodeSettings, error) {
 	return admin.NodeSettings{SingleFileLimitBytes: 1024, DefaultUserQuotaBytes: 2048, DefaultGroupQuotaBytes: 4096, NodeCacheLimitBytes: 8192, DefaultUserDailyBytes: 16384, DefaultGroupDailyBytes: 32768, DiskWarningPercent: 80, DiskStopPercent: 95}, nil
 }

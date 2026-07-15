@@ -6,10 +6,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"nexdrop/internal/admin"
@@ -22,6 +24,7 @@ import (
 	"nexdrop/internal/group"
 	"nexdrop/internal/maintenance"
 	"nexdrop/internal/monitoring"
+	"nexdrop/internal/operations"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
@@ -137,6 +140,49 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		return postgres.Open(ctx, databaseURL)
 	})
 	switch arguments[0] {
+	case "status":
+		store, err := postgres.Open(ctx, databaseURL)
+		if err != nil {
+			return true, err
+		}
+		defer store.Close()
+		if err := store.Ping(ctx); err != nil {
+			return true, err
+		}
+		return true, json.NewEncoder(os.Stdout).Encode(healthResponse{Status: "ok", Version: version})
+	case "doctor":
+		store, err := postgres.Open(ctx, databaseURL)
+		if err != nil {
+			return true, err
+		}
+		defer store.Close()
+		checks := operations.Doctor(ctx, store, storagePath)
+		if err := json.NewEncoder(os.Stdout).Encode(checks); err != nil {
+			return true, err
+		}
+		if !operations.Healthy(checks) {
+			return true, errors.New("one or more checks failed")
+		}
+		return true, nil
+	case "reset-password":
+		flags := flag.NewFlagSet("reset-password", flag.ContinueOnError)
+		identifier := flags.String("identifier", "", "username or email")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return true, err
+		}
+		password, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
+		if err != nil {
+			return true, err
+		}
+		if len(password) > 4096 {
+			return true, errors.New("password input is too long")
+		}
+		store, err := postgres.Open(ctx, databaseURL)
+		if err != nil {
+			return true, err
+		}
+		defer store.Close()
+		return true, admin.NewService(store).ResetPasswordByIdentifier(ctx, *identifier, strings.TrimRight(string(password), "\r\n"))
 	case "backup":
 		flags := flag.NewFlagSet("backup", flag.ContinueOnError)
 		output := flags.String("output", "", "backup archive path")

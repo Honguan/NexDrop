@@ -108,6 +108,30 @@ func (store *Store) ResetAdminPassword(ctx context.Context, actor auth.Session, 
 	return tx.Commit(ctx)
 }
 
+func (store *Store) ResetAdminPasswordByIdentifier(ctx context.Context, identifier, passwordHash string, now time.Time) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var userID string
+	err = tx.QueryRow(ctx, `
+		UPDATE users SET password_hash=$2
+		WHERE (lower(username)=lower($1) OR lower(email)=lower($1)) AND disabled_at IS NULL
+		RETURNING id::text
+	`, identifier, passwordHash).Scan(&userID)
+	if err != nil {
+		return mapAdminError(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE user_sessions SET revoked_at=$2 WHERE user_id=$1 AND revoked_at IS NULL`, userID, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_logs (action,target_type,target_id) VALUES ('USER_PASSWORD_RESET_CLI','USER',$1)`, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (store *Store) AdminNodeSettings(ctx context.Context) (admin.NodeSettings, error) {
 	var settings admin.NodeSettings
 	err := store.pool.QueryRow(ctx, `

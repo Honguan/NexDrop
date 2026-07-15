@@ -80,6 +80,7 @@ type Store interface {
 	CreateAdminUser(context.Context, auth.Session, string, string, string, bool) (User, error)
 	DisableAdminUser(context.Context, auth.Session, string, time.Time) error
 	ResetAdminPassword(context.Context, auth.Session, string, string, time.Time) error
+	ResetAdminPasswordByIdentifier(context.Context, string, string, time.Time) error
 	AdminNodeSettings(context.Context) (NodeSettings, error)
 	UpdateAdminNodeSettings(context.Context, auth.Session, NodeSettings) (NodeSettings, error)
 	SetAdminQuota(context.Context, auth.Session, Quota) (Quota, error)
@@ -152,6 +153,18 @@ func (service *Service) ResetPassword(ctx context.Context, session auth.Session,
 		return err
 	}
 	return service.store.ResetAdminPassword(ctx, session, userID, string(hash), time.Now().UTC())
+}
+
+func (service *Service) ResetPasswordByIdentifier(ctx context.Context, identifier, password string) error {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" || len(password) < 12 {
+		return ErrInvalid
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return service.store.ResetAdminPasswordByIdentifier(ctx, identifier, string(hash), time.Now().UTC())
 }
 
 func (service *Service) Settings(ctx context.Context, session auth.Session) (NodeSettings, error) {

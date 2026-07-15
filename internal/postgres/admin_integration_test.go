@@ -62,6 +62,9 @@ func TestAdminManagementIntegration(t *testing.T) {
 	if failures, err := service.Failures(ctx, actor, 50, 0); err != nil || failures == nil {
 		t.Fatalf("Failures() = %+v, %v", failures, err)
 	}
+	if err := service.ResetPasswordByIdentifier(ctx, created.Username, "cli-reset-password"); err != nil {
+		t.Fatalf("ResetPasswordByIdentifier() error = %v", err)
+	}
 
 	accessHash := []byte("admin-integration-access-" + suffix)
 	_, err = store.pool.Exec(ctx, `
