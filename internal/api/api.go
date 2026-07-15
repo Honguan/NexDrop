@@ -92,6 +92,7 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/admin/storage", api.adminStorage)
 	mux.HandleFunc("GET /api/admin/failures", api.adminFailures)
 	mux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
+	mux.HandleFunc("DELETE /api/admin/group-transfers/{id}", api.deleteAdminGroupContent)
 	return mux
 }
 

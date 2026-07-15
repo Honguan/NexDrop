@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -87,6 +88,7 @@ type Store interface {
 	AdminStorageOverview(context.Context, time.Time) (StorageOverview, error)
 	ListAdminFailures(context.Context, int, int) ([]Failure, error)
 	ListAdminAuditLogs(context.Context, int, int) ([]AuditLog, error)
+	DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error)
 }
 
 type Service struct{ store Store }
@@ -220,6 +222,25 @@ func (service *Service) AuditLogs(ctx context.Context, session auth.Session, lim
 		return nil, ErrInvalid
 	}
 	return service.store.ListAdminAuditLogs(ctx, limit, offset)
+}
+
+func (service *Service) DeleteGroupContent(ctx context.Context, session auth.Session, transferID string) error {
+	if !session.Admin {
+		return ErrForbidden
+	}
+	if !isUUID(transferID) {
+		return ErrInvalid
+	}
+	paths, err := service.store.DeleteAdminGroupContent(ctx, session, transferID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func validIdentity(username, email, password string) bool {

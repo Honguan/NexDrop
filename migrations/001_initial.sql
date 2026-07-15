@@ -124,7 +124,8 @@ CREATE TABLE messages (
     content_type text NOT NULL,
     encrypted_content bytea,
     created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz
+    expires_at timestamptz,
+    group_deleted_at timestamptz
 );
 
 CREATE TABLE message_targets (

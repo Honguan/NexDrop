@@ -254,6 +254,62 @@ func (store *Store) ListAdminAuditLogs(ctx context.Context, limit, offset int) (
 	return result, rows.Err()
 }
 
+func (store *Store) DeleteAdminGroupContent(ctx context.Context, actor auth.Session, transferID string, now time.Time) ([]string, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		SELECT storage_path FROM files WHERE transfer_id = $1 AND storage_path <> ''
+		UNION ALL
+		SELECT chunk.storage_path FROM file_chunks chunk
+		JOIN files file ON file.id = chunk.file_id
+		WHERE file.transfer_id = $1 AND chunk.storage_path <> ''
+	`, transferID)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0)
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	command, err := tx.Exec(ctx, `
+		UPDATE transfer_tasks
+		SET group_deleted_at = $2, status = 'CANCELLED'
+		WHERE id = $1 AND group_id IS NOT NULL AND group_deleted_at IS NULL
+	`, transferID, now)
+	if err != nil {
+		return nil, mapAdminError(err)
+	}
+	if command.RowsAffected() == 0 {
+		return nil, admin.ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `UPDATE messages SET encrypted_content = NULL WHERE transfer_id = $1`, transferID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE files SET status = 'EXPIRED', expires_at = $2 WHERE transfer_id = $1`, transferID, now); err != nil {
+		return nil, err
+	}
+	if err := insertAudit(ctx, tx, actor, "GROUP_CONTENT_DELETED", "TRANSFER", transferID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
 func insertAudit(ctx context.Context, tx pgx.Tx, actor auth.Session, action, targetType, targetID string) error {
 	var target any
 	if targetID != "" {

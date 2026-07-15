@@ -191,6 +191,18 @@ func (api *API) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (api *API) deleteAdminGroupContent(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	if err := api.admin.DeleteGroupContent(r.Context(), session, r.PathValue("id")); err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func adminPage(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 	limit, offset := 50, 0
 	var err error

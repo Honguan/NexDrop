@@ -296,6 +296,10 @@ func (*testStore) ListAdminAuditLogs(context.Context, int, int) ([]admin.AuditLo
 	return []admin.AuditLog{}, nil
 }
 
+func (*testStore) DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error) {
+	return nil, nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {

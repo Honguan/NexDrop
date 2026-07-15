@@ -495,6 +495,7 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [totpReady, setTOTPReady] = useState(user.totpEnabled);
   const [verification, setVerification] = useState({ password: "", code: "" });
   const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
+  const [groupTransferId, setGroupTransferId] = useState("");
 
   const load = useCallback(async () => {
     const [nextUsers, nextStorage, nextSettings, nextLogs] = await Promise.all([
@@ -529,6 +530,11 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
     if (!settings) return;
     try { setSettings(await api.send<NodeSettings>("/api/admin/settings", "PUT", settings)); notify("節點設定已更新"); } catch (reason) { notify(messageFor(reason)); }
   }
+  async function deleteGroupContent(event: FormEvent) {
+    event.preventDefault();
+    if (!confirm("確定要從群組內容流移除並刪除節點檔案？已下載的本機副本無法刪除。")) return;
+    try { await api.send(`/api/admin/group-transfers/${groupTransferId}`, "DELETE"); setGroupTransferId(""); await load(); notify("群組內容已從節點移除"); } catch (reason) { notify(messageFor(reason)); }
+  }
   return (
     <section className="page admin-page">
       <PageHeading eyebrow="NODE CONTROL" title="管理後台" description="集中管理帳號、容量、節點限制與稽核事件。" />
@@ -538,7 +544,7 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核紀錄</button></div>
       {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>建立使用者</h3><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label><label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label><label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">建立帳號</button></form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
       {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
-      {tab === "audit" && <div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div>}
+      {tab === "audit" && <><form className="card settings-form" onSubmit={deleteGroupContent}><div className="list-title"><div><p className="eyebrow">CONTENT CONTROL</p><h3>刪除群組內容</h3></div><button className="text-danger">從節點刪除</button></div><label>群組傳輸 ID<input value={groupTransferId} onChange={(event) => setGroupTransferId(event.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required /></label><small>內容會從群組內容流移除並刪除節點檔案；無法保證刪除設備已下載的副本。</small></form><div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div></>}
       </>}
     </section>
   );

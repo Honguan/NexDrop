@@ -1071,7 +1071,8 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
 		SELECT DISTINCT t.id::text, t.created_at
 		FROM transfer_tasks t
 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
-		WHERE t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2)
+		WHERE t.group_deleted_at IS NULL
+		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
 		ORDER BY t.created_at DESC
 	`, session.ID, session.DeviceID)
 	if err != nil {
@@ -1111,7 +1112,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 		       t.group_id::text, t.content_type, m.encrypted_content, t.status, t.created_at, t.expires_at
 		FROM transfer_tasks t
 		LEFT JOIN messages m ON m.transfer_id = t.id
-		WHERE t.id = $1 AND (
+		WHERE t.id = $1 AND t.group_deleted_at IS NULL AND (
 			t.sender_user_id = $2 OR ($3::uuid IS NOT NULL AND EXISTS (
 				SELECT 1 FROM transfer_targets access_target
 				WHERE access_target.transfer_id = t.id AND access_target.target_device_id = $3
