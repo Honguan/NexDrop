@@ -5,6 +5,7 @@ CREATE TABLE users (
     username text NOT NULL,
     email text NOT NULL,
     password_hash text NOT NULL,
+    totp_secret text,
     is_admin boolean NOT NULL DEFAULT false,
     disabled_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
@@ -22,6 +23,7 @@ CREATE TABLE user_sessions (
     refresh_token_hash bytea NOT NULL UNIQUE,
     expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
+    admin_verified_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 

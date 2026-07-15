@@ -3,6 +3,7 @@ export type User = {
   username: string;
   email: string;
   admin: boolean;
+  totpEnabled: boolean;
 };
 
 export type Device = {
@@ -134,11 +135,11 @@ class APIClient {
     return `${protocol}//${location.host}/ws?${query}`;
   }
 
-  async login(identifier: string, password: string) {
+  async login(identifier: string, password: string, totp = "") {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier, password }),
+      body: JSON.stringify({ identifier, password, totp }),
     });
     if (!response.ok) throw await this.error(response);
     this.saveTokens((await response.json()) as TokenPair);

@@ -43,6 +43,9 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", api.login)
 	mux.HandleFunc("POST /api/auth/refresh", api.refresh)
 	mux.HandleFunc("POST /api/auth/logout", api.logout)
+	mux.HandleFunc("POST /api/auth/totp/setup", api.setupTOTP)
+	mux.HandleFunc("POST /api/auth/totp/enable", api.enableTOTP)
+	mux.HandleFunc("POST /api/auth/admin-verify", api.verifyAdmin)
 	mux.HandleFunc("GET /api/account", api.account)
 	mux.HandleFunc("POST /api/devices", api.createDevice)
 	mux.HandleFunc("GET /api/devices", api.listDevices)
@@ -116,17 +119,75 @@ func (api *API) login(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Identifier string `json:"identifier"`
 		Password   string `json:"password"`
+		TOTP       string `json:"totp"`
 	}
 	if err := decodeJSON(r, &request); err != nil || request.Identifier == "" || request.Password == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
 	}
-	pair, err := api.auth.Login(r.Context(), request.Identifier, request.Password)
+	pair, err := api.auth.LoginWithTOTP(r.Context(), request.Identifier, request.Password, request.TOTP)
 	if err != nil {
+		if errors.Is(err, auth.ErrTOTPRequired) {
+			writeError(w, http.StatusUnauthorized, "TOTP_REQUIRED")
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS")
 		return
 	}
 	writeJSON(w, http.StatusOK, pair)
+}
+
+func (api *API) setupTOTP(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Password string `json:"password"`
+	}
+	if decodeJSON(r, &request) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	setup, err := api.auth.SetupTOTP(r.Context(), session, request.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS")
+		return
+	}
+	writeJSON(w, http.StatusOK, setup)
+}
+
+func (api *API) enableTOTP(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Password string `json:"password"`
+		Secret   string `json:"secret"`
+		Code     string `json:"code"`
+	}
+	if decodeJSON(r, &request) != nil || api.auth.EnableTOTP(r.Context(), session, request.Password, request.Secret, request.Code) != nil {
+		writeError(w, http.StatusUnauthorized, "INVALID_TOTP_SETUP")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (api *API) verifyAdmin(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Password string `json:"password"`
+		TOTP     string `json:"totp"`
+	}
+	if decodeJSON(r, &request) != nil || api.auth.VerifyAdmin(r.Context(), session, request.Password, request.TOTP) != nil {
+		writeError(w, http.StatusUnauthorized, "ADMIN_VERIFICATION_FAILED")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (api *API) logout(w http.ResponseWriter, r *http.Request) {

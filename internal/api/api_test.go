@@ -31,6 +31,7 @@ type testStore struct {
 	devices         []device.Device
 	groups          []group.Group
 	sessionDeviceID *string
+	adminVerified   bool
 	fileRecord      filetransfer.FileRecord
 	chunks          map[int]filetransfer.ChunkRecord
 }
@@ -49,7 +50,7 @@ func (store *testStore) SessionByAccessToken(_ context.Context, access []byte, _
 	if !bytes.Equal(access, store.accessHash) {
 		return auth.Session{}, errors.New("not found")
 	}
-	return auth.Session{User: store.credential.User, SessionID: "session-1", DeviceID: store.sessionDeviceID}, nil
+	return auth.Session{User: store.credential.User, SessionID: "session-1", DeviceID: store.sessionDeviceID, AdminVerified: store.adminVerified}, nil
 }
 
 func (store *testStore) RotateSession(_ context.Context, oldRefresh, access []byte, _ time.Time, refresh []byte, _ time.Time, _ time.Time) error {
@@ -65,6 +66,17 @@ func (store *testStore) RevokeSessionByRefreshToken(_ context.Context, refresh [
 	if !bytes.Equal(refresh, store.refresh) {
 		return errors.New("not found")
 	}
+	return nil
+}
+
+func (store *testStore) SetTOTPSecret(_ context.Context, _ string, secret string) error {
+	store.credential.TOTPSecret = secret
+	store.credential.TOTPEnabled = true
+	return nil
+}
+
+func (store *testStore) MarkAdminVerified(_ context.Context, _ string, _ time.Time) error {
+	store.adminVerified = true
 	return nil
 }
 
@@ -551,6 +563,14 @@ func TestReadAdminSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	unverified := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
+	unverified.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	unverifiedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unverifiedResponse, unverified)
+	if unverifiedResponse.Code != http.StatusForbidden {
+		t.Fatalf("unverified admin status = %d, want %d", unverifiedResponse.Code, http.StatusForbidden)
+	}
+	store.adminVerified = true
 
 	request := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
 	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)

@@ -6,10 +6,11 @@ import (
 	"strconv"
 
 	"nexdrop/internal/admin"
+	"nexdrop/internal/auth"
 )
 
 func (api *API) adminUsers(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -26,7 +27,7 @@ func (api *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -49,7 +50,7 @@ func (api *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) disableAdminUser(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -61,7 +62,7 @@ func (api *API) disableAdminUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) resetAdminPassword(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -80,7 +81,7 @@ func (api *API) resetAdminPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) adminSettings(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -93,7 +94,7 @@ func (api *API) adminSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) updateAdminSettings(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -111,7 +112,7 @@ func (api *API) updateAdminSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) setAdminQuota(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -132,7 +133,7 @@ func (api *API) setAdminQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) adminStorage(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -145,7 +146,7 @@ func (api *API) adminStorage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) adminFailures(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -159,6 +160,18 @@ func (api *API) adminFailures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) authenticateAdmin(w http.ResponseWriter, r *http.Request) (auth.Session, bool) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return auth.Session{}, false
+	}
+	if !session.Admin || !session.AdminVerified {
+		writeError(w, http.StatusForbidden, "ADMIN_REAUTH_REQUIRED")
+		return auth.Session{}, false
+	}
+	return session, true
 }
 
 func (api *API) adminAuditLogs(w http.ResponseWriter, r *http.Request) {

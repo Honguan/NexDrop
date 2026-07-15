@@ -48,7 +48,7 @@ func (store *Store) Ping(ctx context.Context) error {
 func (store *Store) CredentialByIdentifier(ctx context.Context, identifier string) (auth.Credential, error) {
 	var credential auth.Credential
 	err := store.pool.QueryRow(ctx, `
-		SELECT id::text, username, email, is_admin, password_hash
+		SELECT id::text, username, email, is_admin, (totp_secret IS NOT NULL), password_hash, COALESCE(totp_secret, '')
 		FROM users
 		WHERE (lower(username) = lower($1) OR lower(email) = lower($1))
 		  AND disabled_at IS NULL
@@ -57,7 +57,9 @@ func (store *Store) CredentialByIdentifier(ctx context.Context, identifier strin
 		&credential.Username,
 		&credential.Email,
 		&credential.Admin,
+		&credential.TOTPEnabled,
 		&credential.PasswordHash,
+		&credential.TOTPSecret,
 	)
 	return credential, err
 }
@@ -83,15 +85,39 @@ func (store *Store) CreateSession(
 func (store *Store) SessionByAccessToken(ctx context.Context, tokenHash []byte, now time.Time) (auth.Session, error) {
 	var session auth.Session
 	err := store.pool.QueryRow(ctx, `
-		SELECT s.id::text, u.id::text, u.username, u.email, u.is_admin, s.device_id::text
+		SELECT s.id::text, u.id::text, u.username, u.email, u.is_admin,
+		       (u.totp_secret IS NOT NULL), s.device_id::text,
+		       COALESCE(s.admin_verified_at > ($2::timestamptz - interval '15 minutes'), false)
 		FROM user_sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.access_token_hash = $1
 		  AND s.access_expires_at > $2
 		  AND s.revoked_at IS NULL
 		  AND u.disabled_at IS NULL
-	`, tokenHash, now).Scan(&session.SessionID, &session.ID, &session.Username, &session.Email, &session.Admin, &session.DeviceID)
+	`, tokenHash, now).Scan(&session.SessionID, &session.ID, &session.Username, &session.Email, &session.Admin, &session.TOTPEnabled, &session.DeviceID, &session.AdminVerified)
 	return session, err
+}
+
+func (store *Store) SetTOTPSecret(ctx context.Context, userID, secret string) error {
+	command, err := store.pool.Exec(ctx, `UPDATE users SET totp_secret = $2 WHERE id = $1 AND disabled_at IS NULL`, userID, secret)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (store *Store) MarkAdminVerified(ctx context.Context, sessionID string, verifiedAt time.Time) error {
+	command, err := store.pool.Exec(ctx, `UPDATE user_sessions SET admin_verified_at = $2 WHERE id = $1 AND revoked_at IS NULL`, sessionID, verifiedAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func (store *Store) RotateSession(

@@ -69,6 +69,22 @@ func (store *memoryStore) RevokeSessionByRefreshToken(_ context.Context, refresh
 	return nil
 }
 
+func (store *memoryStore) SetTOTPSecret(_ context.Context, _ string, secret string) error {
+	store.credential.TOTPSecret = secret
+	store.credential.TOTPEnabled = true
+	return nil
+}
+
+func (store *memoryStore) MarkAdminVerified(_ context.Context, sessionID string, _ time.Time) error {
+	for key, session := range store.sessions {
+		if session.SessionID == sessionID {
+			session.AdminVerified = true
+			store.sessions[key] = session
+		}
+	}
+	return nil
+}
+
 func TestLoginAuthenticateAndLogout(t *testing.T) {
 	store := newMemoryStore(t)
 	service := NewService(store, 15*time.Minute, 24*time.Hour)
@@ -112,5 +128,18 @@ func TestLoginDoesNotRevealCredentialFailure(t *testing.T) {
 		if !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("Login(%q) error = %v, want ErrInvalidCredentials", test.identifier, err)
 		}
+	}
+}
+
+func TestLoginRequiresConfiguredTOTP(t *testing.T) {
+	store := newMemoryStore(t)
+	store.credential.TOTPSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	service := NewService(store, time.Minute, time.Hour)
+	service.now = func() time.Time { return time.Unix(59, 0) }
+	if _, err := service.Login(context.Background(), "owner", "correct-password"); !errors.Is(err, ErrTOTPRequired) {
+		t.Fatalf("login without TOTP error = %v, want ErrTOTPRequired", err)
+	}
+	if _, err := service.LoginWithTOTP(context.Background(), "owner", "correct-password", "287082"); err != nil {
+		t.Fatalf("login with TOTP: %v", err)
 	}
 }

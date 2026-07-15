@@ -57,6 +57,8 @@ function Splash() {
 function Login({ onLogin }: { onLogin: (user: User) => void }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [totp, setTotp] = useState("");
+  const [needsTOTP, setNeedsTOTP] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -65,9 +67,12 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
     setBusy(true);
     setError("");
     try {
-      await api.login(identifier, password);
+      await api.login(identifier, password, totp);
       onLogin(await api.get<User>("/api/account"));
     } catch (reason) {
+      if (reason instanceof APIError && reason.code === "TOTP_REQUIRED") {
+        setNeedsTOTP(true);
+      }
       setError(messageFor(reason));
     } finally {
       setBusy(false);
@@ -112,6 +117,10 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
             密碼
             <input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 12 個字元" required />
           </label>
+          {needsTOTP && <label>
+            六位數驗證碼
+            <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={totp} onChange={(event) => setTotp(event.target.value)} required />
+          </label>}
           {error && <p className="form-error" role="alert">{error}</p>}
           <button className="primary large" disabled={busy}>{busy ? "正在連線…" : "安全登入"}</button>
           <p className="login-foot">登入即表示裝置將透過 HTTPS 連線至此節點。</p>
@@ -203,7 +212,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "groups": return <GroupsView groups={groups} reload={reload} notify={setNotice} />;
       case "analytics": return <AnalyticsView />;
-      case "admin": return <AdminView notify={setNotice} />;
+      case "admin": return <AdminView user={user} notify={setNotice} />;
     }
   })();
 
@@ -475,13 +484,17 @@ function AnalyticsView() {
   );
 }
 
-function AdminView({ notify }: { notify: (value: string) => void }) {
+function AdminView({ user, notify }: { user: User; notify: (value: string) => void }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [storage, setStorage] = useState<StorageOverview | null>(null);
   const [settings, setSettings] = useState<NodeSettings | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [tab, setTab] = useState<"users" | "node" | "audit">("users");
   const [newUser, setNewUser] = useState({ username: "", email: "", password: "", admin: false });
+  const [verified, setVerified] = useState(false);
+  const [totpReady, setTOTPReady] = useState(user.totpEnabled);
+  const [verification, setVerification] = useState({ password: "", code: "" });
+  const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
 
   const load = useCallback(async () => {
     const [nextUsers, nextStorage, nextSettings, nextLogs] = await Promise.all([
@@ -490,7 +503,20 @@ function AdminView({ notify }: { notify: (value: string) => void }) {
     ]);
     setUsers(nextUsers); setStorage(nextStorage); setSettings(nextSettings); setLogs(nextLogs);
   }, []);
-  useEffect(() => { load().catch((reason) => notify(messageFor(reason))); }, [load, notify]);
+  useEffect(() => { if (verified) load().catch((reason) => notify(messageFor(reason))); }, [load, notify, verified]);
+  async function beginSetup(event: FormEvent) {
+    event.preventDefault();
+    try { setSetup(await api.send<{ secret: string; uri: string }>("/api/auth/totp/setup", "POST", { password: verification.password })); } catch (reason) { notify(messageFor(reason)); }
+  }
+  async function enableTOTP(event: FormEvent) {
+    event.preventDefault();
+    if (!setup) return;
+    try { await api.send("/api/auth/totp/enable", "POST", { password: verification.password, secret: setup.secret, code: verification.code }); setTOTPReady(true); setSetup(null); setVerification({ ...verification, code: "" }); notify("TOTP 已啟用"); } catch (reason) { notify(messageFor(reason)); }
+  }
+  async function verify(event: FormEvent) {
+    event.preventDefault();
+    try { await api.send("/api/auth/admin-verify", "POST", { password: verification.password, totp: verification.code }); setVerified(true); setVerification({ password: "", code: "" }); } catch (reason) { notify(messageFor(reason)); }
+  }
   async function createUser(event: FormEvent) {
     event.preventDefault();
     try { await api.send("/api/admin/users", "POST", newUser); setNewUser({ username: "", email: "", password: "", admin: false }); await load(); notify("使用者已建立"); } catch (reason) { notify(messageFor(reason)); }
@@ -506,10 +532,14 @@ function AdminView({ notify }: { notify: (value: string) => void }) {
   return (
     <section className="page admin-page">
       <PageHeading eyebrow="NODE CONTROL" title="管理後台" description="集中管理帳號、容量、節點限制與稽核事件。" />
+      {!totpReady && <form className="card create-user" onSubmit={setup ? enableTOTP : beginSetup}><h3>啟用雙因素驗證</h3><p className="muted">管理後台必須使用密碼與 TOTP 驗證。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label>{setup && <><label>TOTP 密鑰<input readOnly value={setup.secret} /></label><small>請將密鑰加入驗證器後輸入六位數驗證碼。</small><label>驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label></>}<button className="primary">{setup ? "確認並啟用" : "產生 TOTP 密鑰"}</button></form>}
+      {totpReady && !verified && <form className="card create-user" onSubmit={verify}><h3>重新驗證管理員</h3><p className="muted">驗證效力為 15 分鐘。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label><label>六位數驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label><button className="primary">解鎖管理後台</button></form>}
+      {verified && <>
       <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核紀錄</button></div>
       {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>建立使用者</h3><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label><label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label><label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">建立帳號</button></form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
       {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
       {tab === "audit" && <div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div>}
+      </>}
     </section>
   );
 }
@@ -538,7 +568,7 @@ function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { m
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
-function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
+function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 
 function readSharedContent() {
   if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };
