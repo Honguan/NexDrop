@@ -228,6 +228,46 @@ class LocalDatabase {
     await database.delete('drafts', where: 'id = ?', whereArgs: [id]);
   }
 
+  Future<void> savePendingMetric(
+    String eventId,
+    Map<String, dynamic> payload,
+  ) async {
+    final database = await open();
+    await database.insert('pending_metrics', {
+      'event_id': eventId,
+      'payload': jsonEncode(payload),
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<List<Map<String, dynamic>>> pendingMetrics({int limit = 500}) async {
+    final database = await open();
+    final rows = await database.query(
+      'pending_metrics',
+      orderBy: 'created_at ASC',
+      limit: limit,
+    );
+    return rows
+        .map(
+          (row) => {
+            'eventId': row['event_id'] as String,
+            'payload': jsonDecode(row['payload'] as String),
+          },
+        )
+        .toList();
+  }
+
+  Future<void> deletePendingMetrics(Iterable<String> eventIds) async {
+    final ids = eventIds.toList();
+    if (ids.isEmpty) return;
+    final database = await open();
+    await database.delete(
+      'pending_metrics',
+      where: 'event_id IN (${List.filled(ids.length, '?').join(',')})',
+      whereArgs: ids,
+    );
+  }
+
   Future<String?> setting(String key) async {
     final database = await open();
     final rows = await database.query(

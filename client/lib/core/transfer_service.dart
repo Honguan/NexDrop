@@ -129,7 +129,7 @@ class TransferService {
         recipients.every(
           (recipient) => lan.endpointFor(recipient.id) != null,
         )) {
-      return _sendTextLanOnly(content, devices, encrypted);
+      return _sendTextLanOnly(content, devices, encrypted, groupId: groupId);
     }
     final request = <String, dynamic>{
       'targetType': groupId != null
@@ -219,7 +219,7 @@ class TransferService {
           recipients.every(
             (recipient) => lan.endpointFor(recipient.id) != null,
           )) {
-        return await _sendFilesLanOnly(devices, encrypted);
+        return await _sendFilesLanOnly(devices, encrypted, groupId: groupId);
       }
       final request = <String, dynamic>{
         'targetType': groupId != null
@@ -383,8 +383,10 @@ class TransferService {
   Future<TransferSummary> _sendTextLanOnly(
     String plaintext,
     List<Device> devices,
-    EncryptedEnvelope encrypted,
-  ) async {
+    EncryptedEnvelope encrypted, {
+    String? groupId,
+  }) async {
+    final startedAt = DateTime.now().toUtc();
     final transferId = const Uuid().v4();
     final contentType = plaintext.trim().startsWith('http') ? 'URL' : 'TEXT';
     final targets = <TransferTarget>[];
@@ -423,6 +425,7 @@ class TransferService {
     );
     await _cache(transfer);
     await database.cacheLocalTransfer(transfer);
+    await _queueLanMetrics(transfer, startedAt, groupId: groupId);
     return transfer;
   }
 
@@ -459,8 +462,10 @@ class TransferService {
 
   Future<TransferSummary> _sendFilesLanOnly(
     List<Device> devices,
-    EncryptedFileTransfer encrypted,
-  ) async {
+    EncryptedFileTransfer encrypted, {
+    String? groupId,
+  }) async {
+    final startedAt = DateTime.now().toUtc();
     final transferId = const Uuid().v4();
     final files = encrypted.files
         .map(
@@ -541,7 +546,59 @@ class TransferService {
     );
     await _cache(transfer);
     await database.cacheLocalTransfer(transfer);
+    await _queueLanMetrics(transfer, startedAt, groupId: groupId);
     return transfer;
+  }
+
+  Future<void> _queueLanMetrics(
+    TransferSummary transfer,
+    DateTime startedAt, {
+    String? groupId,
+  }) async {
+    final sender = _currentDevice;
+    if (sender == null) return;
+    final completedAt = DateTime.now().toUtc();
+    final elapsedMilliseconds = completedAt
+        .difference(startedAt)
+        .inMilliseconds
+        .clamp(1, 1 << 31);
+    final fileSize = transfer.files.fold<int>(
+      0,
+      (total, file) => total + file.size,
+    );
+    for (final target in transfer.targets) {
+      final eventId = const Uuid().v4();
+      final bytes = fileSize > 0 ? fileSize : target.bytesTransferred;
+      await database.savePendingMetric(eventId, {
+        'eventId': eventId,
+        'transferId': transfer.id,
+        'senderDeviceId': sender.id,
+        'receiverDeviceId': target.deviceId,
+        'groupId': ?groupId,
+        'contentType': transfer.contentType,
+        'route': 'LAN',
+        'fileSize': bytes,
+        'startedAt': startedAt.toIso8601String(),
+        'completedAt': completedAt.toIso8601String(),
+        'averageBytesPerSecond': (bytes * 1000) ~/ elapsedMilliseconds,
+        'retryCount': 0,
+        'succeeded': true,
+      });
+    }
+  }
+
+  Future<void> flushMetrics() async {
+    while (true) {
+      final rows = await database.pendingMetrics();
+      if (rows.isEmpty) return;
+      await api.sendJson('/api/metrics/batch', 'POST', {
+        'events': rows.map((row) => row['payload']).toList(),
+      });
+      await database.deletePendingMetrics(
+        rows.map((row) => row['eventId'] as String),
+      );
+      if (rows.length < 500) return;
+    }
   }
 
   Future<TransferSummary> _saveFileDraft(

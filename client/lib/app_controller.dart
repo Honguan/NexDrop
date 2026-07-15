@@ -327,6 +327,7 @@ class AppController extends ChangeNotifier {
             nodeOnline = true;
             unawaited(_retryWaitingLan());
             unawaited(_flushDrafts());
+            unawaited(_flushMetrics());
             unawaited(_updateDesktopStatus());
             _heartbeat = Timer.periodic(
               const Duration(seconds: 15),
@@ -378,6 +379,15 @@ class AppController extends ChangeNotifier {
     try {
       await transfersService.flushDrafts();
       await reload();
+    } catch (reason) {
+      error = _message(reason);
+      notifyListeners();
+    }
+  }
+
+  Future<void> _flushMetrics() async {
+    try {
+      await transfersService.flushMetrics();
     } catch (reason) {
       error = _message(reason);
       notifyListeners();
