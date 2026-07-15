@@ -1,11 +1,13 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AdminFailure,
   AdminUser,
   APIError,
   AuditLog,
   Device,
   Group,
   GroupDetails,
+  NodeMetric,
   NodeSettings,
   Overview,
   StorageOverview,
@@ -517,6 +519,8 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [storage, setStorage] = useState<StorageOverview | null>(null);
   const [settings, setSettings] = useState<NodeSettings | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [failures, setFailures] = useState<AdminFailure[]>([]);
+  const [nodeMetrics, setNodeMetrics] = useState<NodeMetric[]>([]);
   const [tab, setTab] = useState<"users" | "node" | "audit">("users");
   const [newUser, setNewUser] = useState({ username: "", email: "", password: "", admin: false });
   const [verified, setVerified] = useState(false);
@@ -526,11 +530,12 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [groupTransferId, setGroupTransferId] = useState("");
 
   const load = useCallback(async () => {
-    const [nextUsers, nextStorage, nextSettings, nextLogs] = await Promise.all([
+    const [nextUsers, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
       api.get<AdminUser[]>("/api/admin/users"), api.get<StorageOverview>("/api/admin/storage"),
       api.get<NodeSettings>("/api/admin/settings"), api.get<AuditLog[]>("/api/admin/audit-logs"),
+      api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(statisticsPath("/api/statistics/node")),
     ]);
-    setUsers(nextUsers); setStorage(nextStorage); setSettings(nextSettings); setLogs(nextLogs);
+    setUsers(nextUsers); setStorage(nextStorage); setSettings(nextSettings); setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
   }, []);
   useEffect(() => { if (verified) load().catch((reason) => notify(messageFor(reason))); }, [load, notify, verified]);
   async function beginSetup(event: FormEvent) {
@@ -569,9 +574,9 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       {!totpReady && <form className="card create-user" onSubmit={setup ? enableTOTP : beginSetup}><h3>啟用雙因素驗證</h3><p className="muted">管理後台必須使用密碼與 TOTP 驗證。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label>{setup && <><label>TOTP 密鑰<input readOnly value={setup.secret} /></label><small>請將密鑰加入驗證器後輸入六位數驗證碼。</small><label>驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label></>}<button className="primary">{setup ? "確認並啟用" : "產生 TOTP 密鑰"}</button></form>}
       {totpReady && !verified && <form className="card create-user" onSubmit={verify}><h3>重新驗證管理員</h3><p className="muted">驗證效力為 15 分鐘。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label><label>六位數驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label><button className="primary">解鎖管理後台</button></form>}
       {verified && <>
-      <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核紀錄</button></div>
+      <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核與失敗（{failures.length}）</button></div>
       {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>建立使用者</h3><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label><label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label><label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">建立帳號</button></form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
-      {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
+      {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="在線設備" value={nodeMetrics.at(-1)!.onlineDevices.toLocaleString()} note="即時連線" /><Metric label="進行中傳輸" value={nodeMetrics.at(-1)!.activeTransfers.toLocaleString()} note="目前工作" /></div>}{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
       {tab === "audit" && <><form className="card settings-form" onSubmit={deleteGroupContent}><div className="list-title"><div><p className="eyebrow">CONTENT CONTROL</p><h3>刪除群組內容</h3></div><button className="text-danger">從節點刪除</button></div><label>群組傳輸 ID<input value={groupTransferId} onChange={(event) => setGroupTransferId(event.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required /></label><small>內容會從群組內容流移除並刪除節點檔案；無法保證刪除設備已下載的副本。</small></form><div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div></>}
       </>}
     </section>

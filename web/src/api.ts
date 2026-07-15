@@ -104,6 +104,23 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AdminFailure = {
+  transferId: string;
+  targetDeviceId: string;
+  errorCode: string;
+  createdAt: string;
+};
+
+export type NodeMetric = {
+  recordedAt: string;
+  cpuPercent: number;
+  memoryBytes: number;
+  diskBytes: number;
+  cacheBytes: number;
+  onlineDevices: number;
+  activeTransfers: number;
+};
+
 type TokenPair = {
   accessToken: string;
   refreshToken: string;
