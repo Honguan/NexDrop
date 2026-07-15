@@ -17,6 +17,7 @@ import (
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/maintenance"
+	"nexdrop/internal/monitoring"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
@@ -71,6 +72,11 @@ func main() {
 	go func() {
 		_, _ = cleaner.RunOnce(context.Background(), 100)
 		cleaner.Start(context.Background(), time.Hour)
+	}()
+	collector := monitoring.NewCollector(store, monitoring.NewSystemSampler(), storagePath)
+	go func() {
+		_ = collector.RunOnce(context.Background())
+		collector.Start(context.Background(), time.Minute)
 	}()
 	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
 	presenceHub := presence.NewHub(authService, store)
