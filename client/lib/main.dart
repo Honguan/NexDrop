@@ -5,11 +5,60 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:workmanager/workmanager.dart';
 
 import 'app_controller.dart';
+import 'core/api_client.dart';
+import 'core/local_database.dart';
+
+const _backgroundSyncTask = 'nexdrop.background-sync';
+
+@pragma('vm:entry-point')
+void backgroundCallbackDispatcher() {
+  Workmanager().executeTask((_, _) async {
+    final api = ApiClient();
+    final database = LocalDatabase();
+    try {
+      if (!await api.restore()) return true;
+      final transfers = await api.transfers();
+      for (final transfer in transfers) {
+        await database.cacheTransfer(
+          id: transfer.id,
+          contentType: transfer.contentType,
+          route:
+              transfer.targets.map((target) => target.route).toSet().length == 1
+              ? transfer.targets.first.route
+              : 'MIXED',
+          status: transfer.status,
+          totalBytes: transfer.files.fold<int>(
+            0,
+            (total, file) => total + file.size,
+          ),
+          createdAt: transfer.createdAt,
+        );
+      }
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      await database.close();
+      api.close();
+    }
+  });
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isAndroid) {
+    await Workmanager().initialize(backgroundCallbackDispatcher);
+    await Workmanager().registerPeriodicTask(
+      _backgroundSyncTask,
+      _backgroundSyncTask,
+      frequency: const Duration(minutes: 15),
+      constraints: Constraints(networkType: NetworkType.connected),
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+    );
+  }
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
     await windowManager.waitUntilReadyToShow(
@@ -313,6 +362,27 @@ class _SendViewState extends State<SendView> {
   final selectedDevices = <String>{};
   String? groupId;
   List<String> files = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applySharedContent());
+  }
+
+  @override
+  void didUpdateWidget(covariant SendView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applySharedContent());
+  }
+
+  void _applySharedContent() {
+    final share = widget.controller.takePendingShare();
+    if (share == null || !mounted) return;
+    setState(() {
+      content.text = share.text;
+      files = share.files;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

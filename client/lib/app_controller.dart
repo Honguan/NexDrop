@@ -9,6 +9,7 @@ import 'core/crypto_service.dart';
 import 'core/local_database.dart';
 import 'core/lan_service.dart';
 import 'core/models.dart';
+import 'core/platform_share.dart';
 import 'core/transfer_service.dart';
 
 class AppController extends ChangeNotifier {
@@ -16,7 +17,8 @@ class AppController extends ChangeNotifier {
     : api = ApiClient(),
       crypto = CryptoService(),
       database = LocalDatabase(),
-      lan = LanService() {
+      lan = LanService(),
+      platformShare = PlatformShareService() {
     transfersService = TransferService(
       api: api,
       crypto: crypto,
@@ -24,14 +26,21 @@ class AppController extends ChangeNotifier {
       lan: lan,
     );
     _lanSubscription = lan.changes.listen((_) => notifyListeners());
+    _shareSubscription = platformShare.shares.listen((share) {
+      _pendingShare = share;
+      notifyListeners();
+    });
   }
 
   final ApiClient api;
   final CryptoService crypto;
   final LocalDatabase database;
   final LanService lan;
+  final PlatformShareService platformShare;
   late final TransferService transfersService;
   StreamSubscription<Set<String>>? _lanSubscription;
+  StreamSubscription<PlatformSharePayload>? _shareSubscription;
+  PlatformSharePayload? _pendingShare;
   UserAccount? account;
   Device? currentDevice;
   List<Device> devices = const [];
@@ -49,6 +58,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> initialize() async {
     try {
+      await platformShare.initialize();
       await database.open();
       if (await api.restore()) {
         account = await api.account();
@@ -60,6 +70,12 @@ class AppController extends ChangeNotifier {
       loading = false;
       notifyListeners();
     }
+  }
+
+  PlatformSharePayload? takePendingShare() {
+    final value = _pendingShare;
+    _pendingShare = null;
+    return value;
   }
 
   Future<void> login(String node, String identifier, String password) async {
@@ -121,25 +137,30 @@ class AppController extends ChangeNotifier {
     List<String> files = const [],
   }) async {
     await _run(() async {
-      final resolved = groupId == null
-          ? recipients
-          : await transfersService.groupDevices(groupId);
-      if (files.isEmpty) {
-        await transfersService.sendText(
-          content: content,
-          devices: resolved,
-          groupId: groupId,
-          lanAvailable: lan.onlineDeviceIds,
-        );
-      } else {
-        await transfersService.sendFiles(
-          sourcePaths: files,
-          devices: resolved,
-          groupId: groupId,
-          lanAvailable: lan.onlineDeviceIds,
-        );
+      await platformShare.startTransferService();
+      try {
+        final resolved = groupId == null
+            ? recipients
+            : await transfersService.groupDevices(groupId);
+        if (files.isEmpty) {
+          await transfersService.sendText(
+            content: content,
+            devices: resolved,
+            groupId: groupId,
+            lanAvailable: lan.onlineDeviceIds,
+          );
+        } else {
+          await transfersService.sendFiles(
+            sourcePaths: files,
+            devices: resolved,
+            groupId: groupId,
+            lanAvailable: lan.onlineDeviceIds,
+          );
+        }
+        await reload();
+      } finally {
+        await platformShare.stopTransferService();
       }
-      await reload();
     });
   }
 
@@ -262,7 +283,9 @@ class AppController extends ChangeNotifier {
   void dispose() {
     unawaited(_disconnect());
     unawaited(_lanSubscription?.cancel());
+    unawaited(_shareSubscription?.cancel());
     unawaited(lan.dispose());
+    unawaited(platformShare.dispose());
     unawaited(database.close());
     api.close();
     super.dispose();
