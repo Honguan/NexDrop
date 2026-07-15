@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   bonsoir_windows
+  desktop_drop
   flutter_secure_storage_windows
   screen_retriever_windows
   tray_manager

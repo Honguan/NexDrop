@@ -53,6 +53,7 @@ dependencies:
   basic_utils: ^5.8.2
   bonsoir: ^7.1.4
   qr_flutter: ^4.1.0
+  desktop_drop: ^0.7.1
 
 dev_dependencies:
   flutter_test:

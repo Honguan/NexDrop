@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:tray_manager/tray_manager.dart';
@@ -377,6 +378,7 @@ class _SendViewState extends State<SendView> {
   List<Device> groupDevices = const [];
   List<String> files = const [];
   String routeMode = 'AUTOMATIC';
+  bool draggingFiles = false;
 
   @override
   void initState() {
@@ -407,99 +409,118 @@ class _SendViewState extends State<SendView> {
     return _Page(
       title: '安全傳送',
       subtitle: '區網可用時直接傳輸，否則交由你的 Linux 節點接力。',
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: content,
-                minLines: 4,
-                maxLines: 8,
-                enabled: files.isEmpty,
-                decoration: const InputDecoration(
-                  labelText: '文字或網址',
-                  alignLabelWithHint: true,
+      child: DropTarget(
+        onDragEntered: (_) => setState(() => draggingFiles = true),
+        onDragExited: (_) => setState(() => draggingFiles = false),
+        onDragDone: (details) => setState(() {
+          draggingFiles = false;
+          files = {
+            ...files,
+            ...details.files.map((file) => file.path),
+          }.toList();
+        }),
+        child: Card(
+          color: draggingFiles
+              ? Theme.of(context).colorScheme.primaryContainer
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: content,
+                  minLines: 4,
+                  maxLines: 8,
+                  enabled: files.isEmpty,
+                  decoration: const InputDecoration(
+                    labelText: '文字或網址',
+                    alignLabelWithHint: true,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _pickFiles,
-                icon: const Icon(Icons.attach_file_rounded),
-                label: Text(files.isEmpty ? '選擇檔案' : '${files.length} 個檔案已選擇'),
-              ),
-              const SizedBox(height: 22),
-              Text('信任設備', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: trusted
-                    .map(
-                      (device) => FilterChip(
-                        label: Text(device.displayName),
-                        selected: selectedDevices.contains(device.id),
-                        onSelected: groupId == null || !groupAll
-                            ? (_) => setState(
-                                () => selectedDevices.contains(device.id)
-                                    ? selectedDevices.remove(device.id)
-                                    : selectedDevices.add(device.id),
-                              )
-                            : null,
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: _pickFiles,
+                  icon: const Icon(Icons.attach_file_rounded),
+                  label: Text(
+                    files.isEmpty ? '選擇檔案' : '${files.length} 個檔案已選擇',
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Text('信任設備', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: trusted
+                      .map(
+                        (device) => FilterChip(
+                          label: Text(device.displayName),
+                          selected: selectedDevices.contains(device.id),
+                          onSelected: groupId == null || !groupAll
+                              ? (_) => setState(
+                                  () => selectedDevices.contains(device.id)
+                                      ? selectedDevices.remove(device.id)
+                                      : selectedDevices.add(device.id),
+                                )
+                              : null,
+                        ),
+                      )
+                      .toList(),
+                ),
+                if (widget.controller.groups.isNotEmpty) ...[
+                  const SizedBox(height: 18),
+                  DropdownButtonFormField<String?>(
+                    initialValue: groupId,
+                    decoration: const InputDecoration(labelText: '或傳送至群組'),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('不使用群組')),
+                      ...widget.controller.groups.map(
+                        (group) => DropdownMenuItem(
+                          value: group.id,
+                          child: Text(group.name),
+                        ),
                       ),
-                    )
-                    .toList(),
-              ),
-              if (widget.controller.groups.isNotEmpty) ...[
-                const SizedBox(height: 18),
-                DropdownButtonFormField<String?>(
-                  initialValue: groupId,
-                  decoration: const InputDecoration(labelText: '或傳送至群組'),
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('不使用群組')),
-                    ...widget.controller.groups.map(
-                      (group) => DropdownMenuItem(
-                        value: group.id,
-                        child: Text(group.name),
-                      ),
+                    ],
+                    onChanged: _selectGroup,
+                  ),
+                  if (groupId != null)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('傳送至群組全部設備'),
+                      value: groupAll,
+                      onChanged: (value) => setState(() {
+                        groupAll = value;
+                        if (value) selectedDevices.clear();
+                      }),
                     ),
-                  ],
-                  onChanged: _selectGroup,
-                ),
-                if (groupId != null)
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('傳送至群組全部設備'),
-                    value: groupAll,
-                    onChanged: (value) => setState(() {
-                      groupAll = value;
-                      if (value) selectedDevices.clear();
-                    }),
-                  ),
-              ],
-              const SizedBox(height: 18),
-              DropdownButtonFormField<String>(
-                initialValue: routeMode,
-                decoration: const InputDecoration(labelText: '傳輸路由'),
-                items: const [
-                  DropdownMenuItem(value: 'AUTOMATIC', child: Text('自動（區網優先）')),
-                  DropdownMenuItem(value: 'LAN_ONLY', child: Text('僅區域網路')),
-                  DropdownMenuItem(
-                    value: 'NODE_ONLY',
-                    child: Text('僅 Linux 節點'),
-                  ),
-                  DropdownMenuItem(value: 'WAIT_LAN', child: Text('等待區域網路')),
                 ],
-                onChanged: (value) => setState(() => routeMode = value!),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _canSend && !widget.controller.busy ? _send : null,
-                icon: const Icon(Icons.lock_rounded),
-                label: Text(widget.controller.busy ? '加密與傳送中…' : '建立安全傳輸'),
-              ),
-            ],
+                const SizedBox(height: 18),
+                DropdownButtonFormField<String>(
+                  initialValue: routeMode,
+                  decoration: const InputDecoration(labelText: '傳輸路由'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'AUTOMATIC',
+                      child: Text('自動（區網優先）'),
+                    ),
+                    DropdownMenuItem(value: 'LAN_ONLY', child: Text('僅區域網路')),
+                    DropdownMenuItem(
+                      value: 'NODE_ONLY',
+                      child: Text('僅 Linux 節點'),
+                    ),
+                    DropdownMenuItem(value: 'WAIT_LAN', child: Text('等待區域網路')),
+                  ],
+                  onChanged: (value) => setState(() => routeMode = value!),
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _canSend && !widget.controller.busy ? _send : null,
+                  icon: const Icon(Icons.lock_rounded),
+                  label: Text(widget.controller.busy ? '加密與傳送中…' : '建立安全傳輸'),
+                ),
+              ],
+            ),
           ),
         ),
       ),
