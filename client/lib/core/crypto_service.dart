@@ -53,18 +53,24 @@ class EncryptedFileUpload {
   const EncryptedFileUpload({
     required this.originalName,
     required this.originalSize,
+    required this.originalModifiedAt,
+    required this.originalSha256,
     required this.tempPath,
     required this.size,
     required this.sha256,
     required this.chunks,
+    required this.nonces,
   });
 
   final String originalName;
   final int originalSize;
+  final DateTime originalModifiedAt;
+  final String originalSha256;
   final String tempPath;
   final int size;
   final String sha256;
   final List<EncryptedFileChunk> chunks;
+  final List<String> nonces;
 
   Map<String, dynamic> get record => {
     'name':
@@ -82,11 +88,13 @@ class EncryptedFileTransfer {
     required this.content,
     required this.wrappedContentKeys,
     required this.files,
+    required this.contentKey,
   });
 
   final String content;
   final Map<String, String> wrappedContentKeys;
   final List<EncryptedFileUpload> files;
+  final List<int> contentKey;
 }
 
 class FileChunkDecryptor {
@@ -189,13 +197,18 @@ class CryptoService {
       final output = await File(tempPath).open(mode: FileMode.write);
       final wholeDigest = _DigestSink();
       final wholeInput = hashes.sha256.startChunkedConversion(wholeDigest);
+      final sourceDigest = _DigestSink();
+      final sourceInput = hashes.sha256.startChunkedConversion(sourceDigest);
       final chunks = <EncryptedFileChunk>[];
+      final nonces = <String>[];
       var encryptedSize = 0;
       try {
         while (true) {
           final plaintext = await input.read(plaintextChunkSize);
           if (plaintext.isEmpty) break;
+          sourceInput.add(plaintext);
           final nonce = _aes.newNonce();
+          nonces.add(base64Encode(nonce));
           final encrypted = await _aes.encrypt(
             plaintext,
             secretKey: contentKey,
@@ -220,6 +233,7 @@ class CryptoService {
         await input.close();
         await output.close();
         wholeInput.close();
+        sourceInput.close();
       }
       metadata.add({
         'name': path.basename(sourcePath),
@@ -230,10 +244,13 @@ class CryptoService {
         EncryptedFileUpload(
           originalName: path.basename(sourcePath),
           originalSize: stat.size,
+          originalModifiedAt: stat.modified,
+          originalSha256: sourceDigest.value.toString(),
           tempPath: tempPath,
           size: encryptedSize,
           sha256: base64Encode(wholeDigest.value.bytes),
           chunks: chunks,
+          nonces: nonces,
         ),
       );
     }
@@ -254,6 +271,96 @@ class CryptoService {
       ),
       wrappedContentKeys: wrapped,
       files: uploads,
+      contentKey: contentKeyBytes,
+    );
+  }
+
+  Future<EncryptedFileUpload> recreateEncryptedFile({
+    required String sourcePath,
+    required String tempDirectory,
+    required List<int> contentKey,
+    required List<String> nonces,
+  }) async {
+    const plaintextChunkSize = 8 * 1024 * 1024;
+    final source = File(sourcePath);
+    final stat = await source.stat();
+    if (stat.type != FileSystemEntityType.file) {
+      throw const FileSystemException('來源檔案不存在');
+    }
+    await Directory(tempDirectory).create(recursive: true);
+    final tempPath = path.join(
+      tempDirectory,
+      'waiting-${DateTime.now().microsecondsSinceEpoch}.nxd',
+    );
+    final input = await source.open();
+    final output = await File(tempPath).open(mode: FileMode.write);
+    final wholeDigest = _DigestSink();
+    final wholeInput = hashes.sha256.startChunkedConversion(wholeDigest);
+    final sourceDigest = _DigestSink();
+    final sourceInput = hashes.sha256.startChunkedConversion(sourceDigest);
+    final chunks = <EncryptedFileChunk>[];
+    final key = SecretKey(contentKey);
+    var encryptedSize = 0;
+    var index = 0;
+    Object? failure;
+    StackTrace? failureStack;
+    try {
+      while (true) {
+        final plaintext = await input.read(plaintextChunkSize);
+        if (plaintext.isEmpty) break;
+        if (index >= nonces.length) {
+          throw const FormatException('等待 LAN 加密配方不完整');
+        }
+        sourceInput.add(plaintext);
+        final nonce = base64Decode(nonces[index]);
+        final encrypted = await _aes.encrypt(
+          plaintext,
+          secretKey: key,
+          nonce: nonce,
+        );
+        final bytes = <int>[
+          ...nonce,
+          ...encrypted.cipherText,
+          ...encrypted.mac.bytes,
+        ];
+        await output.writeFrom(bytes);
+        wholeInput.add(bytes);
+        encryptedSize += bytes.length;
+        chunks.add(
+          EncryptedFileChunk(
+            size: bytes.length,
+            sha256Hex: hashes.sha256.convert(bytes).toString(),
+          ),
+        );
+        index++;
+      }
+      if (index != nonces.length) {
+        throw const FormatException('來源檔案分段數已變更');
+      }
+    } catch (error, stack) {
+      failure = error;
+      failureStack = stack;
+    } finally {
+      await input.close();
+      await output.close();
+      wholeInput.close();
+      sourceInput.close();
+    }
+    if (failure != null) {
+      final temporary = File(tempPath);
+      if (await temporary.exists()) await temporary.delete();
+      Error.throwWithStackTrace(failure, failureStack!);
+    }
+    return EncryptedFileUpload(
+      originalName: path.basename(sourcePath),
+      originalSize: stat.size,
+      originalModifiedAt: stat.modified,
+      originalSha256: sourceDigest.value.toString(),
+      tempPath: tempPath,
+      size: encryptedSize,
+      sha256: base64Encode(wholeDigest.value.bytes),
+      chunks: chunks,
+      nonces: nonces,
     );
   }
 

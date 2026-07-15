@@ -540,52 +540,93 @@ class _ActivityViewState extends State<ActivityView> {
     subtitle: '跨區網與節點的任務、路徑與交付狀態。',
     child: Card(
       child: Column(
-        children: widget.controller.transfers
-            .map(
-              (transfer) => ListTile(
-                leading: CircleAvatar(
-                  child: Icon(
-                    transfer.files.isEmpty
-                        ? Icons.text_snippet_rounded
-                        : Icons.insert_drive_file_rounded,
-                  ),
-                ),
-                title: Text(
+        children: [
+          ...widget.controller.transfers.map(
+            (transfer) => ListTile(
+              leading: CircleAvatar(
+                child: Icon(
                   transfer.files.isEmpty
-                      ? transfer.contentType
-                      : '${transfer.files.length} 個加密檔案',
-                ),
-                subtitle: Text(
-                  '${transfer.targets.map((target) => target.route).join('、')} · ${_date(transfer.createdAt)}',
-                ),
-                onTap:
-                    transfer.wrappedContentKeys.containsKey(
-                      widget.controller.currentDevice?.id,
-                    )
-                    ? () => _open(transfer)
-                    : null,
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (busyId == transfer.id)
-                      const SizedBox.square(
-                        dimension: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    else
-                      Chip(label: Text(transfer.status)),
-                    if (transfer.senderDeviceId ==
-                        widget.controller.currentDevice?.id)
-                      IconButton(
-                        tooltip: '取消傳輸',
-                        icon: const Icon(Icons.cancel_outlined),
-                        onPressed: () => _cancel(transfer),
-                      ),
-                  ],
+                      ? Icons.text_snippet_rounded
+                      : Icons.insert_drive_file_rounded,
                 ),
               ),
-            )
-            .toList(),
+              title: Text(
+                transfer.files.isEmpty
+                    ? transfer.contentType
+                    : '${transfer.files.length} 個加密檔案',
+              ),
+              subtitle: Text(
+                '${transfer.targets.map((target) => target.route).join('、')} · ${_date(transfer.createdAt)}',
+              ),
+              onTap:
+                  transfer.wrappedContentKeys.containsKey(
+                    widget.controller.currentDevice?.id,
+                  )
+                  ? () => _open(transfer)
+                  : null,
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (busyId == transfer.id)
+                    const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    Chip(label: Text(transfer.status)),
+                  if (transfer.senderDeviceId ==
+                      widget.controller.currentDevice?.id)
+                    IconButton(
+                      tooltip: '取消傳輸',
+                      icon: const Icon(Icons.cancel_outlined),
+                      onPressed: () => _cancel(transfer),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          ...widget.controller.waitingLanTasks.map(
+            (task) => ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.wifi_tethering_rounded),
+              ),
+              title: Text(File(task.sourcePath).uri.pathSegments.last),
+              subtitle: Text('等待區網 · ${task.status}'),
+              trailing: Wrap(
+                spacing: 4,
+                children: [
+                  IconButton(
+                    tooltip: task.status == 'PAUSED' ? '繼續' : '暫停',
+                    icon: Icon(
+                      task.status == 'PAUSED'
+                          ? Icons.play_arrow_rounded
+                          : Icons.pause_rounded,
+                    ),
+                    onPressed: () => unawaited(
+                      widget.controller
+                          .setWaitingPaused(task, task.status != 'PAUSED')
+                          .catchError((_) {}),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '重新指定來源檔案',
+                    icon: const Icon(Icons.drive_file_move_outline),
+                    onPressed: () => _replaceSource(task),
+                  ),
+                  IconButton(
+                    tooltip: '移除等待任務',
+                    icon: const Icon(Icons.delete_outline_rounded),
+                    onPressed: () => unawaited(
+                      widget.controller
+                          .removeWaitingTask(task)
+                          .catchError((_) {}),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     ),
   );
@@ -633,6 +674,20 @@ class _ActivityViewState extends State<ActivityView> {
       // AppController displays the actionable error banner.
     } finally {
       if (mounted) setState(() => busyId = null);
+    }
+  }
+
+  Future<void> _replaceSource(WaitingLanTask task) async {
+    final result = await FilePicker.pickFiles(allowMultiple: false);
+    final selected = result?.files.single.path;
+    if (selected == null) return;
+    try {
+      await widget.controller.replaceWaitingSource(task, selected);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('檔案內容已變更，請建立新的傳輸任務')));
     }
   }
 }

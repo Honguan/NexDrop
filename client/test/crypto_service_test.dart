@@ -64,5 +64,13 @@ void main() {
       utf8.decode(await decryptor.decrypt(encryptedBytes)),
       'NexDrop encrypted file',
     );
+    final recreated = await sender.recreateEncryptedFile(
+      sourcePath: source.path,
+      tempDirectory: '${root.path}${Platform.pathSeparator}recreated',
+      contentKey: encrypted.contentKey,
+      nonces: encrypted.files.single.nonces,
+    );
+    expect(await File(recreated.tempPath).readAsBytes(), encryptedBytes);
+    expect(recreated.sha256, encrypted.files.single.sha256);
   });
 }

@@ -33,12 +33,14 @@ class TransferService {
        _lanIdentityStore = lanIdentityStore ?? LanIdentityStore();
 
   static const _deviceKeyPrefix = 'nexdrop.device_id.';
+  static const _waitingRecipePrefix = 'nexdrop.waiting.recipe.';
   final ApiClient api;
   final CryptoService crypto;
   final LocalDatabase database;
   final LanService lan;
   final FlutterSecureStorage _storage;
   final LanIdentityStore _lanIdentityStore;
+  bool _retryingWaitingLan = false;
 
   Future<DeviceSession> synchronizeDevice(UserAccount account) async {
     final allDevices = await api.devices();
@@ -196,6 +198,38 @@ class TransferService {
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>;
       final transfer = TransferSummary.fromJson(response);
+      final waitingTargets = transfer.fileTargets
+          .where((target) => target.route == 'WAITING_LAN')
+          .toList();
+      if (waitingTargets.isNotEmpty) {
+        await _storage.write(
+          key: '$_waitingRecipePrefix${transfer.id}',
+          value: jsonEncode({
+            'contentKey': base64Encode(encrypted.contentKey),
+            'files': {
+              for (final (index, file) in encrypted.files.indexed)
+                '$index': {'nonces': file.nonces, 'sha256': file.sha256},
+            },
+          }),
+        );
+        for (final target in waitingTargets) {
+          final source = encrypted.files[target.fileIndex];
+          await database.saveWaitingLanTask(
+            id: '${transfer.id}:${target.fileIndex}:${target.deviceId}',
+            transferId: transfer.id,
+            fileId: transfer.files[target.fileIndex].id,
+            fileIndex: target.fileIndex,
+            targetDeviceId: target.deviceId,
+            targetRoute: transfer.targets
+                .firstWhere((item) => item.deviceId == target.deviceId)
+                .route,
+            sourcePath: sourcePaths[target.fileIndex],
+            sourceSize: source.originalSize,
+            sourceModifiedAt: source.originalModifiedAt,
+            sourceSha256: source.originalSha256,
+          );
+        }
+      }
       final lanBytes = <String, int>{};
       for (final target in transfer.fileTargets.where(
         (target) => target.route == 'LAN',
@@ -406,6 +440,195 @@ class TransferService {
 
   Future<void> pause(String transferId, String deviceId, int bytes) =>
       _reportProgress(transferId, deviceId, 'PAUSED', bytes);
+
+  Future<void> retryWaitingLan() async {
+    if (_retryingWaitingLan) return;
+    _retryingWaitingLan = true;
+    try {
+      final tasks = await database.waitingLanTasks();
+      for (final task in tasks) {
+        if (task.status == 'DELIVERED_PENDING_SYNC') {
+          final hasOutstanding = (await database.waitingLanTasks()).any(
+            (other) =>
+                other.id != task.id &&
+                other.transferId == task.transferId &&
+                other.targetDeviceId == task.targetDeviceId &&
+                other.status != 'DELIVERED_PENDING_SYNC',
+          );
+          if (await _tryReportWaiting(
+            task,
+            hasOutstanding ? 'TRANSFERRING_LAN' : 'DELIVERED',
+            route: task.targetRoute == 'WAITING_LAN' ? 'LAN' : null,
+          )) {
+            await database.deleteWaitingLanTask(task.id);
+            await _cleanupWaitingRecipe(task.transferId);
+          }
+          continue;
+        }
+        if (task.status != 'WAITING_FOR_LAN') continue;
+        final endpoint = lan.endpointFor(task.targetDeviceId);
+        if (endpoint == null) continue;
+        final source = File(task.sourcePath);
+        if (!await source.exists()) {
+          await database.updateWaitingLanStatus(task.id, 'SOURCE_FILE_MISSING');
+          await _tryReportWaiting(task, 'SOURCE_FILE_MISSING');
+          continue;
+        }
+        final stat = await source.stat();
+        final currentDigest = await hashes.sha256.bind(source.openRead()).first;
+        if (stat.size != task.sourceSize ||
+            stat.modified.toUtc().millisecondsSinceEpoch !=
+                task.sourceModifiedAt.toUtc().millisecondsSinceEpoch ||
+            currentDigest.toString() != task.sourceSha256) {
+          await database.updateWaitingLanStatus(task.id, 'SOURCE_FILE_CHANGED');
+          await _tryReportWaiting(task, 'SOURCE_FILE_CHANGED');
+          continue;
+        }
+        final encodedRecipe = await _storage.read(
+          key: '$_waitingRecipePrefix${task.transferId}',
+        );
+        if (encodedRecipe == null) {
+          await database.updateWaitingLanStatus(task.id, 'FAILED');
+          continue;
+        }
+        final recipe = jsonDecode(encodedRecipe) as Map<String, dynamic>;
+        final files = recipe['files'] as Map<String, dynamic>;
+        final fileRecipe = files['${task.fileIndex}'] as Map<String, dynamic>;
+        final support = await getApplicationSupportDirectory();
+        EncryptedFileUpload? recreated;
+        try {
+          recreated = await crypto.recreateEncryptedFile(
+            sourcePath: task.sourcePath,
+            tempDirectory: path.join(support.path, 'temp'),
+            contentKey: base64Decode(recipe['contentKey'] as String),
+            nonces: (fileRecipe['nonces'] as List<dynamic>).cast<String>(),
+          );
+          if (recreated.sha256 != fileRecipe['sha256']) {
+            throw const FormatException('等待 LAN 密文驗證失敗');
+          }
+          await _tryReportWaiting(task, 'TRANSFERRING_LAN');
+          await _uploadLanFile(
+            endpoint,
+            task.transferId,
+            task.fileId,
+            recreated,
+          );
+          final remaining = (await database.waitingLanTasks()).where(
+            (other) =>
+                other.id != task.id &&
+                other.transferId == task.transferId &&
+                other.targetDeviceId == task.targetDeviceId,
+          );
+          final synchronized = await _tryReportWaiting(
+            task,
+            remaining.isEmpty ? 'DELIVERED' : 'TRANSFERRING_LAN',
+            route: task.targetRoute == 'WAITING_LAN' ? 'LAN' : null,
+          );
+          if (synchronized) {
+            await database.deleteWaitingLanTask(task.id);
+            await _cleanupWaitingRecipe(task.transferId);
+          } else {
+            await database.updateWaitingLanStatus(
+              task.id,
+              'DELIVERED_PENDING_SYNC',
+            );
+          }
+        } finally {
+          if (recreated != null) {
+            final temporary = File(recreated.tempPath);
+            if (await temporary.exists()) await temporary.delete();
+          }
+        }
+      }
+    } finally {
+      _retryingWaitingLan = false;
+    }
+  }
+
+  Future<void> setWaitingPaused(WaitingLanTask task, bool paused) async {
+    final status = paused ? 'PAUSED' : 'WAITING_FOR_LAN';
+    await database.updateWaitingLanStatus(task.id, status);
+    if (paused) await _tryReportWaiting(task, 'PAUSED');
+  }
+
+  Future<void> removeWaitingTask(WaitingLanTask task) async {
+    await database.deleteWaitingLanTask(task.id);
+    await _cleanupWaitingRecipe(task.transferId);
+    final hasRemainingTarget = (await database.waitingLanTasks()).any(
+      (other) =>
+          other.transferId == task.transferId &&
+          other.targetDeviceId == task.targetDeviceId,
+    );
+    if (hasRemainingTarget) return;
+    try {
+      await api.sendJson(
+        '/api/transfers/${task.transferId}/targets/${task.targetDeviceId}',
+        'PUT',
+        {
+          'status': 'FAILED',
+          'bytesTransferred': 0,
+          'errorCode': 'USER_CANCELLED',
+        },
+      );
+    } catch (_) {
+      // Local removal remains effective while the node is offline.
+    }
+  }
+
+  Future<void> replaceWaitingSource(
+    WaitingLanTask task,
+    String sourcePath,
+  ) async {
+    final source = File(sourcePath);
+    final stat = await source.stat();
+    if (stat.type != FileSystemEntityType.file) {
+      throw const FileSystemException('來源檔案不存在');
+    }
+    final digest = await hashes.sha256.bind(source.openRead()).first;
+    if (stat.size != task.sourceSize ||
+        digest.toString() != task.sourceSha256) {
+      await database.updateWaitingLanStatus(task.id, 'SOURCE_FILE_CHANGED');
+      throw const FormatException('SOURCE_FILE_CHANGED');
+    }
+    await database.replaceWaitingLanSource(
+      id: task.id,
+      sourcePath: sourcePath,
+      sourceSize: stat.size,
+      sourceModifiedAt: stat.modified,
+      sourceSha256: digest.toString(),
+    );
+  }
+
+  Future<bool> _tryReportWaiting(
+    WaitingLanTask task,
+    String status, {
+    String? route,
+  }) async {
+    try {
+      final progress = <String, dynamic>{
+        'status': status,
+        'bytesTransferred': 0,
+      };
+      if (route != null) progress['route'] = route;
+      await api.sendJson(
+        '/api/transfers/${task.transferId}/targets/${task.targetDeviceId}',
+        'PUT',
+        progress,
+      );
+      return true;
+    } catch (_) {
+      // LAN-only delivery is synchronized when the node becomes available.
+      return false;
+    }
+  }
+
+  Future<void> _cleanupWaitingRecipe(String transferId) async {
+    if (!(await database.waitingLanTasks()).any(
+      (task) => task.transferId == transferId,
+    )) {
+      await _storage.delete(key: '$_waitingRecipePrefix$transferId');
+    }
+  }
 
   Future<String> _availablePath(String directory, String requestedName) async {
     final safe = requestedName.replaceAll(

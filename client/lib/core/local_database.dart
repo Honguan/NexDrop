@@ -5,6 +5,48 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as mobile;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+class WaitingLanTask {
+  const WaitingLanTask({
+    required this.id,
+    required this.transferId,
+    required this.fileId,
+    required this.fileIndex,
+    required this.targetDeviceId,
+    required this.targetRoute,
+    required this.sourcePath,
+    required this.sourceSize,
+    required this.sourceModifiedAt,
+    required this.sourceSha256,
+    required this.status,
+  });
+
+  factory WaitingLanTask.fromRow(Map<String, Object?> row) => WaitingLanTask(
+    id: row['id'] as String,
+    transferId: row['transfer_id'] as String,
+    fileId: row['file_id'] as String,
+    fileIndex: row['file_index'] as int,
+    targetDeviceId: row['target_device_id'] as String,
+    targetRoute: row['target_route'] as String,
+    sourcePath: row['source_path'] as String,
+    sourceSize: row['source_size'] as int,
+    sourceModifiedAt: DateTime.parse(row['source_modified_at'] as String),
+    sourceSha256: row['source_sha256'] as String,
+    status: row['status'] as String,
+  );
+
+  final String id;
+  final String transferId;
+  final String fileId;
+  final int fileIndex;
+  final String targetDeviceId;
+  final String targetRoute;
+  final String sourcePath;
+  final int sourceSize;
+  final DateTime sourceModifiedAt;
+  final String sourceSha256;
+  final String status;
+}
+
 class LocalDatabase {
   Database? _database;
 
@@ -21,9 +63,10 @@ class LocalDatabase {
     _database = await databaseFactory.openDatabase(
       path.join(support.path, 'nexdrop.db'),
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 3,
         onConfigure: (database) => database.execute('PRAGMA foreign_keys = ON'),
         onCreate: _create,
+        onUpgrade: _upgrade,
       ),
     );
     return _database!;
@@ -59,7 +102,11 @@ class LocalDatabase {
     await database.execute('''
       CREATE TABLE waiting_lan_tasks (
         id TEXT PRIMARY KEY,
+        transfer_id TEXT NOT NULL,
+        file_id TEXT NOT NULL,
+        file_index INTEGER NOT NULL,
         target_device_id TEXT NOT NULL,
+        target_route TEXT NOT NULL,
         source_path TEXT NOT NULL,
         source_size INTEGER NOT NULL,
         source_modified_at TEXT NOT NULL,
@@ -90,6 +137,29 @@ class LocalDatabase {
         read_at TEXT NOT NULL
       )
     ''');
+  }
+
+  Future<void> _upgrade(
+    Database database,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 2) {
+      await database.execute(
+        "ALTER TABLE waiting_lan_tasks ADD COLUMN transfer_id TEXT NOT NULL DEFAULT ''",
+      );
+      await database.execute(
+        "ALTER TABLE waiting_lan_tasks ADD COLUMN file_id TEXT NOT NULL DEFAULT ''",
+      );
+      await database.execute(
+        'ALTER TABLE waiting_lan_tasks ADD COLUMN file_index INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldVersion < 3) {
+      await database.execute(
+        "ALTER TABLE waiting_lan_tasks ADD COLUMN target_route TEXT NOT NULL DEFAULT 'WAITING_LAN'",
+      );
+    }
   }
 
   Future<void> saveSetting(String key, String value) async {
@@ -141,6 +211,94 @@ class LocalDatabase {
       'local_path': localPath,
       'downloaded_at': DateTime.now().toUtc().toIso8601String(),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> saveWaitingLanTask({
+    required String id,
+    required String transferId,
+    required String fileId,
+    required int fileIndex,
+    required String targetDeviceId,
+    required String targetRoute,
+    required String sourcePath,
+    required int sourceSize,
+    required DateTime sourceModifiedAt,
+    required String sourceSha256,
+  }) async {
+    final database = await open();
+    final now = DateTime.now().toUtc().toIso8601String();
+    await database.insert('waiting_lan_tasks', {
+      'id': id,
+      'transfer_id': transferId,
+      'file_id': fileId,
+      'file_index': fileIndex,
+      'target_device_id': targetDeviceId,
+      'target_route': targetRoute,
+      'source_path': sourcePath,
+      'source_size': sourceSize,
+      'source_modified_at': sourceModifiedAt.toUtc().toIso8601String(),
+      'source_sha256': sourceSha256,
+      'completed_chunks': '[]',
+      'status': 'WAITING_FOR_LAN',
+      'created_at': now,
+      'updated_at': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<WaitingLanTask>> waitingLanTasks() async {
+    final database = await open();
+    final rows = await database.query(
+      'waiting_lan_tasks',
+      where: 'transfer_id <> ? AND file_id <> ?',
+      whereArgs: ['', ''],
+      orderBy: 'created_at ASC',
+    );
+    return rows.map(WaitingLanTask.fromRow).toList();
+  }
+
+  Future<void> updateWaitingLanStatus(String id, String status) async {
+    final database = await open();
+    await database.update(
+      'waiting_lan_tasks',
+      {
+        'status': status,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteWaitingLanTask(String id) async {
+    final database = await open();
+    await database.delete(
+      'waiting_lan_tasks',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> replaceWaitingLanSource({
+    required String id,
+    required String sourcePath,
+    required int sourceSize,
+    required DateTime sourceModifiedAt,
+    required String sourceSha256,
+  }) async {
+    final database = await open();
+    await database.update(
+      'waiting_lan_tasks',
+      {
+        'source_path': sourcePath,
+        'source_size': sourceSize,
+        'source_modified_at': sourceModifiedAt.toUtc().toIso8601String(),
+        'source_sha256': sourceSha256,
+        'status': 'WAITING_FOR_LAN',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   Future<void> close() async {

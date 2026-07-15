@@ -26,6 +26,7 @@ class AppController extends ChangeNotifier {
       lan: lan,
     );
     _lanSubscription = lan.changes.listen((_) {
+      unawaited(_retryWaitingLan());
       unawaited(_updateDesktopStatus());
       notifyListeners();
     });
@@ -49,6 +50,7 @@ class AppController extends ChangeNotifier {
   List<Device> devices = const [];
   List<GroupSummary> groups = const [];
   List<TransferSummary> transfers = const [];
+  List<WaitingLanTask> waitingLanTasks = const [];
   bool loading = true;
   bool busy = false;
   bool nodeOnline = false;
@@ -63,6 +65,7 @@ class AppController extends ChangeNotifier {
     try {
       await platformShare.initialize();
       await database.open();
+      waitingLanTasks = await database.waitingLanTasks();
       if (await api.restore()) {
         account = await api.account();
         await _synchronize();
@@ -111,6 +114,7 @@ class AppController extends ChangeNotifier {
     devices = const [];
     groups = const [];
     transfers = const [];
+    waitingLanTasks = const [];
     await _updateDesktopStatus();
     notifyListeners();
   }
@@ -125,6 +129,7 @@ class AppController extends ChangeNotifier {
     devices = values[0] as List<Device>;
     groups = values[1] as List<GroupSummary>;
     transfers = values[2] as List<TransferSummary>;
+    waitingLanTasks = await database.waitingLanTasks();
     currentDevice =
         devices.where((device) => device.id == currentDevice?.id).firstOrNull ??
         currentDevice;
@@ -224,6 +229,24 @@ class AppController extends ChangeNotifier {
     await reload();
   });
 
+  Future<void> setWaitingPaused(WaitingLanTask task, bool paused) =>
+      _run(() async {
+        await transfersService.setWaitingPaused(task, paused);
+        waitingLanTasks = await database.waitingLanTasks();
+      });
+
+  Future<void> removeWaitingTask(WaitingLanTask task) => _run(() async {
+    await transfersService.removeWaitingTask(task);
+    waitingLanTasks = await database.waitingLanTasks();
+  });
+
+  Future<void> replaceWaitingSource(WaitingLanTask task, String sourcePath) =>
+      _run(() async {
+        await transfersService.replaceWaitingSource(task, sourcePath);
+        waitingLanTasks = await database.waitingLanTasks();
+        await transfersService.retryWaitingLan();
+      });
+
   Future<Map<String, dynamic>> createPairingCode(Device device) async {
     late Map<String, dynamic> result;
     await _run(
@@ -262,6 +285,7 @@ class AppController extends ChangeNotifier {
           final message = jsonDecode(event as String) as Map<String, dynamic>;
           if (message['type'] == 'connected') {
             nodeOnline = true;
+            unawaited(_retryWaitingLan());
             unawaited(_updateDesktopStatus());
             _heartbeat = Timer.periodic(
               const Duration(seconds: 15),
@@ -296,6 +320,17 @@ class AppController extends ChangeNotifier {
     _reconnect?.cancel();
     _reconnect = Timer(const Duration(seconds: 3), () => unawaited(_connect()));
     notifyListeners();
+  }
+
+  Future<void> _retryWaitingLan() async {
+    try {
+      await transfersService.retryWaitingLan();
+      waitingLanTasks = await database.waitingLanTasks();
+      notifyListeners();
+    } catch (reason) {
+      error = _message(reason);
+      notifyListeners();
+    }
   }
 
   Future<void> _disconnect() async {
