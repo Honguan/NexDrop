@@ -19,6 +19,12 @@ type ContentEnvelope = {
   ciphertext: string;
 };
 
+export type EncryptedFileUpload = {
+  metadata: { name: string; mimeType: string; size: number };
+  chunks: Array<{ data: ArrayBuffer; sha256: string }>;
+  record: { name: string; mimeType: string; size: number; sha256: string; chunkSize: number; chunkCount: number };
+};
+
 export async function ensureDeviceKey(userID: string): Promise<StoredKeyPair> {
   const existing = await readKey(userID);
   if (existing) return existing;
@@ -48,27 +54,52 @@ export async function encryptText(
   recipients: Array<{ id: string; publicKey: string }>,
 ) {
   const contentKeyBytes = crypto.getRandomValues(new Uint8Array(32));
-  const contentKey = await crypto.subtle.importKey("raw", contentKeyBytes, "AES-GCM", false, ["encrypt"]);
-  const contentNonce = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: contentNonce },
-    contentKey,
-    new TextEncoder().encode(plaintext),
-  );
-  const content: ContentEnvelope = {
-    version: 1,
-    nonce: toBase64(contentNonce),
-    ciphertext: toBase64(new Uint8Array(ciphertext)),
-  };
-  const wrappedContentKeys: Record<string, string> = {};
-  for (const recipient of recipients) {
-    wrappedContentKeys[recipient.id] = toBase64(
-      new TextEncoder().encode(JSON.stringify(await wrapKey(contentKeyBytes, recipient.publicKey))),
-    );
-  }
   return {
-    content: toBase64(new TextEncoder().encode(JSON.stringify(content))),
-    wrappedContentKeys,
+    content: await encryptEnvelope(new TextEncoder().encode(plaintext), contentKeyBytes),
+    wrappedContentKeys: await wrapForRecipients(contentKeyBytes, recipients),
+  };
+}
+
+export async function encryptFiles(files: File[], recipients: Array<{ id: string; publicKey: string }>) {
+  const plaintextChunkSize = 8 * 1024 * 1024;
+  const encryptedFiles: EncryptedFileUpload[] = [];
+  const contentKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+  const contentKey = await crypto.subtle.importKey("raw", contentKeyBytes, "AES-GCM", false, ["encrypt"]);
+  for (const [fileIndex, file] of files.entries()) {
+    const chunks: EncryptedFileUpload["chunks"] = [];
+    const encryptedParts: Uint8Array[] = [];
+    for (let offset = 0; offset < file.size; offset += plaintextChunkSize) {
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const plaintext = await file.slice(offset, Math.min(offset + plaintextChunkSize, file.size)).arrayBuffer();
+      const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, contentKey, plaintext));
+      const encrypted = new Uint8Array(nonce.length + ciphertext.length);
+      encrypted.set(nonce);
+      encrypted.set(ciphertext, nonce.length);
+      encryptedParts.push(encrypted);
+      chunks.push({ data: encrypted.buffer, sha256: toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encrypted))) });
+    }
+    const totalSize = encryptedParts.reduce((total, part) => total + part.length, 0);
+    const complete = new Uint8Array(totalSize);
+    let position = 0;
+    encryptedParts.forEach((part) => { complete.set(part, position); position += part.length; });
+    encryptedFiles.push({
+      metadata: { name: file.name, mimeType: file.type || "application/octet-stream", size: file.size },
+      chunks,
+      record: {
+        name: `encrypted-${fileIndex}.nxd`,
+        mimeType: "application/octet-stream",
+        size: totalSize,
+        sha256: toBase64(new Uint8Array(await crypto.subtle.digest("SHA-256", complete))),
+        chunkSize: plaintextChunkSize + 28,
+        chunkCount: chunks.length,
+      },
+    });
+  }
+  const metadata = encryptedFiles.map((item) => item.metadata);
+  return {
+    content: await encryptEnvelope(new TextEncoder().encode(JSON.stringify(metadata)), contentKeyBytes),
+    wrappedContentKeys: await wrapForRecipients(contentKeyBytes, recipients),
+    files: encryptedFiles,
   };
 }
 
@@ -77,30 +108,55 @@ export async function decryptText(
   encryptedContent: string,
   wrappedValue: string,
 ) {
-  const stored = await readKey(userID);
-  if (!stored) throw new Error("DEVICE_KEY_UNAVAILABLE");
-  const wrapped = JSON.parse(new TextDecoder().decode(fromBase64(wrappedValue))) as WrappedKey;
-  const ephemeral = await crypto.subtle.importKey(
-    "raw",
-    fromBase64(wrapped.ephemeralPublicKey),
-    { name: "X25519" },
-    false,
-    [],
-  );
-  const wrappingKey = await deriveWrappingKey(stored.privateKey, ephemeral, ["decrypt"]);
-  const contentKeyBytes = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: fromBase64(wrapped.nonce) },
-    wrappingKey,
-    fromBase64(wrapped.ciphertext),
-  );
+  return new TextDecoder().decode(await decryptEnvelope(userID, encryptedContent, wrappedValue));
+}
+
+export async function decryptFileChunks(userID: string, wrappedValue: string, chunks: ArrayBuffer[]) {
+  const contentKeyBytes = await unwrapKey(userID, wrappedValue);
+  const contentKey = await crypto.subtle.importKey("raw", contentKeyBytes, "AES-GCM", false, ["decrypt"]);
+  const plaintext: ArrayBuffer[] = [];
+  for (const chunk of chunks) {
+    const bytes = new Uint8Array(chunk);
+    if (bytes.length < 28) throw new Error("INVALID_ENCRYPTED_FILE");
+    plaintext.push(await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, contentKey, bytes.slice(12)));
+  }
+  return plaintext;
+}
+
+async function encryptEnvelope(plaintext: Uint8Array, contentKeyBytes: Uint8Array) {
+  const contentKey = await crypto.subtle.importKey("raw", Uint8Array.from(contentKeyBytes), "AES-GCM", false, ["encrypt"]);
+  const contentNonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: contentNonce }, contentKey, Uint8Array.from(plaintext));
+  const content: ContentEnvelope = { version: 1, nonce: toBase64(contentNonce), ciphertext: toBase64(new Uint8Array(ciphertext)) };
+  return toBase64(new TextEncoder().encode(JSON.stringify(content)));
+}
+
+async function decryptEnvelope(userID: string, encryptedContent: string, wrappedValue: string) {
+  const contentKeyBytes = await unwrapKey(userID, wrappedValue);
   const contentKey = await crypto.subtle.importKey("raw", contentKeyBytes, "AES-GCM", false, ["decrypt"]);
   const content = JSON.parse(new TextDecoder().decode(fromBase64(encryptedContent))) as ContentEnvelope;
-  const plaintext = await crypto.subtle.decrypt(
+  return new Uint8Array(await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: fromBase64(content.nonce) },
     contentKey,
     fromBase64(content.ciphertext),
-  );
-  return new TextDecoder().decode(plaintext);
+  ));
+}
+
+async function unwrapKey(userID: string, wrappedValue: string) {
+  const stored = await readKey(userID);
+  if (!stored) throw new Error("DEVICE_KEY_UNAVAILABLE");
+  const wrapped = JSON.parse(new TextDecoder().decode(fromBase64(wrappedValue))) as WrappedKey;
+  const ephemeral = await crypto.subtle.importKey("raw", fromBase64(wrapped.ephemeralPublicKey), { name: "X25519" }, false, []);
+  const wrappingKey = await deriveWrappingKey(stored.privateKey, ephemeral, ["decrypt"]);
+  return crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(wrapped.nonce) }, wrappingKey, fromBase64(wrapped.ciphertext));
+}
+
+async function wrapForRecipients(contentKeyBytes: Uint8Array, recipients: Array<{ id: string; publicKey: string }>) {
+  const wrappedContentKeys: Record<string, string> = {};
+  for (const recipient of recipients) {
+    wrappedContentKeys[recipient.id] = toBase64(new TextEncoder().encode(JSON.stringify(await wrapKey(contentKeyBytes, recipient.publicKey))));
+  }
+  return wrappedContentKeys;
 }
 
 export async function proveDeviceSession(userID: string, ephemeralPublicKey: string, nonce: string, sessionID: string) {
@@ -201,4 +257,8 @@ function fromBase64(value: string) {
   const result = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) result[index] = binary.charCodeAt(index);
   return result;
+}
+
+function toHex(value: Uint8Array) {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

@@ -14,7 +14,7 @@ import {
   api,
   statisticsPath,
 } from "./api";
-import { decryptText, deviceID, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
+import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 
 type View = "send" | "activity" | "devices" | "groups" | "analytics" | "admin";
 type SharedContent = { content: string; groupId: string };
@@ -241,6 +241,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
   const [selectedGroup, setSelectedGroup] = useState(initialShare.groupId);
   const [groupDetails, setGroupDetails] = useState<GroupDetails | null>(null);
   const [content, setContent] = useState(initialShare.content);
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const trusted = devices.filter((item) => item.trustStatus === "TRUSTED" && item.publicKey);
 
@@ -264,15 +265,36 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!content.trim() || (!selectedGroup && selected.length === 0)) return;
+    if ((!content.trim() && files.length === 0) || (!selectedGroup && selected.length === 0)) return;
     setBusy(true);
     try {
       const recipients = selectedGroup
         ? (groupDetails?.devices ?? []).map((item) => ({ id: item.id, publicKey: item.publicKey }))
         : trusted.filter((item) => selected.includes(item.id)).map((item) => ({ id: item.id, publicKey: item.publicKey! }));
       if (!recipients.length) throw new Error("群組尚未加入可接收設備");
-      const encrypted = await encryptText(content.trim(), recipients);
-      await api.send<Transfer>("/api/transfers", "POST", {
+      if (files.length) {
+        const encrypted = await encryptFiles(files, recipients);
+        const transfer = await api.send<Transfer>("/api/transfers", "POST", {
+          targetType: selectedGroup ? "GROUP_ALL_DEVICES" : selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
+          targetDeviceIds: selected,
+          groupId: selectedGroup || undefined,
+          contentType: files.every((file) => file.type.startsWith("image/")) ? "IMAGE" : "FILE",
+          routeMode: "AUTOMATIC",
+          allowLargeFileViaNode: true,
+          content: encrypted.content,
+          wrappedContentKeys: encrypted.wrappedContentKeys,
+          files: encrypted.files.map((file) => file.record),
+        });
+        for (const [fileIndex, file] of encrypted.files.entries()) {
+          const fileID = transfer.files[fileIndex].id;
+          for (const [chunkIndex, chunk] of file.chunks.entries()) {
+            await api.uploadChunk(`/api/files/${fileID}/chunks/${chunkIndex}`, chunk.data, chunk.sha256);
+          }
+          await api.send(`/api/files/${fileID}/complete`, "POST");
+        }
+      } else {
+        const encrypted = await encryptText(content.trim(), recipients);
+        await api.send<Transfer>("/api/transfers", "POST", {
         targetType: selectedGroup ? "GROUP_ALL_DEVICES" : selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
         targetDeviceIds: selected,
         groupId: selectedGroup || undefined,
@@ -280,8 +302,10 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
         routeMode: "AUTOMATIC",
         content: encrypted.content,
         wrappedContentKeys: encrypted.wrappedContentKeys,
-      });
+        });
+      }
       setContent("");
+      setFiles([]);
       setSelected([]);
       setSelectedGroup("");
       await onSent();
@@ -298,9 +322,10 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
       <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />
       <div className="send-grid">
         <form className="composer card" onSubmit={send}>
-          <div className="card-title"><span className="step">01</span><div><h3>輸入內容</h3><p>文字與連結會在瀏覽器內先加密</p></div></div>
-          <textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
-          <div className="composer-meta"><span>{content.length.toLocaleString()} 字元</span><span className="secure-pill">● 端對端加密</span></div>
+          <div className="card-title"><span className="step">01</span><div><h3>輸入內容或選擇檔案</h3><p>內容會在瀏覽器內先加密</p></div></div>
+          <textarea value={content} onChange={(event) => { setContent(event.target.value); if (event.target.value) setFiles([]); }} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
+          <label className="file-input"><input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); if (event.target.files?.length) setContent(""); }} /><span>＋ 選擇檔案</span><small>{files.length ? `${files.length} 個檔案 · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}` : "圖片與一般檔案皆可"}</small></label>
+          <div className="composer-meta"><span>{files.length ? "檔名與內容皆加密" : `${content.length.toLocaleString()} 字元`}</span><span className="secure-pill">● 端對端加密</span></div>
           <div className="divider" />
           <div className="card-title"><span className="step">02</span><div><h3>選擇目的地</h3><p>{trusted.length ? `${trusted.length} 台信任設備可用` : "尚無信任設備"}</p></div></div>
           <div className="device-picker">
@@ -312,7 +337,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
             {!trusted.length && <Empty text={user.admin ? "前往「設備」建立並核准這個瀏覽器" : "請由管理員核准這個瀏覽器設備"} />}
           </div>
           {!!groups.length && <><div className="divider" /><div className="card-title"><span className="step">03</span><div><h3>或傳送至群組</h3><p>群組與設備目的地不可同時選擇</p></div></div><div className="device-picker">{groups.map((item) => <button type="button" key={item.id} className={selectedGroup === item.id ? "device-option selected" : "device-option"} onClick={() => chooseGroup(item.id)}><span className="group-mark">◎</span><span><strong>{item.name}</strong><small>所有群組設備</small></span><i>{selectedGroup === item.id ? "✓" : "+"}</i></button>)}</div></>}
-          <button className="primary send-button" disabled={busy || !content.trim() || (!selectedGroup && selected.length === 0)}>{busy ? "正在加密…" : <>建立安全傳輸 <span>↗</span></>}</button>
+          <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || (!selectedGroup && selected.length === 0)}>{busy ? "正在加密與上傳…" : <>建立安全傳輸 <span>↗</span></>}</button>
         </form>
         <aside className="route-card card">
           <p className="eyebrow">SMART ROUTING</p>
@@ -331,6 +356,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
 
 function ActivityView({ user, devices, transfers }: { user: User; devices: Device[]; transfers: Transfer[] }) {
   const [decrypted, setDecrypted] = useState<Record<string, string>>({});
+  const [downloading, setDownloading] = useState("");
   const names = useMemo(() => Object.fromEntries(devices.map((item) => [item.id, item.displayName])), [devices]);
 
   useEffect(() => {
@@ -345,6 +371,29 @@ function ActivityView({ user, devices, transfers }: { user: User; devices: Devic
     });
   }, [decrypted, transfers, user.id]);
 
+  async function download(transfer: Transfer, fileIndex: number) {
+    const localDeviceID = deviceID(user.id);
+    const wrapped = localDeviceID ? transfer.wrappedContentKeys?.[localDeviceID] : undefined;
+    const metadata = fileMetadata(decrypted[transfer.id], fileIndex);
+    if (!wrapped || !metadata) return;
+    setDownloading(transfer.files[fileIndex].id);
+    try {
+      const chunks: ArrayBuffer[] = [];
+      for (let index = 0; index < transfer.files[fileIndex].chunkCount; index++) {
+        chunks.push(await api.downloadChunk(`/api/files/${transfer.files[fileIndex].id}/chunks/${index}`));
+      }
+      const plaintext = await decryptFileChunks(user.id, wrapped, chunks);
+      const url = URL.createObjectURL(new Blob(plaintext, { type: metadata.mimeType }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = metadata.name;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      setDownloading("");
+    }
+  }
+
   return (
     <section className="page">
       <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />
@@ -352,7 +401,7 @@ function ActivityView({ user, devices, transfers }: { user: User; devices: Devic
         <div className="table-head"><span>內容</span><span>目的地</span><span>路徑</span><span>狀態</span><span>時間</span></div>
         {transfers.map((item) => (
           <article className="table-row" key={item.id}>
-            <div><span className="content-glyph">{item.contentType === "URL" ? "↗" : "T"}</span><p><strong>{decrypted[item.id] ?? (item.contentType === "TEXT" ? "加密文字" : item.contentType)}</strong><small>{item.id.slice(0, 8)}</small></p></div>
+            <div><span className="content-glyph">{item.files.length ? "F" : item.contentType === "URL" ? "↗" : "T"}</span><p><strong>{item.files.length ? (fileMetadata(decrypted[item.id], 0)?.name ?? "加密檔案") : decrypted[item.id] ?? (item.contentType === "TEXT" ? "加密文字" : item.contentType)}</strong><small>{item.id.slice(0, 8)}{item.files.length > 1 ? ` · ${item.files.length} 個檔案` : ""}</small>{item.files.map((file, index) => fileMetadata(decrypted[item.id], index) && <button className="text-button" key={file.id} onClick={() => download(item, index)} disabled={downloading === file.id}>{downloading === file.id ? "下載中…" : `下載 ${fileMetadata(decrypted[item.id], index)?.name}`}</button>)}</p></div>
             <span>{item.targets.map((target) => names[target.deviceId] ?? target.deviceId.slice(0, 8)).join("、")}</span>
             <span className="route-label">{item.targets[0]?.selectedRoute ?? "—"}</span>
             <Status value={item.status} />
@@ -487,6 +536,7 @@ function labelDeviceType(value: string) { return ({ WINDOWS: "Windows", ANDROID:
 function statusLabel(value: string) { return ({ PENDING: "待核准", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
+function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
 function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 

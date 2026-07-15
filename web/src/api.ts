@@ -51,7 +51,7 @@ export type Transfer = {
   contentType: string;
   content?: string;
   wrappedContentKeys?: Record<string, string>;
-  files: Array<{ id: string; name: string; size: number }>;
+  files: Array<{ id: string; name: string; mimeType: string; size: number; sha256: string; chunkSize: number; chunkCount: number }>;
   targets: TransferTarget[];
   status: string;
   createdAt: string;
@@ -167,16 +167,30 @@ class APIClient {
     });
   }
 
+  async uploadChunk(path: string, body: ArrayBuffer, sha256: string) {
+    await this.requestRaw(path, { method: "POST", headers: { "X-Chunk-SHA256": sha256 }, body });
+  }
+
+  async downloadChunk(path: string) {
+    const response = await this.requestRaw(path, { method: "GET" });
+    return response.arrayBuffer();
+  }
+
   private async request<T>(path: string, init: RequestInit, retry = true): Promise<T> {
+    const response = await this.requestRaw(path, init, retry);
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
+
+  private async requestRaw(path: string, init: RequestInit, retry = true): Promise<Response> {
     const headers = new Headers(init.headers);
     if (this.tokens) headers.set("Authorization", `Bearer ${this.tokens.accessToken}`);
     const response = await fetch(path, { ...init, headers });
     if (response.status === 401 && retry && (await this.refresh())) {
-      return this.request<T>(path, init, false);
+      return this.requestRaw(path, init, false);
     }
     if (!response.ok) throw await this.error(response);
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    return response;
   }
 
   private async refresh() {

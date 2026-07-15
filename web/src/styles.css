@@ -106,6 +106,10 @@ input:focus, textarea:focus { border-color: #5bcfae; box-shadow: 0 0 0 3px rgba(
 .step { color: var(--mint-dark); font: 750 10px ui-monospace, monospace; padding-top: 3px; }
 .composer textarea { min-height: 155px; resize: vertical; background: #f8f9fb; border-color: #e3e7ed; line-height: 1.65; }
 .composer-meta { display: flex; justify-content: space-between; color: #929aa7; font-size: 10px; margin-top: 10px; }
+.file-input { margin-top: 10px; border: 1px dashed #cbd4df; border-radius: 10px; padding: 11px 14px; display: flex; align-items: center; gap: 12px; cursor: pointer; color: #536170; }
+.file-input input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.file-input span { color: var(--accent-dark); font-weight: 700; }
+.file-input small { margin-left: auto; color: #929aa7; }
 .secure-pill { color: #15866c; }
 .divider { height: 1px; background: var(--line); margin: 26px 0; }
 .device-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

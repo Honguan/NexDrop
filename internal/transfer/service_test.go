@@ -40,6 +40,7 @@ func TestCreateTextUsesLANBeforeNode(t *testing.T) {
 	result, err := service.Create(context.Background(), auth.Session{DeviceID: &deviceID}, Request{
 		TargetType: TargetMultiple, TargetDeviceIDs: []string{"lan-device", "remote-device"},
 		LANAvailableDeviceIDs: []string{"lan-device"}, ContentType: ContentText, Content: []byte("hello"),
+		WrappedContentKeys: map[string][]byte{"lan-device": {1}, "remote-device": {2}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,7 @@ func TestCreateFilesRoutesEachFileIndependently(t *testing.T) {
 	deviceID := "sender-device"
 	result, err := service.Create(context.Background(), auth.Session{DeviceID: &deviceID}, Request{
 		TargetType: TargetSingle, TargetDeviceIDs: []string{"device-1"}, ContentType: ContentFile,
+		Content:            []byte("encrypted file metadata"),
 		WrappedContentKeys: map[string][]byte{"device-1": {1}},
 		Files: []File{
 			{Name: "small.bin", Size: 1, SHA256: make([]byte, 32), ChunkSize: int(8 * 1024 * 1024), ChunkCount: 1},
@@ -69,6 +71,9 @@ func TestCreateFilesRoutesEachFileIndependently(t *testing.T) {
 	}
 	if result.Targets[0].SelectedRoute != domain.SelectedRouteMixed {
 		t.Fatalf("target route = %q, want MIXED", result.Targets[0].SelectedRoute)
+	}
+	if string(store.prepared.Content) != "encrypted file metadata" {
+		t.Fatal("encrypted file metadata was not preserved")
 	}
 }
 

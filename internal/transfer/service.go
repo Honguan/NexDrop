@@ -136,11 +136,9 @@ func (service *Service) Create(ctx context.Context, session auth.Session, reques
 	if len(resolved) == 0 {
 		return Transfer{}, ErrInvalid
 	}
-	if request.TargetType == TargetSingle || request.TargetType == TargetGroupSelected {
-		for _, deviceID := range resolved {
-			if len(request.WrappedContentKeys[deviceID]) == 0 {
-				return Transfer{}, ErrInvalid
-			}
+	for _, deviceID := range resolved {
+		if len(request.WrappedContentKeys[deviceID]) == 0 {
+			return Transfer{}, ErrInvalid
 		}
 	}
 	lanAvailable := make(map[string]bool, len(request.LANAvailableDeviceIDs))
@@ -224,7 +222,7 @@ func validateRequest(request Request) error {
 			return ErrInvalid
 		}
 	} else {
-		if len(request.Content) != 0 || len(request.Files) == 0 {
+		if len(request.Files) == 0 {
 			return ErrInvalid
 		}
 		for _, file := range request.Files {
