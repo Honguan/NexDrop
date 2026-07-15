@@ -12,6 +12,7 @@ import (
 	"nexdrop/internal/api"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
 )
@@ -42,7 +43,8 @@ func main() {
 	authService := auth.NewService(store, 15*time.Minute, 30*24*time.Hour)
 	deviceService := device.NewService(store)
 	pairingService := pairing.NewService(store)
-	applicationAPI := api.New(authService, deviceService, pairingService)
+	groupService := group.NewService(store)
+	applicationAPI := api.New(authService, deviceService, pairingService, groupService)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 )
 
@@ -21,6 +22,7 @@ type testStore struct {
 	accessHash []byte
 	refresh    []byte
 	devices    []device.Device
+	groups     []group.Group
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -88,6 +90,42 @@ func (*testStore) RedeemPairingCode(_ context.Context, _ auth.Session, deviceID,
 	return device.Device{ID: deviceID, TrustStatus: device.TrustTrusted}, nil
 }
 
+func (store *testStore) CreateGroup(_ context.Context, session auth.Session, name string) (group.Details, error) {
+	item := group.Group{ID: "group-1", Name: name, OwnerID: session.ID, Role: group.RoleOwner}
+	store.groups = append(store.groups, item)
+	return group.Details{Group: item}, nil
+}
+
+func (store *testStore) ListGroups(context.Context, auth.Session) ([]group.Group, error) {
+	return store.groups, nil
+}
+
+func (*testStore) GetGroup(context.Context, auth.Session, string) (group.Details, error) {
+	return group.Details{Group: group.Group{ID: "group-1"}}, nil
+}
+
+func (*testStore) RenameGroup(_ context.Context, _ auth.Session, id, name string) (group.Group, error) {
+	return group.Group{ID: id, Name: name}, nil
+}
+
+func (*testStore) DeleteGroup(context.Context, auth.Session, string) error { return nil }
+
+func (*testStore) AddGroupMember(_ context.Context, _ auth.Session, _, userID string, role group.Role) (group.Member, error) {
+	return group.Member{UserID: userID, Role: role}, nil
+}
+
+func (*testStore) RemoveGroupMember(context.Context, auth.Session, string, string) error {
+	return nil
+}
+
+func (*testStore) AddGroupDevice(_ context.Context, _ auth.Session, _, deviceID string, now time.Time) (group.GroupDevice, error) {
+	return group.GroupDevice{ID: deviceID, AddedAt: now}, nil
+}
+
+func (*testStore) RemoveGroupDevice(context.Context, auth.Session, string, string) error {
+	return nil
+}
+
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -97,7 +135,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -139,7 +177,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store), pairing.NewService(store)).Routes()
+	handler := New(authService, device.NewService(store), pairing.NewService(store), nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -175,5 +213,45 @@ func TestCreateAndListDevice(t *testing.T) {
 	}
 	if len(devices) != 1 || devices[0].DisplayName != "Laptop" {
 		t.Fatalf("devices = %+v", devices)
+	}
+}
+
+func TestCreateAndListGroup(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testStore{credential: auth.Credential{
+		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
+		PasswordHash: string(passwordHash),
+	}}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, group.NewService(store)).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	create := httptest.NewRequest(http.MethodPost, "/api/groups", bytes.NewBufferString(`{"name":"Team"}`))
+	create.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create group status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	var created group.Details
+	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Name != "Team" || created.Role != group.RoleOwner {
+		t.Fatalf("created group = %+v", created)
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/api/groups", nil)
+	list.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list groups status = %d, body = %s", listResponse.Code, listResponse.Body.String())
 	}
 }

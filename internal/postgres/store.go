@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 )
 
@@ -375,6 +377,227 @@ func (store *Store) RedeemPairingCode(
 		return device.Device{}, err
 	}
 	return result, nil
+}
+
+func (store *Store) CreateGroup(ctx context.Context, session auth.Session, name string) (group.Details, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return group.Details{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var result group.Details
+	err = tx.QueryRow(ctx, `
+		INSERT INTO groups (owner_user_id, name)
+		VALUES ($1, $2)
+		RETURNING id::text, name, owner_user_id::text, created_at
+	`, session.ID, name).Scan(&result.ID, &result.Name, &result.OwnerID, &result.CreatedAt)
+	if err != nil {
+		return group.Details{}, err
+	}
+	result.Role = group.RoleOwner
+	var owner group.Member
+	err = tx.QueryRow(ctx, `
+		INSERT INTO group_members (group_id, user_id, role)
+		VALUES ($1, $2, 'OWNER')
+		RETURNING user_id::text, $3, role, joined_at
+	`, result.ID, session.ID, session.Username).Scan(&owner.UserID, &owner.Username, &owner.Role, &owner.JoinedAt)
+	if err != nil {
+		return group.Details{}, err
+	}
+	result.Members = []group.Member{owner}
+	result.Devices = []group.GroupDevice{}
+	if err := tx.Commit(ctx); err != nil {
+		return group.Details{}, err
+	}
+	return result, nil
+}
+
+func (store *Store) ListGroups(ctx context.Context, session auth.Session) ([]group.Group, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT g.id::text, g.name, g.owner_user_id::text, membership.role, g.created_at
+		FROM groups g
+		JOIN group_members membership ON membership.group_id = g.id
+		WHERE membership.user_id = $1
+		ORDER BY g.created_at DESC
+	`, session.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]group.Group, 0)
+	for rows.Next() {
+		var item group.Group
+		if err := rows.Scan(&item.ID, &item.Name, &item.OwnerID, &item.Role, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) GetGroup(ctx context.Context, session auth.Session, groupID string) (group.Details, error) {
+	var result group.Details
+	err := store.pool.QueryRow(ctx, `
+		SELECT g.id::text, g.name, g.owner_user_id::text, membership.role, g.created_at
+		FROM groups g
+		JOIN group_members membership ON membership.group_id = g.id
+		WHERE g.id = $1 AND membership.user_id = $2
+	`, groupID, session.ID).Scan(&result.ID, &result.Name, &result.OwnerID, &result.Role, &result.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return group.Details{}, group.ErrNotFound
+	}
+	if err != nil {
+		return group.Details{}, err
+	}
+	memberRows, err := store.pool.Query(ctx, `
+		SELECT m.user_id::text, u.username, m.role, m.joined_at
+		FROM group_members m JOIN users u ON u.id = m.user_id
+		WHERE m.group_id = $1
+		ORDER BY m.joined_at
+	`, groupID)
+	if err != nil {
+		return group.Details{}, err
+	}
+	defer memberRows.Close()
+	result.Members = make([]group.Member, 0)
+	for memberRows.Next() {
+		var member group.Member
+		if err := memberRows.Scan(&member.UserID, &member.Username, &member.Role, &member.JoinedAt); err != nil {
+			return group.Details{}, err
+		}
+		result.Members = append(result.Members, member)
+	}
+	if err := memberRows.Err(); err != nil {
+		return group.Details{}, err
+	}
+	deviceRows, err := store.pool.Query(ctx, `
+		SELECT d.id::text, d.user_id::text, d.display_name, d.device_type, gd.added_at
+		FROM group_devices gd JOIN devices d ON d.id = gd.device_id
+		WHERE gd.group_id = $1
+		ORDER BY gd.added_at
+	`, groupID)
+	if err != nil {
+		return group.Details{}, err
+	}
+	defer deviceRows.Close()
+	result.Devices = make([]group.GroupDevice, 0)
+	for deviceRows.Next() {
+		var item group.GroupDevice
+		if err := deviceRows.Scan(&item.ID, &item.OwnerUserID, &item.DisplayName, &item.Type, &item.AddedAt); err != nil {
+			return group.Details{}, err
+		}
+		result.Devices = append(result.Devices, item)
+	}
+	return result, deviceRows.Err()
+}
+
+func (store *Store) RenameGroup(ctx context.Context, session auth.Session, groupID, name string) (group.Group, error) {
+	var result group.Group
+	err := store.pool.QueryRow(ctx, `
+		UPDATE groups SET name = $3
+		WHERE id = $1 AND owner_user_id = $2
+		RETURNING id::text, name, owner_user_id::text, 'OWNER', created_at
+	`, groupID, session.ID, name).Scan(&result.ID, &result.Name, &result.OwnerID, &result.Role, &result.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return group.Group{}, group.ErrForbidden
+	}
+	return result, err
+}
+
+func (store *Store) DeleteGroup(ctx context.Context, session auth.Session, groupID string) error {
+	command, err := store.pool.Exec(ctx, `DELETE FROM groups WHERE id = $1 AND owner_user_id = $2`, groupID, session.ID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return group.ErrForbidden
+	}
+	return nil
+}
+
+func (store *Store) AddGroupMember(ctx context.Context, session auth.Session, groupID, userID string, role group.Role) (group.Member, error) {
+	var result group.Member
+	err := store.pool.QueryRow(ctx, `
+		INSERT INTO group_members (group_id, user_id, role)
+		SELECT $1, target.id, $4
+		FROM users target
+		JOIN group_members actor ON actor.group_id = $1 AND actor.user_id = $2
+		WHERE target.id = $3
+		  AND (actor.role = 'OWNER' OR (actor.role = 'ADMIN' AND $4 = 'MEMBER'))
+		RETURNING user_id::text, (SELECT username FROM users WHERE id = user_id), role, joined_at
+	`, groupID, session.ID, userID, role).Scan(&result.UserID, &result.Username, &result.Role, &result.JoinedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return group.Member{}, group.ErrForbidden
+	}
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) && pgError.Code == "23505" {
+		return group.Member{}, group.ErrConflict
+	}
+	return result, err
+}
+
+func (store *Store) RemoveGroupMember(ctx context.Context, session auth.Session, groupID, userID string) error {
+	command, err := store.pool.Exec(ctx, `
+		DELETE FROM group_members target
+		USING group_members actor
+		WHERE target.group_id = $1 AND target.user_id = $2
+		  AND actor.group_id = target.group_id AND actor.user_id = $3
+		  AND target.role <> 'OWNER'
+		  AND (actor.role = 'OWNER' OR (actor.role = 'ADMIN' AND target.role = 'MEMBER'))
+	`, groupID, userID, session.ID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return group.ErrForbidden
+	}
+	return nil
+}
+
+func (store *Store) AddGroupDevice(ctx context.Context, session auth.Session, groupID, deviceID string, addedAt time.Time) (group.GroupDevice, error) {
+	var result group.GroupDevice
+	err := store.pool.QueryRow(ctx, `
+		INSERT INTO group_devices (group_id, device_id, added_at)
+		SELECT $1, target.id, $4
+		FROM devices target
+		JOIN group_members device_owner ON device_owner.group_id = $1 AND device_owner.user_id = target.user_id
+		JOIN group_members actor ON actor.group_id = $1 AND actor.user_id = $2
+		WHERE target.id = $3 AND target.trust_status = 'TRUSTED' AND target.revoked_at IS NULL
+		  AND (actor.role IN ('OWNER', 'ADMIN') OR target.user_id = $2)
+		RETURNING device_id::text,
+		          (SELECT user_id::text FROM devices WHERE id = device_id),
+		          (SELECT display_name FROM devices WHERE id = device_id),
+		          (SELECT device_type FROM devices WHERE id = device_id),
+		          added_at
+	`, groupID, session.ID, deviceID, addedAt).Scan(
+		&result.ID, &result.OwnerUserID, &result.DisplayName, &result.Type, &result.AddedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return group.GroupDevice{}, group.ErrForbidden
+	}
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) && pgError.Code == "23505" {
+		return group.GroupDevice{}, group.ErrConflict
+	}
+	return result, err
+}
+
+func (store *Store) RemoveGroupDevice(ctx context.Context, session auth.Session, groupID, deviceID string) error {
+	command, err := store.pool.Exec(ctx, `
+		DELETE FROM group_devices target
+		USING devices d, group_members actor
+		WHERE target.group_id = $1 AND target.device_id = $2
+		  AND d.id = target.device_id
+		  AND actor.group_id = target.group_id AND actor.user_id = $3
+		  AND (actor.role IN ('OWNER', 'ADMIN') OR d.user_id = $3)
+	`, groupID, deviceID, session.ID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return group.ErrForbidden
+	}
+	return nil
 }
 
 type rowScanner interface {

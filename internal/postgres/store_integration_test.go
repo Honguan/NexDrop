@@ -11,6 +11,7 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 )
 
@@ -49,7 +50,7 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := auth.Session{User: auth.User{ID: userID, Admin: true}, SessionID: sessionID}
+	session := auth.Session{User: auth.User{ID: userID, Username: identifier, Admin: true}, SessionID: sessionID}
 
 	created, err := store.CreateDevice(ctx, session, "Laptop", device.TypeWindows, make([]byte, 32), "X25519")
 	if err != nil {
@@ -90,6 +91,58 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if _, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts); !errors.Is(err, pairing.ErrUsed) {
 		t.Fatalf("reused pairing code error = %v, want ErrUsed", err)
 	}
+
+	memberIdentifier := identifier + "-member"
+	var memberUserID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO users (username, email, password_hash)
+		VALUES ($1, $2, 'unused') RETURNING id::text
+	`, memberIdentifier, memberIdentifier+"@example.com").Scan(&memberUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = store.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, memberUserID) }()
+	var memberSessionID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO user_sessions (
+			user_id, access_token_hash, access_expires_at, refresh_token_hash, expires_at
+		) VALUES ($1, $2, now() + interval '1 hour', $3, now() + interval '1 day')
+		RETURNING id::text
+	`, memberUserID, []byte("member-access-hash"), []byte("member-refresh-hash")).Scan(&memberSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberSession := auth.Session{User: auth.User{ID: memberUserID, Username: memberIdentifier}, SessionID: memberSessionID}
+
+	createdGroup, err := store.CreateGroup(ctx, session, "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.AddGroupMember(ctx, session, createdGroup.ID, memberUserID, group.RoleAdmin)
+	if err != nil || member.Role != group.RoleAdmin {
+		t.Fatalf("AddGroupMember() = %+v, %v", member, err)
+	}
+	if _, err := store.RenameGroup(ctx, memberSession, createdGroup.ID, "Forbidden"); !errors.Is(err, group.ErrForbidden) {
+		t.Fatalf("admin rename error = %v, want ErrForbidden", err)
+	}
+	groupDevice, err := store.AddGroupDevice(ctx, session, createdGroup.ID, created.ID, time.Now().UTC())
+	if err != nil || groupDevice.ID != created.ID {
+		t.Fatalf("AddGroupDevice() = %+v, %v", groupDevice, err)
+	}
+	details, err := store.GetGroup(ctx, memberSession, createdGroup.ID)
+	if err != nil || len(details.Members) != 2 || len(details.Devices) != 1 {
+		t.Fatalf("GetGroup() = %+v, %v", details, err)
+	}
+	if err := store.RemoveGroupDevice(ctx, memberSession, createdGroup.ID, created.ID); err != nil {
+		t.Fatalf("admin RemoveGroupDevice() error = %v", err)
+	}
+	if err := store.RemoveGroupMember(ctx, session, createdGroup.ID, memberUserID); err != nil {
+		t.Fatalf("owner RemoveGroupMember() error = %v", err)
+	}
+	if err := store.DeleteGroup(ctx, session, createdGroup.ID); err != nil {
+		t.Fatalf("DeleteGroup() error = %v", err)
+	}
+
 	renamed, err := store.RenameDevice(ctx, userID, created.ID, "Workstation")
 	if err != nil || renamed.DisplayName != "Workstation" {
 		t.Fatalf("RenameDevice() = %+v, %v", renamed, err)

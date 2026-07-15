@@ -9,6 +9,7 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
 )
 
@@ -16,10 +17,11 @@ type API struct {
 	auth    *auth.Service
 	devices *device.Service
 	pairing *pairing.Service
+	groups  *group.Service
 }
 
-func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service) *API {
-	return &API{auth: authService, devices: deviceService, pairing: pairingService}
+func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service) *API {
+	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService}
 }
 
 func (api *API) Routes() http.Handler {
@@ -36,6 +38,15 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
 	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
 	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
+	mux.HandleFunc("POST /api/groups", api.createGroup)
+	mux.HandleFunc("GET /api/groups", api.listGroups)
+	mux.HandleFunc("GET /api/groups/{id}", api.getGroup)
+	mux.HandleFunc("PATCH /api/groups/{id}", api.renameGroup)
+	mux.HandleFunc("DELETE /api/groups/{id}", api.deleteGroup)
+	mux.HandleFunc("POST /api/groups/{id}/members", api.addGroupMember)
+	mux.HandleFunc("DELETE /api/groups/{id}/members/{userId}", api.removeGroupMember)
+	mux.HandleFunc("POST /api/groups/{id}/devices", api.addGroupDevice)
+	mux.HandleFunc("DELETE /api/groups/{id}/devices/{deviceId}", api.removeGroupDevice)
 	return mux
 }
 
@@ -219,6 +230,149 @@ func (api *API) redeemPairingCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (api *API) createGroup(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.groups.Create(r.Context(), session, request.Name)
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (api *API) listGroups(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.groups.List(r.Context(), session)
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) getGroup(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.groups.Get(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) renameGroup(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.groups.Rename(r.Context(), session, r.PathValue("id"), request.Name)
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if err := api.groups.Delete(r.Context(), session, r.PathValue("id")); err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (api *API) addGroupMember(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		UserID string     `json:"userId"`
+		Role   group.Role `json:"role"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.groups.AddMember(r.Context(), session, r.PathValue("id"), request.UserID, request.Role)
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (api *API) removeGroupMember(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if err := api.groups.RemoveMember(r.Context(), session, r.PathValue("id"), r.PathValue("userId")); err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (api *API) addGroupDevice(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		DeviceID string `json:"deviceId"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.groups.AddDevice(r.Context(), session, r.PathValue("id"), request.DeviceID)
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (api *API) removeGroupDevice(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if err := api.groups.RemoveDevice(r.Context(), session, r.PathValue("id"), r.PathValue("deviceId")); err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Session, bool) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -275,5 +429,20 @@ func writePairingError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusTooManyRequests, "PAIRING_CODE_LOCKED")
 	default:
 		writeDeviceError(w, err)
+	}
+}
+
+func writeGroupError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, group.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "INVALID_GROUP_REQUEST")
+	case errors.Is(err, group.ErrNotFound):
+		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND")
+	case errors.Is(err, group.ErrForbidden):
+		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
+	case errors.Is(err, group.ErrConflict):
+		writeError(w, http.StatusConflict, "GROUP_CONFLICT")
+	default:
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}
 }
