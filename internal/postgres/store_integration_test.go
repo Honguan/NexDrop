@@ -195,13 +195,18 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	transferService := transfer.NewService(store)
+	const clientBatchID = "4b9de43e-5903-4d29-ab44-cebe100daf4e"
 	textTransfer, err := transferService.Create(ctx, session, transfer.Request{
-		TargetType: transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
+		ClientBatchID: clientBatchID,
+		TargetType:    transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
 		LANAvailableDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentText,
 		Content: []byte("encrypted text"), WrappedContentKeys: map[string][]byte{targetDevice.ID: {1, 2, 3}, created.ID: {9, 8, 7}},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if textTransfer.BatchID != clientBatchID {
+		t.Fatalf("batch ID = %q, want %q", textTransfer.BatchID, clientBatchID)
 	}
 	if len(textTransfer.Targets) != 1 || textTransfer.Targets[0].SelectedRoute != domain.SelectedRouteLAN {
 		t.Fatalf("text transfer targets = %+v", textTransfer.Targets)

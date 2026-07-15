@@ -746,17 +746,21 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 	if prepared.GroupID != "" {
 		groupID = prepared.GroupID
 	}
+	var batchID any
+	if prepared.ClientBatchID != "" {
+		batchID = prepared.ClientBatchID
+	}
 	var totalSize int64
 	for _, file := range prepared.Files {
 		totalSize += file.Size
 	}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO transfer_tasks (
-			sender_user_id, sender_device_id, group_id, target_type, content_type,
+			sender_user_id, sender_device_id, group_id, client_batch_id, target_type, content_type,
 			total_file_count, total_size, status, created_at, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id::text
-	`, session.ID, session.DeviceID, groupID, prepared.TargetType, prepared.ContentType,
+	`, session.ID, session.DeviceID, groupID, batchID, prepared.TargetType, prepared.ContentType,
 		len(prepared.Files), totalSize, prepared.Status, prepared.CreatedAt, prepared.ExpiresAt).Scan(&result.ID)
 	if err != nil {
 		return transfer.Transfer{}, err
@@ -1119,7 +1123,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 	var result transfer.Transfer
 	var groupID *string
 	err := store.pool.QueryRow(ctx, `
-		SELECT t.id::text, t.sender_user_id::text, t.sender_device_id::text, t.target_type,
+		SELECT t.id::text, COALESCE(t.client_batch_id::text, ''), t.sender_user_id::text, t.sender_device_id::text, t.target_type,
 		       t.group_id::text, t.content_type, m.encrypted_content, t.status, t.created_at, t.expires_at
 		FROM transfer_tasks t
 		LEFT JOIN messages m ON m.transfer_id = t.id
@@ -1132,7 +1136,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 			))
 		)
 	`, transferID, session.ID, session.DeviceID).Scan(
-		&result.ID, &result.SenderUserID, &result.SenderDeviceID, &result.TargetType,
+		&result.ID, &result.BatchID, &result.SenderUserID, &result.SenderDeviceID, &result.TargetType,
 		&groupID, &result.ContentType, &result.Content, &result.Status, &result.CreatedAt, &result.ExpiresAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

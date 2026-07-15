@@ -206,6 +206,7 @@ class TransferService {
     bool nodeAvailable = true,
     String routeMode = 'AUTOMATIC',
     bool allowLargeFileViaNode = false,
+    String? batchId,
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
@@ -226,6 +227,7 @@ class TransferService {
         );
       }
       if (largePaths.isNotEmpty && regularPaths.isNotEmpty) {
+        final offlineBatchId = batchId ?? const Uuid().v4();
         final waiting = await sendFiles(
           sourcePaths: largePaths,
           devices: devices,
@@ -235,6 +237,7 @@ class TransferService {
           nodeAvailable: false,
           routeMode: routeMode,
           allowLargeFileViaNode: false,
+          batchId: offlineBatchId,
         );
         await sendFiles(
           sourcePaths: regularPaths,
@@ -245,6 +248,7 @@ class TransferService {
           nodeAvailable: false,
           routeMode: routeMode,
           allowLargeFileViaNode: false,
+          batchId: offlineBatchId,
         );
         return waiting;
       }
@@ -292,10 +296,17 @@ class TransferService {
         'wrappedContentKeys': encrypted.wrappedContentKeys,
         'files': encrypted.files.map((file) => file.record).toList(),
       };
+      if (batchId != null) request['clientBatchId'] = batchId;
       if (groupId != null) request['groupId'] = groupId;
       if (!nodeAvailable) {
         request['lanAvailableDeviceIds'] = <String>[];
-        return await _saveFileDraft(request, devices, sourcePaths, encrypted);
+        return await _saveFileDraft(
+          request,
+          devices,
+          sourcePaths,
+          encrypted,
+          batchId: batchId,
+        );
       }
       final response =
           await api.sendJson('/api/transfers', 'POST', request)
@@ -673,8 +684,9 @@ class TransferService {
     Map<String, dynamic> request,
     List<Device> devices,
     List<String> sourcePaths,
-    EncryptedFileTransfer encrypted,
-  ) async {
+    EncryptedFileTransfer encrypted, {
+    String? batchId,
+  }) async {
     final id = const Uuid().v4();
     final recipe = <String, dynamic>{
       'contentKey': base64Encode(encrypted.contentKey),
@@ -743,6 +755,7 @@ class TransferService {
     }
     final transfer = TransferSummary(
       id: id,
+      batchId: batchId,
       senderDeviceId: _currentDevice?.id,
       contentType: 'FILE',
       status: waitForLan ? 'WAITING_FOR_LAN' : 'CREATED',
@@ -1079,6 +1092,7 @@ class TransferService {
     final delivered = targets.every((target) => target.status == 'DELIVERED');
     final updated = TransferSummary(
       id: transfer.id,
+      batchId: transfer.batchId,
       senderDeviceId: transfer.senderDeviceId,
       contentType: transfer.contentType,
       status: delivered ? 'DELIVERED' : 'WAITING_FOR_LAN',

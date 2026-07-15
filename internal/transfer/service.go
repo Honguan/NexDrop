@@ -52,6 +52,7 @@ type File struct {
 }
 
 type Request struct {
+	ClientBatchID         string            `json:"clientBatchId,omitempty"`
 	TargetType            TargetType        `json:"targetType"`
 	TargetDeviceIDs       []string          `json:"targetDeviceIds"`
 	GroupID               string            `json:"groupId,omitempty"`
@@ -90,6 +91,7 @@ type Prepared struct {
 
 type Transfer struct {
 	ID                 string                `json:"id"`
+	BatchID            string                `json:"batchId,omitempty"`
 	SenderUserID       string                `json:"senderUserId"`
 	SenderDeviceID     string                `json:"senderDeviceId,omitempty"`
 	TargetType         TargetType            `json:"targetType"`

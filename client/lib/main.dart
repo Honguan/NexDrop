@@ -605,6 +605,23 @@ class ActivityView extends StatefulWidget {
 class _ActivityViewState extends State<ActivityView> {
   String? busyId;
 
+  String _displayStatus(TransferSummary transfer) {
+    if (transfer.batchId == null) return transfer.status;
+    final children = widget.controller.transfers.where(
+      (item) => item.batchId == transfer.batchId,
+    );
+    if (children.any((item) => item.status == 'FAILED')) return 'FAILED';
+    if (children.every(
+      (item) => item.status == 'DELIVERED' || item.status == 'READ',
+    )) {
+      return 'DELIVERED';
+    }
+    if (children.any((item) => item.status == 'WAITING_FOR_LAN')) {
+      return 'PARTIAL_WAITING_FOR_LAN';
+    }
+    return 'QUEUED';
+  }
+
   @override
   Widget build(BuildContext context) => _Page(
     title: '傳輸紀錄',
@@ -627,7 +644,7 @@ class _ActivityViewState extends State<ActivityView> {
                     : '${transfer.files.length} 個加密檔案',
               ),
               subtitle: Text(
-                '${transfer.targets.map((target) => target.route).join('、')} · ${_date(transfer.createdAt)}',
+                '${transfer.targets.map((target) => target.route).join('、')} · ${_date(transfer.createdAt)}${transfer.batchId == null ? '' : ' · 批次 ${transfer.batchId!.substring(0, 8)}'}',
               ),
               onTap:
                   transfer.wrappedContentKeys.containsKey(
@@ -644,7 +661,7 @@ class _ActivityViewState extends State<ActivityView> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   else
-                    Chip(label: Text(transfer.status)),
+                    Chip(label: Text(_displayStatus(transfer))),
                   if (transfer.senderDeviceId ==
                       widget.controller.currentDevice?.id)
                     IconButton(

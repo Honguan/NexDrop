@@ -85,6 +85,7 @@ class TransferSummary {
     required this.targets,
     required this.files,
     this.senderDeviceId,
+    this.batchId,
     this.fileTargets = const [],
     this.encryptedContent,
     this.wrappedContentKeys = const {},
@@ -98,6 +99,7 @@ class TransferSummary {
     status: json['status'] as String,
     createdAt: DateTime.parse(json['createdAt'] as String).toLocal(),
     senderDeviceId: json['senderDeviceId'] as String?,
+    batchId: json['batchId'] as String?,
     encryptedContent: json['content'] as String?,
     wrappedContentKeys:
         (json['wrappedContentKeys'] as Map<String, dynamic>? ?? {}).map(
@@ -121,6 +123,7 @@ class TransferSummary {
   final String status;
   final DateTime createdAt;
   final String? senderDeviceId;
+  final String? batchId;
   final String? encryptedContent;
   final Map<String, String> wrappedContentKeys;
   final List<TransferTarget> targets;

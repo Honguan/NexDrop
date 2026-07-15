@@ -306,6 +306,7 @@ class LocalDatabase {
     final payload = jsonEncode({
       'id': transfer.id,
       'senderDeviceId': transfer.senderDeviceId,
+      'batchId': transfer.batchId,
       'contentType': transfer.contentType,
       'content': transfer.encryptedContent,
       'wrappedContentKeys': transfer.wrappedContentKeys,
