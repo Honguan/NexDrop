@@ -25,7 +25,10 @@ class AppController extends ChangeNotifier {
       database: database,
       lan: lan,
     );
-    _lanSubscription = lan.changes.listen((_) => notifyListeners());
+    _lanSubscription = lan.changes.listen((_) {
+      unawaited(_updateDesktopStatus());
+      notifyListeners();
+    });
     _shareSubscription = platformShare.shares.listen((share) {
       _pendingShare = share;
       notifyListeners();
@@ -68,6 +71,7 @@ class AppController extends ChangeNotifier {
       error = _message(reason);
     } finally {
       loading = false;
+      await _updateDesktopStatus();
       notifyListeners();
     }
   }
@@ -76,6 +80,19 @@ class AppController extends ChangeNotifier {
     final value = _pendingShare;
     _pendingShare = null;
     return value;
+  }
+
+  Future<void> _updateDesktopStatus() => platformShare.updateDesktopStatus({
+    'online': account != null,
+    'nodeOnline': nodeOnline,
+    'deviceId': currentDevice?.id,
+    'lanDeviceIds': lan.onlineDeviceIds.toList(),
+    'updatedAt': DateTime.now().toUtc().toIso8601String(),
+  });
+
+  void queueShare(PlatformSharePayload share) {
+    _pendingShare = share;
+    notifyListeners();
   }
 
   Future<void> login(String node, String identifier, String password) async {
@@ -94,6 +111,7 @@ class AppController extends ChangeNotifier {
     devices = const [];
     groups = const [];
     transfers = const [];
+    await _updateDesktopStatus();
     notifyListeners();
   }
 
@@ -207,6 +225,7 @@ class AppController extends ChangeNotifier {
           final message = jsonDecode(event as String) as Map<String, dynamic>;
           if (message['type'] == 'connected') {
             nodeOnline = true;
+            unawaited(_updateDesktopStatus());
             _heartbeat = Timer.periodic(
               const Duration(seconds: 15),
               (_) => _socket?.sink.add(jsonEncode({'type': 'heartbeat'})),
@@ -235,6 +254,7 @@ class AppController extends ChangeNotifier {
 
   void _scheduleReconnect() {
     nodeOnline = false;
+    unawaited(_updateDesktopStatus());
     _heartbeat?.cancel();
     _reconnect?.cancel();
     _reconnect = Timer(const Duration(seconds: 3), () => unawaited(_connect()));

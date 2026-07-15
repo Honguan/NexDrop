@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as path;
 
 class PlatformSharePayload {
   const PlatformSharePayload({required this.text, required this.files});
@@ -20,12 +23,27 @@ class PlatformShareService {
   static const _events = EventChannel('com.nexdrop/client/shares');
   final _shares = StreamController<PlatformSharePayload>.broadcast();
   StreamSubscription<dynamic>? _subscription;
+  Timer? _windowsTimer;
+  bool _readingWindowsQueue = false;
 
   Stream<PlatformSharePayload> get shares => _shares.stream;
 
   Future<void> startTransferService() => _optionalCall('startTransferService');
 
   Future<void> stopTransferService() => _optionalCall('stopTransferService');
+
+  Future<void> updateDesktopStatus(Map<String, dynamic> status) async {
+    if (!Platform.isWindows) return;
+    final local = Platform.environment['LOCALAPPDATA'];
+    if (local == null) return;
+    final directory = Directory(path.join(local, 'NexDrop'));
+    await directory.create(recursive: true);
+    final destination = File(path.join(directory.path, 'status.json'));
+    final temporary = File('${destination.path}.tmp');
+    await temporary.writeAsString(jsonEncode(status), flush: true);
+    if (await destination.exists()) await destination.delete();
+    await temporary.rename(destination.path);
+  }
 
   Future<void> _optionalCall(String method) async {
     try {
@@ -38,6 +56,10 @@ class PlatformShareService {
   }
 
   Future<void> initialize() async {
+    if (Platform.isWindows) {
+      await _startWindowsBridge();
+      return;
+    }
     try {
       final initial = await _methods.invokeMapMethod<dynamic, dynamic>(
         'getInitialShare',
@@ -55,7 +77,69 @@ class PlatformShareService {
     }
   }
 
+  Future<void> _startWindowsBridge() async {
+    final service = File(
+      path.join(
+        path.dirname(Platform.resolvedExecutable),
+        'nexdrop-desktop-service.exe',
+      ),
+    );
+    if (await service.exists()) {
+      await Process.start(
+        service.path,
+        const [],
+        mode: ProcessStartMode.detached,
+      );
+    }
+    _windowsTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => unawaited(_readWindowsQueue()),
+    );
+    await _readWindowsQueue();
+  }
+
+  Future<void> _readWindowsQueue() async {
+    if (_readingWindowsQueue) return;
+    _readingWindowsQueue = true;
+    try {
+      final local = Platform.environment['LOCALAPPDATA'];
+      if (local == null) return;
+      final directory = Directory(path.join(local, 'NexDrop', 'bridge-queue'));
+      if (!await directory.exists()) return;
+      await for (final entry in directory.list()) {
+        if (entry is! File || !entry.path.toLowerCase().endsWith('.json')) {
+          continue;
+        }
+        try {
+          final value =
+              jsonDecode(await entry.readAsString()) as Map<String, dynamic>;
+          final kind = value['kind'] as String? ?? '';
+          final url = value['url'] as String? ?? '';
+          final text = value['text'] as String? ?? '';
+          final title = value['title'] as String? ?? '';
+          final content = kind == 'SELECTION'
+              ? text
+              : [title, url].where((part) => part.isNotEmpty).join('\n');
+          if (content.isNotEmpty) {
+            _shares.add(PlatformSharePayload(text: content, files: const []));
+          }
+          await entry.delete();
+        } catch (_) {
+          final failed = File('${entry.path}.invalid');
+          if (await failed.exists()) {
+            await entry.delete();
+          } else {
+            await entry.rename(failed.path);
+          }
+        }
+      }
+    } finally {
+      _readingWindowsQueue = false;
+    }
+  }
+
   Future<void> dispose() async {
+    _windowsTimer?.cancel();
     await _subscription?.cancel();
     await _shares.close();
   }

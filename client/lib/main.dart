@@ -10,6 +10,7 @@ import 'package:workmanager/workmanager.dart';
 import 'app_controller.dart';
 import 'core/api_client.dart';
 import 'core/local_database.dart';
+import 'core/platform_share.dart';
 
 const _backgroundSyncTask = 'nexdrop.background-sync';
 
@@ -47,7 +48,7 @@ void backgroundCallbackDispatcher() {
   });
 }
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isAndroid) {
     await Workmanager().initialize(backgroundCallbackDispatcher);
@@ -75,6 +76,15 @@ Future<void> main() async {
     );
   }
   final controller = AppController();
+  final shareIndex = arguments.indexOf('--share');
+  if (shareIndex >= 0 && shareIndex + 1 < arguments.length) {
+    controller.queueShare(
+      PlatformSharePayload(
+        text: '',
+        files: arguments.skip(shareIndex + 1).toList(),
+      ),
+    );
+  }
   await controller.initialize();
   runApp(NexDropApp(controller: controller));
 }
