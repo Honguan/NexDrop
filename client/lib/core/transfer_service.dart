@@ -35,6 +35,7 @@ class TransferService {
 
   static const _deviceKeyPrefix = 'nexdrop.device_id.';
   static const _waitingRecipePrefix = 'nexdrop.waiting.recipe.';
+  static const _largeFileThreshold = 100 * 1024 * 1024;
   final ApiClient api;
   final CryptoService crypto;
   final LocalDatabase database;
@@ -223,7 +224,7 @@ class TransferService {
       final regularPaths = <String>[];
       for (final sourcePath in sourcePaths) {
         final size = await File(sourcePath).length();
-        (size > 100 * 1024 * 1024 ? largePaths : regularPaths).add(sourcePath);
+        (size > _largeFileThreshold ? largePaths : regularPaths).add(sourcePath);
       }
       if (largePaths.isNotEmpty && regularPaths.isNotEmpty) {
         final waiting = await sendFiles(
@@ -712,7 +713,7 @@ class TransferService {
           (file) =>
               routeMode == 'LAN_ONLY' ||
               routeMode == 'WAIT_LAN' ||
-              (!allowLarge && file.originalSize > 100 * 1024 * 1024),
+              (!allowLarge && file.originalSize > _largeFileThreshold),
         );
     if (waitForLan) {
       await _storage.write(
