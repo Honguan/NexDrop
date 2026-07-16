@@ -10,7 +10,7 @@
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
     <application
-        android:label="nexdrop_client"
+        android:label="NexDrop"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

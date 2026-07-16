@@ -12,13 +12,13 @@ fi
 case "$command" in
     install)
         docker compose config >/dev/null
-        docker compose up -d --build
+		docker compose pull nexdrop postgres caddy
+		docker compose up -d
         ;;
     update)
         stamp=$(date -u +%Y%m%dT%H%M%SZ)
         docker compose run --rm nexdrop backup --output "/var/lib/nexdrop/backups/pre-update-$stamp.tar.gz"
-        docker compose pull --ignore-buildable
-        docker compose build --pull nexdrop
+		docker compose pull nexdrop postgres caddy
         docker compose up -d
         ;;
     status)

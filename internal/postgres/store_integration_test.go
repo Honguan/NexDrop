@@ -196,14 +196,25 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	}
 	transferService := transfer.NewService(store)
 	const clientBatchID = "4b9de43e-5903-4d29-ab44-cebe100daf4e"
-	textTransfer, err := transferService.Create(ctx, session, transfer.Request{
-		ClientBatchID: clientBatchID,
-		TargetType:    transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
+	request := transfer.Request{
+		IdempotencyKey: "5b9de43e-5903-4d29-ab44-cebe100daf4e",
+		ClientBatchID:  clientBatchID,
+		TargetType:     transfer.TargetSingle, TargetDeviceIDs: []string{targetDevice.ID},
 		LANAvailableDeviceIDs: []string{targetDevice.ID}, ContentType: transfer.ContentText,
 		Content: []byte("encrypted text"), WrappedContentKeys: map[string][]byte{targetDevice.ID: {1, 2, 3}, created.ID: {9, 8, 7}},
-	})
+	}
+	textTransfer, err := transferService.Create(ctx, session, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	replayedTransfer, err := transferService.Create(ctx, session, request)
+	if err != nil || replayedTransfer.ID != textTransfer.ID {
+		t.Fatalf("idempotent transfer = %+v, %v", replayedTransfer, err)
+	}
+	conflictingRequest := request
+	conflictingRequest.Content = []byte("different encrypted text")
+	if _, err := transferService.Create(ctx, session, conflictingRequest); !errors.Is(err, transfer.ErrIdempotencyConflict) {
+		t.Fatalf("idempotency conflict error = %v", err)
 	}
 	if textTransfer.BatchID != clientBatchID {
 		t.Fatalf("batch ID = %q, want %q", textTransfer.BatchID, clientBatchID)
@@ -221,6 +232,12 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if !bytes.Equal(targetTransfers[0].WrappedContentKeys[targetDevice.ID], []byte{1, 2, 3}) {
 		t.Fatalf("target wrapped content keys = %+v", targetTransfers[0].WrappedContentKeys)
 	}
+	_, err = transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
+		DeviceID: targetDevice.ID, Status: domain.TransferVerifying, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	reported, err := transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
 		DeviceID: targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
 	})
@@ -230,6 +247,9 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	readTransfer, err := transferService.Read(ctx, targetSession, textTransfer.ID)
 	if err != nil || readTransfer.Targets[0].Status != domain.TransferRead {
 		t.Fatalf("Read() = %+v, %v", readTransfer, err)
+	}
+	if replayedRead, err := transferService.Read(ctx, targetSession, textTransfer.ID); err != nil || replayedRead.Targets[0].Status != domain.TransferRead {
+		t.Fatalf("replayed Read() = %+v, %v", replayedRead, err)
 	}
 
 	smallContent := []byte("x")
@@ -313,9 +333,17 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 			ContentType: "FILE", Route: domain.SelectedRouteNode, FileSize: 1, StartedAt: metricStart, Succeeded: true,
 		},
 	}
-	batch, err := analyticsService.Upload(ctx, session, metrics)
+	batchKey := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	batch, err := analyticsService.UploadIdempotent(ctx, session, batchKey, []byte("metrics-v1"), metrics)
 	if err != nil || batch.Accepted != 2 {
 		t.Fatalf("Upload metrics = %+v, %v", batch, err)
+	}
+	replayedBatch, err := analyticsService.UploadIdempotent(ctx, session, batchKey, []byte("metrics-v1"), metrics)
+	if err != nil || replayedBatch != batch {
+		t.Fatalf("replayed metrics = %+v, %v", replayedBatch, err)
+	}
+	if _, err := analyticsService.UploadIdempotent(ctx, session, batchKey, []byte("metrics-v2"), metrics); !errors.Is(err, analytics.ErrConflict) {
+		t.Fatalf("conflicting metrics error = %v, want ErrConflict", err)
 	}
 	duplicateBatch, err := analyticsService.Upload(ctx, session, metrics)
 	if err != nil || duplicateBatch.Duplicates != 2 {

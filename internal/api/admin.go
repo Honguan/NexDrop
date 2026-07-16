@@ -277,6 +277,9 @@ func (api *API) authenticateAdmin(w http.ResponseWriter, r *http.Request) (auth.
 		writeError(w, http.StatusForbidden, "ADMIN_REAUTH_REQUIRED")
 		return auth.Session{}, false
 	}
+	if !enforceRateLimit(w, r, api.adminLimit, session.SessionID) {
+		return auth.Session{}, false
+	}
 	return session, true
 }
 

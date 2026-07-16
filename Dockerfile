@@ -7,13 +7,21 @@ COPY web/src ./src
 RUN npm run build
 
 FROM golang:1.23-alpine AS build
+ARG VERSION=1.0.0
+ARG COMMIT=development
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexdrop ./cmd/nexdrop
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X nexdrop/internal/version.ProductVersion=${VERSION} -X nexdrop/internal/version.BuildCommit=${COMMIT}" -o /out/nexdrop ./cmd/nexdrop
 
 FROM alpine:3.21
+ARG VERSION=1.0.0
+ARG COMMIT=development
+LABEL org.opencontainers.image.title="NexDrop Node" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.source="https://github.com/Honguan/NexDrop"
 RUN apk add --no-cache postgresql17-client
 RUN addgroup -S nexdrop && adduser -S -G nexdrop nexdrop
 RUN mkdir -p /var/lib/nexdrop && chown nexdrop:nexdrop /var/lib/nexdrop

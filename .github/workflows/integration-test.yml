@@ -1,0 +1,52 @@
+name: integration-test
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: {POSTGRES_DB: nexdrop_test, POSTGRES_USER: nexdrop, POSTGRES_PASSWORD: test-only-password}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexdrop -d nexdrop_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      PGPASSWORD: test-only-password
+      NEXDROP_TEST_DATABASE_URL: postgres://nexdrop:test-only-password@127.0.0.1:5432/nexdrop_test?sslmode=disable
+      NEXDROP_DATABASE_URL: postgres://nexdrop:test-only-password@127.0.0.1:5432/nexdrop_test?sslmode=disable
+      NEXDROP_STORAGE_PATH: /tmp/nexdrop-storage
+      NEXDROP_WEB_PATH: web/dist
+      NEXDROP_MIGRATIONS_PATH: migrations
+      NEXDROP_BOOTSTRAP_ADMIN_USERNAME: integration-admin
+      NEXDROP_BOOTSTRAP_ADMIN_EMAIL: integration@example.invalid
+      NEXDROP_BOOTSTRAP_ADMIN_PASSWORD: Integration-test-only-1234
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version-file: go.mod, cache: true}
+      - name: 套用遷移
+        run: for file in migrations/*.sql; do psql -h 127.0.0.1 -U nexdrop -d nexdrop_test -v ON_ERROR_STOP=1 -f "$file"; done
+      - run: go test -count=1 ./internal/postgres/...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json}
+      - run: npm ci && npm run build
+        working-directory: web
+      - name: 伺服器、登入與 Token 輪替
+        run: |
+          mkdir -p "$NEXDROP_STORAGE_PATH"
+          go run ./cmd/nexdrop >server.log 2>&1 &
+          server_pid=$!
+          trap 'kill $server_pid || true' EXIT
+          for attempt in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8080/readyz && break || sleep 1; done
+          login=$(curl --fail --silent -H 'Content-Type: application/json' -H 'Accept: application/vnd.nexdrop.v1+json' \
+            --data '{"identifier":"integration-admin","password":"Integration-test-only-1234"}' http://127.0.0.1:8080/api/auth/login)
+          refresh=$(printf '%s' "$login" | jq -r .refreshToken)
+          test -n "$refresh" && test "$refresh" != null
+          curl --fail --silent -H 'Content-Type: application/json' -H 'Accept: application/vnd.nexdrop.v1+json' \
+            --data "{\"refreshToken\":\"$refresh\"}" http://127.0.0.1:8080/api/auth/refresh | jq -e '.accessToken and .refreshToken'

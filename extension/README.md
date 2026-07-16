@@ -5,7 +5,10 @@
 ## 建置
 
 ```powershell
-npm install
+npm ci
+npm run lint
+npm run typecheck
+npm test
 npm run build
 ```
 
@@ -26,3 +29,5 @@ go build -o nexdrop-bridge.exe ./cmd/nexdrop-bridge
 ```
 
 Desktop 會在 `%LOCALAPPDATA%\NexDrop\bridge.json` 寫入僅供本機橋接使用的 URL 與權杖。
+
+正式 Chrome/Edge ZIP 使用 `npm run package` 輸出至根目錄 `dist/`。套件不包含 `.env` 或憑證；Native Messaging 需分別以實際瀏覽器擴充功能 ID 註冊。瀏覽器原則或使用者停用原生主機時無法使用桌面橋接。

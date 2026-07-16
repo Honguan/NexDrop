@@ -188,14 +188,14 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [sharedContent, setSharedContent] = useState(readSharedContent);
 
   const reload = useCallback(async () => {
-    const [nextDevices, nextGroups, nextTransfers] = await Promise.all([
+	const [nextDevices, nextGroups, transferPage] = await Promise.all([
       api.get<Device[]>("/api/devices"),
       api.get<Group[]>("/api/groups"),
-      api.get<Transfer[]>("/api/transfers"),
+	  api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
     ]);
     setDevices(nextDevices);
     setGroups(nextGroups);
-    setTransfers(nextTransfers);
+	setTransfers(transferPage.items);
   }, []);
 
   useEffect(() => {

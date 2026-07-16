@@ -1,0 +1,60 @@
+name: security
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '17 3 * * 1'
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: {fetch-depth: 0}
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+  codeql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+        with: {languages: 'go,javascript-typescript'}
+      - uses: github/codeql-action/autobuild@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+      - uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version-file: go.mod}
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: 24}
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: web
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: extension
+      - run: go run github.com/google/go-licenses@v1.6.0 check ./... --disallowed_types=forbidden,restricted
+  dart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with: {channel: stable, cache: true}
+      - run: flutter pub get
+        working-directory: client
+      - run: flutter analyze
+        working-directory: client
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: docker build -t nexdrop:security .
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with: {image-ref: 'nexdrop:security', severity: 'HIGH,CRITICAL', ignore-unfixed: true, exit-code: '1'}
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with: {image-ref: 'nexdrop:security', format: 'cyclonedx', output: 'nexdrop.cdx.json'}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: security-sbom, path: nexdrop.cdx.json, if-no-files-found: error}

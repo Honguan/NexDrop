@@ -1,0 +1,25 @@
+name: flutter-ci
+on:
+  pull_request:
+    paths: ['client/**', '.github/workflows/flutter-ci.yml']
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix: {os: [ubuntu-latest, windows-latest]}
+    runs-on: ${{ matrix.os }}
+    defaults: {run: {working-directory: client}}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with: {channel: stable, cache: true}
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - if: runner.os == 'Linux'
+        run: flutter build apk --debug
+      - if: runner.os == 'Windows'
+        run: flutter build windows --release

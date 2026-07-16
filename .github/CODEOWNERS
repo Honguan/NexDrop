@@ -1,0 +1,5 @@
+/SECURITY.md @Honguan
+/.github/workflows/security.yml @Honguan
+/.github/workflows/release.yml @Honguan
+/client/android/app/build.gradle.kts @Honguan
+/client/windows/installer.iss @Honguan

@@ -1,8 +1,10 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -738,6 +740,27 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 		return transfer.Transfer{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if prepared.IdempotencyKey != "" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))`, session.DeviceID, prepared.IdempotencyKey); err != nil {
+			return transfer.Transfer{}, err
+		}
+		var existingID string
+		var fingerprint []byte
+		err = tx.QueryRow(ctx, `
+			SELECT id::text, request_fingerprint FROM transfer_tasks
+			WHERE sender_device_id = $1 AND idempotency_key = $2
+		`, session.DeviceID, prepared.IdempotencyKey).Scan(&existingID, &fingerprint)
+		if err == nil {
+			if !bytes.Equal(fingerprint, prepared.RequestFingerprint) {
+				return transfer.Transfer{}, transfer.ErrIdempotencyConflict
+			}
+			_ = tx.Rollback(ctx)
+			return store.GetTransfer(ctx, session, existingID)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return transfer.Transfer{}, err
+		}
+	}
 	if err := enforceTransferQuotas(ctx, tx, session, prepared); err != nil {
 		return transfer.Transfer{}, err
 	}
@@ -750,17 +773,21 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 	if prepared.ClientBatchID != "" {
 		batchID = prepared.ClientBatchID
 	}
+	var idempotencyKey any
+	if prepared.IdempotencyKey != "" {
+		idempotencyKey = prepared.IdempotencyKey
+	}
 	var totalSize int64
 	for _, file := range prepared.Files {
 		totalSize += file.Size
 	}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO transfer_tasks (
-			sender_user_id, sender_device_id, group_id, client_batch_id, target_type, content_type,
+			sender_user_id, sender_device_id, group_id, client_batch_id, idempotency_key, request_fingerprint, target_type, content_type,
 			total_file_count, total_size, status, created_at, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id::text
-	`, session.ID, session.DeviceID, groupID, batchID, prepared.TargetType, prepared.ContentType,
+	`, session.ID, session.DeviceID, groupID, batchID, idempotencyKey, prepared.RequestFingerprint, prepared.TargetType, prepared.ContentType,
 		len(prepared.Files), totalSize, prepared.Status, prepared.CreatedAt, prepared.ExpiresAt).Scan(&result.ID)
 	if err != nil {
 		return transfer.Transfer{}, err
@@ -840,6 +867,13 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 			return transfer.Transfer{}, err
 		}
 		_, err = tx.Exec(ctx, `
+			INSERT INTO transfer_executions (transfer_id, target_device_id, attempt, status, started_at)
+			VALUES ($1, $2, 1, $3, $4)
+		`, result.ID, target.DeviceID, target.Status, prepared.CreatedAt)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO notifications (device_id, notification_type, payload, created_at)
 			VALUES ($1, 'TRANSFER', jsonb_build_object('transferId', $2::text), $3)
 		`, target.DeviceID, result.ID, prepared.CreatedAt)
@@ -887,7 +921,14 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
+	if currentStatus == progress.Status && (currentStatus.IsTerminal() || currentStatus == domain.TransferDelivered) {
+		_ = tx.Rollback(ctx)
+		return store.GetTransfer(ctx, session, transferID)
+	}
 	if currentStatus.IsTerminal() || (currentStatus == domain.TransferDelivered && progress.Status != domain.TransferRead) {
+		return transfer.Transfer{}, transfer.ErrConflict
+	}
+	if currentStatus != progress.Status && !currentStatus.CanTransitionTo(progress.Status) {
 		return transfer.Transfer{}, transfer.ErrConflict
 	}
 	nextRoute := currentRoute
@@ -928,6 +969,16 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_executions SET status = $3,
+		    completed_at = CASE WHEN $3::text IN ('READ', 'FAILED', 'CANCELLED', 'EXPIRED') THEN $4 ELSE completed_at END,
+		    error_code = NULLIF($5::text, '')
+		WHERE transfer_id = $1 AND target_device_id = $2
+		  AND attempt = (SELECT MAX(attempt) FROM transfer_executions WHERE transfer_id = $1 AND target_device_id = $2)
+	`, transferID, progress.DeviceID, progress.Status, now, progress.ErrorCode)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
 	if progress.Status == domain.TransferDelivered || progress.Status == domain.TransferRead {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO delivery_status (transfer_id, device_id, delivered_at, read_at)
@@ -950,6 +1001,69 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	`, transferID, progress.Status)
 	if err != nil {
 		return transfer.Transfer{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return transfer.Transfer{}, err
+	}
+	return store.GetTransfer(ctx, session, transferID)
+}
+
+func (store *Store) RetryTransferTarget(ctx context.Context, session auth.Session, transferID, deviceID, idempotencyKey string, now time.Time) (transfer.Transfer, error) {
+	if session.DeviceID == nil {
+		return transfer.Transfer{}, transfer.ErrForbidden
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var current domain.TransferStatus
+	err = tx.QueryRow(ctx, `
+		SELECT target.status FROM transfer_targets target
+		JOIN transfer_tasks task ON task.id = target.transfer_id
+		WHERE target.transfer_id = $1 AND target.target_device_id = $2 AND task.sender_user_id = $3
+		FOR UPDATE OF target
+	`, transferID, deviceID, session.ID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return transfer.Transfer{}, transfer.ErrForbidden
+	}
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	var existing bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM transfer_executions WHERE transfer_id = $1 AND target_device_id = $2 AND idempotency_key = $3
+	)`, transferID, deviceID, idempotencyKey).Scan(&existing); err != nil {
+		return transfer.Transfer{}, err
+	}
+	if existing {
+		_ = tx.Rollback(ctx)
+		return store.GetTransfer(ctx, session, transferID)
+	}
+	if current != domain.TransferFailed && current != domain.TransferPaused && current != domain.TransferSourceFileMissing && current != domain.TransferSourceFileChanged {
+		return transfer.Transfer{}, transfer.ErrConflict
+	}
+	if !existing {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transfer_executions (transfer_id, target_device_id, attempt, status, started_at, idempotency_key)
+			SELECT $1, $2, COALESCE(MAX(attempt), 0) + 1, 'CHECKING_ROUTE', $3, $4
+			FROM transfer_executions WHERE transfer_id = $1 AND target_device_id = $2
+		`, transferID, deviceID, now, idempotencyKey)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE transfer_targets SET status = 'CHECKING_ROUTE', started_at = $3,
+			    completed_at = NULL, read_at = NULL, error_code = NULL
+			WHERE transfer_id = $1 AND target_device_id = $2
+		`, transferID, deviceID, now)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		_, err = tx.Exec(ctx, `UPDATE transfer_tasks SET status = 'CHECKING_ROUTE' WHERE id = $1`, transferID)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return transfer.Transfer{}, err
@@ -1117,6 +1231,61 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func (store *Store) ListTransferPage(ctx context.Context, session auth.Session, options transfer.PageOptions) (transfer.Page, error) {
+	var from, to any
+	if !options.From.IsZero() {
+		from = options.From.UTC()
+	}
+	if !options.To.IsZero() {
+		to = options.To.UTC()
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT DISTINCT t.id::text, t.created_at
+		FROM transfer_tasks t
+		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
+		WHERE t.group_deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $1)
+		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
+		  AND ($3::timestamptz IS NULL OR t.created_at >= $3)
+		  AND ($4::timestamptz IS NULL OR t.created_at <= $4)
+		  AND ($5::text = '' OR t.status = $5)
+		  AND (NULLIF($6::text, '') IS NULL OR (t.created_at, t.id) < (
+		      SELECT cursor_task.created_at, cursor_task.id FROM transfer_tasks cursor_task WHERE cursor_task.id = NULLIF($6::text, '')::uuid
+		  ))
+		ORDER BY t.created_at DESC, t.id DESC
+		LIMIT $7
+	`, session.ID, session.DeviceID, from, to, options.Status, options.Cursor, options.Limit+1)
+	if err != nil {
+		return transfer.Page{}, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0, options.Limit+1)
+	for rows.Next() {
+		var id string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &createdAt); err != nil {
+			return transfer.Page{}, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return transfer.Page{}, err
+	}
+	page := transfer.Page{Items: make([]transfer.Transfer, 0, min(len(ids), options.Limit))}
+	if len(ids) > options.Limit {
+		page.NextCursor = ids[options.Limit-1]
+		ids = ids[:options.Limit]
+	}
+	for _, id := range ids {
+		item, err := store.GetTransfer(ctx, session, id)
+		if err != nil {
+			return transfer.Page{}, err
+		}
+		page.Items = append(page.Items, item)
+	}
+	return page, nil
 }
 
 func (store *Store) GetTransfer(ctx context.Context, session auth.Session, transferID string) (transfer.Transfer, error) {
@@ -1322,12 +1491,30 @@ func (store *Store) ReadTransfer(ctx context.Context, session auth.Session, tran
 		return transfer.Transfer{}, err
 	}
 	if command.RowsAffected() == 0 {
-		return transfer.Transfer{}, transfer.ErrForbidden
+		var alreadyRead bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM transfer_targets WHERE transfer_id = $1 AND target_device_id = $2 AND status = 'READ'
+		)`, transferID, session.DeviceID).Scan(&alreadyRead); err != nil {
+			return transfer.Transfer{}, err
+		}
+		if !alreadyRead {
+			return transfer.Transfer{}, transfer.ErrForbidden
+		}
+		_ = tx.Rollback(ctx)
+		return store.GetTransfer(ctx, session, transferID)
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO delivery_status (transfer_id, device_id, delivered_at, read_at)
 		VALUES ($1, $2, $3, $3)
 		ON CONFLICT (transfer_id, device_id) DO UPDATE SET read_at = EXCLUDED.read_at
+	`, transferID, session.DeviceID, now)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE transfer_executions SET status = 'READ', completed_at = $3
+		WHERE transfer_id = $1 AND target_device_id = $2
+		  AND attempt = (SELECT MAX(attempt) FROM transfer_executions WHERE transfer_id = $1 AND target_device_id = $2)
 	`, transferID, session.DeviceID, now)
 	if err != nil {
 		return transfer.Transfer{}, err
@@ -1421,7 +1608,16 @@ func (store *Store) OpenChunk(ctx context.Context, session auth.Session, fileID 
 }
 
 func (store *Store) PrepareFileCompletion(ctx context.Context, session auth.Session, fileID string) (filetransfer.FileRecord, []filetransfer.ChunkRecord, error) {
-	file, _, err := store.PrepareChunkUpload(ctx, session, fileID, 0)
+	var file filetransfer.FileRecord
+	err := store.pool.QueryRow(ctx, `
+		SELECT f.id::text, f.size, f.sha256, f.chunk_size, f.chunk_count, f.status, f.storage_path
+		FROM files f JOIN transfer_tasks t ON t.id = f.transfer_id
+		WHERE f.id = $1 AND t.sender_user_id = $2 AND t.sender_device_id = $3
+		  AND f.status IN ('UPLOADING', 'AVAILABLE_ON_NODE')
+	`, fileID, session.ID, session.DeviceID).Scan(&file.ID, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.Status, &file.StoragePath)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return filetransfer.FileRecord{}, nil, filetransfer.ErrForbidden
+	}
 	if err != nil {
 		return filetransfer.FileRecord{}, nil, err
 	}
@@ -1582,11 +1778,45 @@ func (store *Store) AcknowledgeNotification(ctx context.Context, deviceID, notif
 }
 
 func (store *Store) InsertMetrics(ctx context.Context, session auth.Session, metrics []analytics.Metric) (analytics.BatchResult, error) {
+	return store.insertMetrics(ctx, session, "", nil, metrics)
+}
+
+func (store *Store) InsertMetricsIdempotent(ctx context.Context, session auth.Session, key string, fingerprint []byte, metrics []analytics.Metric) (analytics.BatchResult, error) {
+	return store.insertMetrics(ctx, session, key, fingerprint, metrics)
+}
+
+func (store *Store) insertMetrics(ctx context.Context, session auth.Session, key string, fingerprint []byte, metrics []analytics.Metric) (analytics.BatchResult, error) {
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {
 		return analytics.BatchResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if key != "" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))`, session.DeviceID, key); err != nil {
+			return analytics.BatchResult{}, err
+		}
+		var storedHash []byte
+		var storedBody []byte
+		err := tx.QueryRow(ctx, `
+			SELECT request_hash, response_body::text::bytea
+			FROM idempotency_records
+			WHERE actor_device_id = $1 AND method = 'POST'
+			  AND resource = '/api/metrics/batch' AND idempotency_key = $2
+		`, session.DeviceID, key).Scan(&storedHash, &storedBody)
+		if err == nil {
+			if !bytes.Equal(storedHash, fingerprint) {
+				return analytics.BatchResult{}, analytics.ErrConflict
+			}
+			var replay analytics.BatchResult
+			if err := json.Unmarshal(storedBody, &replay); err != nil {
+				return analytics.BatchResult{}, err
+			}
+			return replay, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return analytics.BatchResult{}, err
+		}
+	}
 	result := analytics.BatchResult{}
 	for _, metric := range metrics {
 		var receiver any
@@ -1629,6 +1859,20 @@ func (store *Store) InsertMetrics(ctx context.Context, session auth.Session, met
 				return analytics.BatchResult{}, analytics.ErrForbidden
 			}
 			result.Duplicates++
+		}
+	}
+	if key != "" {
+		body, err := json.Marshal(result)
+		if err != nil {
+			return analytics.BatchResult{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO idempotency_records (
+				actor_user_id, actor_device_id, method, resource, idempotency_key,
+				request_hash, state, response_status, response_body, completed_at
+			) VALUES ($1, $2, 'POST', '/api/metrics/batch', $3, $4, 'COMPLETED', 200, $5::jsonb, now())
+		`, session.ID, session.DeviceID, key, fingerprint, body); err != nil {
+			return analytics.BatchResult{}, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

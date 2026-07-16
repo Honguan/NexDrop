@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -29,6 +30,8 @@ class ApiClient {
   static const _nodeKey = 'nexdrop.node_url';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
+  static const _accept = 'application/vnd.nexdrop.v1+json';
+  static const _uuid = Uuid();
 
   final http.Client _client;
   final FlutterSecureStorage _storage;
@@ -57,7 +60,7 @@ class ApiClient {
     _node = validateNodeUrl(nodeUrl);
     final response = await _client.post(
       _uri('/api/auth/login'),
-      headers: const {'Content-Type': 'application/json'},
+      headers: const {'Content-Type': 'application/json', 'Accept': _accept},
       body: jsonEncode({'identifier': identifier.trim(), 'password': password}),
     );
     if (response.statusCode != HttpStatus.ok) throw _error(response);
@@ -71,7 +74,7 @@ class ApiClient {
     if (refreshToken != null && _node != null) {
       await _client.post(
         _uri('/api/auth/logout'),
-        headers: const {'Content-Type': 'application/json'},
+        headers: const {'Content-Type': 'application/json', 'Accept': _accept},
         body: jsonEncode({'refreshToken': refreshToken}),
       );
     }
@@ -91,12 +94,15 @@ class ApiClient {
           .map((value) => GroupSummary.fromJson(value as Map<String, dynamic>))
           .toList();
 
-  Future<List<TransferSummary>> transfers() async =>
-      ((await getJson('/api/transfers')) as List<dynamic>)
+  Future<List<TransferSummary>> transfers() async {
+    final response =
+        await getJson('/api/transfers?limit=100') as Map<String, dynamic>;
+    return (response['items'] as List<dynamic>)
           .map(
             (value) => TransferSummary.fromJson(value as Map<String, dynamic>),
           )
           .toList();
+  }
 
   Future<dynamic> getJson(String path) => _request(path, method: 'GET');
 
@@ -109,12 +115,14 @@ class ApiClient {
     List<int> bytes,
     String sha256Hex,
   ) async {
+    final idempotencyKey = _uuid.v4();
     final response = await _authorized(
       () => _client.post(
         _uri('/api/files/$fileId/chunks/$index'),
         headers: _headers({
           'X-Chunk-SHA256': sha256Hex,
           'Content-Type': 'application/octet-stream',
+          'Idempotency-Key': idempotencyKey,
         }),
         body: bytes,
       ),
@@ -158,6 +166,7 @@ class ApiClient {
     required String method,
     Object? body,
   }) async {
+    final idempotencyKey = method == 'GET' ? null : _uuid.v4();
     final response = await _authorized(() {
       final request = http.Request(method, _uri(path));
       request.headers.addAll(
@@ -165,6 +174,9 @@ class ApiClient {
           body == null ? null : const {'Content-Type': 'application/json'},
         ),
       );
+      if (idempotencyKey != null) {
+        request.headers['Idempotency-Key'] = idempotencyKey;
+      }
       if (body != null) request.body = jsonEncode(body);
       return _client.send(request).then(http.Response.fromStream);
     });
@@ -213,7 +225,7 @@ class ApiClient {
         if (_refreshToken == null) return false;
         final response = await _client.post(
           _uri('/api/auth/refresh'),
-          headers: const {'Content-Type': 'application/json'},
+          headers: const {'Content-Type': 'application/json', 'Accept': _accept},
           body: jsonEncode({'refreshToken': _refreshToken}),
         );
         if (response.statusCode != HttpStatus.ok) throw _error(response);
@@ -231,6 +243,7 @@ class ApiClient {
 
   Map<String, String> _headers([Map<String, String>? extra]) => {
     'Authorization': 'Bearer $_accessToken',
+    'Accept': _accept,
     ...?extra,
   };
 
@@ -260,10 +273,13 @@ class ApiClient {
 
   ApiException _error(http.Response response) {
     try {
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      final error = json['error'];
       return ApiException(
-        (jsonDecode(response.body) as Map<String, dynamic>)['error']
-                as String? ??
-            'REQUEST_FAILED',
+        error is String
+            ? error
+            : (error as Map<String, dynamic>?)?['code'] as String? ??
+                  'REQUEST_FAILED',
         response.statusCode,
       );
     } catch (_) {

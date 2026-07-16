@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -369,6 +370,70 @@ func TestLoginAndReadAccount(t *testing.T) {
 	}
 }
 
+func TestAPIVersionHeadersAndNegotiatedError(t *testing.T) {
+	handler := New(nil, nil, nil, nil, nil, nil, nil, nil).Routes()
+	request := httptest.NewRequest(http.MethodGet, "/api/account", nil)
+	request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Header().Get("X-NexDrop-API-Version") != "1" {
+		t.Fatalf("API version header = %q", response.Header().Get("X-NexDrop-API-Version"))
+	}
+	requestID := response.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("X-Request-ID is empty")
+	}
+	var body struct {
+		Error struct {
+			Code      string         `json:"code"`
+			Message   string         `json:"message"`
+			RequestID string         `json:"request_id"`
+			Details   map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "INVALID_TOKEN" || body.Error.Message == "" || body.Error.RequestID != requestID || body.Error.Details == nil {
+		t.Fatalf("error response = %+v", body.Error)
+	}
+}
+
+func TestLegacyErrorRemainsCompatible(t *testing.T) {
+	handler := New(nil, nil, nil, nil, nil, nil, nil, nil).Routes()
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/account", nil))
+
+	var body map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "INVALID_TOKEN" {
+		t.Fatalf("legacy error = %#v", body)
+	}
+}
+
+func TestLoginRateLimitReturnsRetryAfter(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}}
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	var response *httptest.ResponseRecorder
+	for range 11 {
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"wrong"}`))
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+	}
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
+		t.Fatalf("status = %d, Retry-After = %q, body = %s", response.Code, response.Header().Get("Retry-After"), response.Body.String())
+	}
+}
+
 func TestCreateAndListDevice(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -497,6 +562,57 @@ func TestCreateTransfer(t *testing.T) {
 	}
 	if created.ID != "transfer-1" || created.Targets[0].SelectedRoute != domain.SelectedRouteNode {
 		t.Fatalf("created transfer = %+v", created)
+	}
+}
+
+func TestVersionedTransferCreationRequiresIdempotencyKey(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDeviceID := "sender-device"
+	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}, sessionDeviceID: &senderDeviceID}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/transfers", bytes.NewBufferString(`{}`))
+	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	request.Header.Set("Accept", versionMediaType)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "IDEMPOTENCY_KEY_REQUIRED") {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestVersionedTransferListUsesPageEnvelope(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID := "device-1"
+	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}, sessionDeviceID: &deviceID}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/transfers?limit=25", nil)
+	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	request.Header.Set("Accept", versionMediaType)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	var page transfer.Page
+	if response.Code != http.StatusOK || json.NewDecoder(response.Body).Decode(&page) != nil || page.Items == nil {
+		t.Fatalf("status = %d, page = %+v, body = %s", response.Code, page, response.Body.String())
 	}
 }
 

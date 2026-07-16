@@ -162,6 +162,9 @@ func (service *Service) Complete(ctx context.Context, session auth.Session, file
 	if err != nil {
 		return FileRecord{}, err
 	}
+	if file.Status == "AVAILABLE_ON_NODE" {
+		return file, nil
+	}
 	if len(chunks) != file.ChunkCount {
 		return FileRecord{}, ErrIncomplete
 	}

@@ -2,6 +2,8 @@ package transfer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -11,13 +13,14 @@ import (
 )
 
 var (
-	ErrInvalid       = errors.New("invalid transfer request")
-	ErrNotFound      = errors.New("transfer not found")
-	ErrForbidden     = errors.New("transfer operation forbidden")
-	ErrFileTooLarge  = errors.New("file exceeds node limit")
-	ErrQuotaExceeded = errors.New("storage or traffic quota exceeded")
-	ErrStorageFull   = errors.New("node storage is full")
-	ErrConflict      = errors.New("transfer state conflict")
+	ErrInvalid             = errors.New("invalid transfer request")
+	ErrNotFound            = errors.New("transfer not found")
+	ErrForbidden           = errors.New("transfer operation forbidden")
+	ErrFileTooLarge        = errors.New("file exceeds node limit")
+	ErrQuotaExceeded       = errors.New("storage or traffic quota exceeded")
+	ErrStorageFull         = errors.New("node storage is full")
+	ErrConflict            = errors.New("transfer state conflict")
+	ErrIdempotencyConflict = errors.New("idempotency key reused with different content")
 )
 
 type ContentType string
@@ -52,6 +55,7 @@ type File struct {
 }
 
 type Request struct {
+	IdempotencyKey        string            `json:"-"`
 	ClientBatchID         string            `json:"clientBatchId,omitempty"`
 	TargetType            TargetType        `json:"targetType"`
 	TargetDeviceIDs       []string          `json:"targetDeviceIds"`
@@ -81,12 +85,13 @@ type FileTarget struct {
 
 type Prepared struct {
 	Request
-	ResolvedDeviceIDs []string
-	Targets           []Target
-	FileTargets       []FileTarget
-	Status            domain.TransferStatus
-	CreatedAt         time.Time
-	ExpiresAt         time.Time
+	ResolvedDeviceIDs  []string
+	Targets            []Target
+	FileTargets        []FileTarget
+	Status             domain.TransferStatus
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	RequestFingerprint []byte
 }
 
 type Transfer struct {
@@ -105,6 +110,38 @@ type Transfer struct {
 	Status             domain.TransferStatus `json:"status"`
 	CreatedAt          time.Time             `json:"createdAt"`
 	ExpiresAt          time.Time             `json:"expiresAt"`
+}
+
+type PageOptions struct {
+	Limit  int
+	Cursor string
+	From   time.Time
+	To     time.Time
+	Status domain.TransferStatus
+}
+
+type Page struct {
+	Items      []Transfer `json:"items"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+}
+
+type Execution struct {
+	ID             string                `json:"id"`
+	TransferID     string                `json:"transferId"`
+	TargetDeviceID string                `json:"targetDeviceId"`
+	Attempt        int                   `json:"attempt"`
+	Status         domain.TransferStatus `json:"status"`
+	StartedAt      time.Time             `json:"startedAt"`
+	CompletedAt    *time.Time            `json:"completedAt,omitempty"`
+	ErrorCode      string                `json:"errorCode,omitempty"`
+}
+
+type PagedStore interface {
+	ListTransferPage(context.Context, auth.Session, PageOptions) (Page, error)
+}
+
+type RetryStore interface {
+	RetryTransferTarget(context.Context, auth.Session, string, string, string, time.Time) (Transfer, error)
 }
 
 type Progress struct {
@@ -163,6 +200,14 @@ func (service *Service) Create(ctx context.Context, session auth.Session, reques
 		ResolvedDeviceIDs: resolved,
 		CreatedAt:         service.now().UTC(),
 	}
+	fingerprintRequest := request
+	fingerprintRequest.IdempotencyKey = ""
+	encoded, err := json.Marshal(fingerprintRequest)
+	if err != nil {
+		return Transfer{}, err
+	}
+	fingerprint := sha256.Sum256(encoded)
+	prepared.RequestFingerprint = fingerprint[:]
 	if isTextContent(request.ContentType) {
 		prepared.ExpiresAt = prepared.CreatedAt.Add(90 * 24 * time.Hour)
 		for _, deviceID := range resolved {
@@ -191,6 +236,24 @@ func (service *Service) Create(ctx context.Context, session auth.Session, reques
 
 func (service *Service) List(ctx context.Context, session auth.Session) ([]Transfer, error) {
 	return service.store.ListTransfers(ctx, session)
+}
+
+func (service *Service) ListPage(ctx context.Context, session auth.Session, options PageOptions) (Page, error) {
+	if options.Limit < 1 || options.Limit > 100 || (!options.From.IsZero() && !options.To.IsZero() && options.From.After(options.To)) {
+		return Page{}, ErrInvalid
+	}
+	store, ok := service.store.(PagedStore)
+	if !ok {
+		items, err := service.store.ListTransfers(ctx, session)
+		if err != nil {
+			return Page{}, err
+		}
+		if len(items) > options.Limit {
+			items = items[:options.Limit]
+		}
+		return Page{Items: items}, nil
+	}
+	return store.ListTransferPage(ctx, session, options)
 }
 
 func (service *Service) Get(ctx context.Context, session auth.Session, id string) (Transfer, error) {
@@ -233,6 +296,17 @@ func (service *Service) ReportProgress(ctx context.Context, session auth.Session
 	return service.store.ReportTransferProgress(ctx, session, id, progress, service.now().UTC())
 }
 
+func (service *Service) Retry(ctx context.Context, session auth.Session, transferID, deviceID, idempotencyKey string) (Transfer, error) {
+	if transferID == "" || deviceID == "" || idempotencyKey == "" || session.DeviceID == nil {
+		return Transfer{}, ErrInvalid
+	}
+	store, ok := service.store.(RetryStore)
+	if !ok {
+		return Transfer{}, ErrConflict
+	}
+	return store.RetryTransferTarget(ctx, session, transferID, deviceID, idempotencyKey, service.now().UTC())
+}
+
 func validateRequest(request Request) error {
 	if !validTargetType(request.TargetType) || !validContentType(request.ContentType) {
 		return ErrInvalid
@@ -258,7 +332,8 @@ func validateRequest(request Request) error {
 			return ErrInvalid
 		}
 		for _, file := range request.Files {
-			if strings.TrimSpace(file.Name) == "" || file.Size < 0 || len(file.SHA256) != 32 || file.ChunkSize <= 0 {
+			name := strings.TrimSpace(file.Name)
+			if name == "" || name != file.Name || strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." || file.Size < 0 || len(file.SHA256) != 32 || file.ChunkSize <= 0 {
 				return ErrInvalid
 			}
 			expectedChunkCount := int(file.Size / int64(file.ChunkSize))
@@ -318,12 +393,18 @@ func hasDuplicates(values []string) bool {
 
 func initialStatus(route domain.SelectedRoute) domain.TransferStatus {
 	switch route {
+	case domain.SelectedRouteLAN:
+		return domain.TransferTransferringLAN
+	case domain.SelectedRouteNode:
+		return domain.TransferQueued
 	case domain.SelectedRouteWaitingLAN:
 		return domain.TransferWaitingForLAN
+	case domain.SelectedRouteDraft:
+		return domain.TransferWaitingForNode
 	case domain.SelectedRouteNone:
 		return domain.TransferFailed
 	default:
-		return domain.TransferQueued
+		return domain.TransferCheckingRoute
 	}
 }
 

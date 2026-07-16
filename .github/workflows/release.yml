@@ -1,0 +1,155 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - id: version
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          grep -q '"version": "'"${version}"'"' web/package.json
+          grep -q '"version": "'"${version}"'"' extension/package.json
+          grep -q '^version: '"${version}"'+' client/pubspec.yaml
+          grep -q "## \[${version}\]" CHANGELOG.md
+          test -f "docs/release-notes-v${version}.md"
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version-file: go.mod, cache: true}
+      - run: go test ./...
+      - run: go vet ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: 24}
+      - run: npm ci && npm run lint && npm run typecheck && npm test && npm run build
+        working-directory: web
+      - run: npm ci && npm run lint && npm run typecheck && npm test && npm run build
+        working-directory: extension
+      - shell: pwsh
+        run: ./scripts/check-docs.ps1
+  node:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version-file: go.mod, cache: true}
+      - shell: pwsh
+        run: ./scripts/build-node-release.ps1 -Version '${{ needs.validate.outputs.version }}' -Commit '${{ github.sha }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: node-release, path: 'dist/*.tar.gz', if-no-files-found: error}
+  extension:
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: 24, cache: npm, cache-dependency-path: extension/package-lock.json}
+      - run: npm ci
+        working-directory: extension
+      - shell: pwsh
+        run: ./extension/scripts/package-release.ps1 -Version '${{ needs.validate.outputs.version }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: extension-release, path: 'dist/NexDrop-Extension-*.zip', if-no-files-found: error}
+  android:
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: 驗證 Android 簽章祕密
+        run: test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+      - run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with: {channel: stable, cache: true}
+      - run: flutter pub get && flutter test && flutter build apk --release
+        working-directory: client
+      - run: cp client/build/app/outputs/flutter-apk/app-release.apk 'NexDrop-Android_${{ needs.validate.outputs.version }}.apk'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: android-release, path: 'NexDrop-Android_*.apk', if-no-files-found: error}
+  windows:
+    needs: validate
+    runs-on: windows-latest
+    env:
+      CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: 驗證 Windows 簽章祕密
+        shell: pwsh
+        run: if (-not $env:CERTIFICATE_BASE64 -or -not $env:CERTIFICATE_PASSWORD) { throw 'Windows signing secrets are required' }
+      - shell: pwsh
+        run: '[IO.File]::WriteAllBytes("$env:RUNNER_TEMP\nexdrop.pfx", [Convert]::FromBase64String($env:CERTIFICATE_BASE64))'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with: {channel: stable, cache: true}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version-file: go.mod, cache: true}
+      - shell: pwsh
+        run: ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}' -CertificatePath "$env:RUNNER_TEMP\nexdrop.pfx" -CertificatePassword $env:CERTIFICATE_PASSWORD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: windows-release, path: 'dist/NexDrop-Desktop_*', if-no-files-found: error}
+  container:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            COMMIT=${{ github.sha }}
+          tags: |
+            ghcr.io/honguan/nexdrop:${{ needs.validate.outputs.version }}
+            ghcr.io/honguan/nexdrop:1.0
+            ghcr.io/honguan/nexdrop:latest
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
+      - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with: {image: 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}', format: spdx-json, output-file: nexdrop-node.spdx.json}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: container-sbom, path: nexdrop-node.spdx.json, if-no-files-found: error}
+  draft:
+    needs: [validate, node, extension, android, windows, container]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {path: release-assets, merge-multiple: true}
+      - run: |
+          cd release-assets
+          find . -maxdepth 1 -type f ! -name 'checksums-*' -print0 | sort -z | xargs -0 sha256sum > checksums-sha256.txt
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: {subject-path: 'release-assets/*'}
+      - env: {GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}
+        run: gh release create '${{ github.ref_name }}' release-assets/* --draft --verify-tag --title 'NexDrop ${{ needs.validate.outputs.version }}' --notes-file 'docs/release-notes-v${{ needs.validate.outputs.version }}.md'

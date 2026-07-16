@@ -1,4 +1,4 @@
-package com.nexdrop.nexdrop_client
+package io.github.honguan.nexdrop
 
 import android.content.Intent
 import android.net.Uri

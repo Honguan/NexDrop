@@ -12,6 +12,7 @@ import (
 var (
 	ErrInvalid   = errors.New("invalid analytics request")
 	ErrForbidden = errors.New("analytics operation forbidden")
+	ErrConflict  = errors.New("analytics idempotency conflict")
 )
 
 const MaximumBatchSize = 500
@@ -104,15 +105,28 @@ type Store interface {
 
 type Service struct{ store Store }
 
+type IdempotentStore interface {
+	InsertMetricsIdempotent(context.Context, auth.Session, string, []byte, []Metric) (BatchResult, error)
+}
+
 func NewService(store Store) *Service { return &Service{store: store} }
 
 func (service *Service) Upload(ctx context.Context, session auth.Session, metrics []Metric) (BatchResult, error) {
+	return service.UploadIdempotent(ctx, session, "", nil, metrics)
+}
+
+func (service *Service) UploadIdempotent(ctx context.Context, session auth.Session, key string, fingerprint []byte, metrics []Metric) (BatchResult, error) {
 	if session.DeviceID == nil || len(metrics) == 0 || len(metrics) > MaximumBatchSize {
 		return BatchResult{}, ErrInvalid
 	}
 	for _, metric := range metrics {
 		if !validMetric(metric, *session.DeviceID) {
 			return BatchResult{}, ErrInvalid
+		}
+	}
+	if key != "" {
+		if store, ok := service.store.(IdempotentStore); ok {
+			return store.InsertMetricsIdempotent(ctx, session, key, fingerprint, metrics)
 		}
 	}
 	return service.store.InsertMetrics(ctx, session, metrics)

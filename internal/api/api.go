@@ -2,19 +2,27 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
+	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
 	"nexdrop/internal/pairing"
@@ -23,18 +31,79 @@ import (
 )
 
 type API struct {
-	auth      *auth.Service
-	devices   *device.Service
-	pairing   *pairing.Service
-	groups    *group.Service
-	transfers *transfer.Service
-	files     *filetransfer.Service
-	analytics *analytics.Service
-	admin     *admin.Service
+	auth         *auth.Service
+	devices      *device.Service
+	pairing      *pairing.Service
+	groups       *group.Service
+	transfers    *transfer.Service
+	files        *filetransfer.Service
+	analytics    *analytics.Service
+	admin        *admin.Service
+	loginLimit   *fixedWindowLimiter
+	pairingLimit *fixedWindowLimiter
+	adminLimit   *fixedWindowLimiter
 }
 
 func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
-	return &API{auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService, admin: adminService}
+	return &API{
+		auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService, admin: adminService,
+		loginLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE", 10)),
+		pairingLimit: newFixedWindowLimiter(rateLimit("NEXDROP_PAIRING_RATE_LIMIT_PER_MINUTE", 10)),
+		adminLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE", 30)),
+	}
+}
+
+type rateWindow struct {
+	count int
+	reset time.Time
+}
+
+type fixedWindowLimiter struct {
+	mu      sync.Mutex
+	limit   int
+	windows map[string]rateWindow
+}
+
+func newFixedWindowLimiter(limit int) *fixedWindowLimiter {
+	return &fixedWindowLimiter{limit: limit, windows: make(map[string]rateWindow)}
+}
+
+func (limiter *fixedWindowLimiter) allow(key string, now time.Time) (bool, time.Duration) {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	window := limiter.windows[key]
+	if window.reset.IsZero() || !now.Before(window.reset) {
+		window = rateWindow{reset: now.Add(time.Minute)}
+	}
+	window.count++
+	limiter.windows[key] = window
+	return window.count <= limiter.limit, time.Until(window.reset)
+}
+
+func rateLimit(name string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
+}
+
+func rateLimitKey(r *http.Request, identity string) string {
+	host := r.RemoteAddr
+	if value, _, err := net.SplitHostPort(host); err == nil {
+		host = value
+	}
+	return host + "|" + strings.ToLower(strings.TrimSpace(identity))
+}
+
+func enforceRateLimit(w http.ResponseWriter, r *http.Request, limiter *fixedWindowLimiter, identity string) bool {
+	allowed, retryAfter := limiter.allow(rateLimitKey(r, identity), time.Now().UTC())
+	if allowed {
+		return true
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter.Seconds()))))
+	writeError(w, http.StatusTooManyRequests, "RATE_LIMITED")
+	return false
 }
 
 func (api *API) Routes() http.Handler {
@@ -75,6 +144,7 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/transfers/{id}", api.hideTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/read", api.readTransfer)
 	mux.HandleFunc("PUT /api/transfers/{id}/targets/{deviceId}", api.reportTransferProgress)
+	mux.HandleFunc("POST /api/transfers/{id}/targets/{deviceId}/retry", api.retryTransferTarget)
 	mux.HandleFunc("POST /api/files/{id}/chunks/{index}", api.uploadChunk)
 	mux.HandleFunc("GET /api/files/{id}/chunks/{index}", api.downloadChunk)
 	mux.HandleFunc("POST /api/files/{id}/complete", api.completeFile)
@@ -100,7 +170,55 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/admin/failures", api.adminFailures)
 	mux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
 	mux.HandleFunc("DELETE /api/admin/group-transfers/{id}", api.deleteAdminGroupContent)
-	return mux
+	return apiContract(mux)
+}
+
+const versionMediaType = "application/vnd.nexdrop.v1+json"
+
+type contractResponseWriter struct {
+	http.ResponseWriter
+	requestID string
+	versioned bool
+	status    int
+	errorCode string
+}
+
+func (writer *contractResponseWriter) WriteHeader(status int) {
+	writer.status = status
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *contractResponseWriter) Write(data []byte) (int, error) {
+	if writer.status == 0 {
+		writer.WriteHeader(http.StatusOK)
+	}
+	return writer.ResponseWriter.Write(data)
+}
+
+func apiContract(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRequestID()
+		w.Header().Set("X-Request-ID", requestID)
+		w.Header().Set("X-NexDrop-API-Version", version.APIVersion)
+		writer := &contractResponseWriter{ResponseWriter: w, requestID: requestID, versioned: strings.Contains(r.Header.Get("Accept"), versionMediaType)}
+		started := time.Now()
+		next.ServeHTTP(writer, r)
+		status := writer.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		slog.Info("API request", "module", "api", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "error_code", writer.errorCode, "duration_ms", time.Since(started).Milliseconds())
+	})
+}
+
+func newRequestID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return fmt.Sprintf("request-%d", time.Now().UnixNano())
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }
 
 func (api *API) version(w http.ResponseWriter, _ *http.Request) {
@@ -131,6 +249,9 @@ func (api *API) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &request); err != nil || request.Identifier == "" || request.Password == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	if !enforceRateLimit(w, r, api.loginLimit, request.Identifier) {
 		return
 	}
 	pair, err := api.auth.LoginWithTOTP(r.Context(), request.Identifier, request.Password, request.TOTP)
@@ -336,6 +457,9 @@ func (api *API) createPairingCode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !enforceRateLimit(w, r, api.pairingLimit, session.SessionID) {
+		return
+	}
 	challenge, err := api.pairing.Create(r.Context(), session, r.PathValue("id"))
 	if err != nil {
 		writePairingError(w, err)
@@ -355,6 +479,9 @@ func (api *API) redeemPairingCode(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	if !enforceRateLimit(w, r, api.pairingLimit, request.ChallengeID) {
 		return
 	}
 	result, err := api.pairing.Redeem(r.Context(), session, r.PathValue("id"), request.ChallengeID, request.Code)
@@ -514,6 +641,11 @@ func (api *API) createTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request transfer.Request
+	if key, ok := requireIdempotencyKey(w, r); !ok {
+		return
+	} else {
+		request.IdempotencyKey = key
+	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
@@ -531,12 +663,52 @@ func (api *API) listTransfers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if strings.Contains(r.Header.Get("Accept"), versionMediaType) {
+		options, err := transferPageOptions(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_PAGE")
+			return
+		}
+		result, err := api.transfers.ListPage(r.Context(), session, options)
+		if err != nil {
+			writeTransferError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	result, err := api.transfers.List(r.Context(), session)
 	if err != nil {
 		writeTransferError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func transferPageOptions(r *http.Request) (transfer.PageOptions, error) {
+	options := transfer.PageOptions{Limit: 50, Cursor: strings.TrimSpace(r.URL.Query().Get("cursor"))}
+	var err error
+	if value := r.URL.Query().Get("limit"); value != "" {
+		options.Limit, err = strconv.Atoi(value)
+	}
+	if err == nil {
+		if value := r.URL.Query().Get("from"); value != "" {
+			options.From, err = time.Parse(time.RFC3339, value)
+		}
+	}
+	if err == nil {
+		if value := r.URL.Query().Get("to"); value != "" {
+			options.To, err = time.Parse(time.RFC3339, value)
+		}
+	}
+	options.Status = domain.TransferStatus(r.URL.Query().Get("status"))
+	if options.Limit < 1 || options.Limit > 100 {
+		err = errors.New("invalid limit")
+	}
+	if options.Cursor != "" && !validUUID(options.Cursor) {
+		err = errors.New("invalid cursor")
+	}
+	return options, err
 }
 
 func (api *API) getTransfer(w http.ResponseWriter, r *http.Request) {
@@ -582,6 +754,9 @@ func (api *API) readTransfer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := requireIdempotencyKey(w, r); !ok {
+		return
+	}
 	result, err := api.transfers.Read(r.Context(), session, r.PathValue("id"))
 	if err != nil {
 		writeTransferError(w, err)
@@ -593,6 +768,9 @@ func (api *API) readTransfer(w http.ResponseWriter, r *http.Request) {
 func (api *API) reportTransferProgress(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticate(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := requireIdempotencyKey(w, r); !ok {
 		return
 	}
 	var progress transfer.Progress
@@ -609,9 +787,33 @@ func (api *API) reportTransferProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (api *API) retryTransferTarget(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED")
+		return
+	}
+	result, err := api.transfers.Retry(r.Context(), session, r.PathValue("id"), r.PathValue("deviceId"), key)
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (api *API) uploadChunk(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticate(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := requireIdempotencyKey(w, r); !ok {
 		return
 	}
 	index, err := strconv.Atoi(r.PathValue("index"))
@@ -660,6 +862,9 @@ func (api *API) completeFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := requireIdempotencyKey(w, r); !ok {
+		return
+	}
 	file, err := api.files.Complete(r.Context(), session, r.PathValue("id"))
 	if err != nil {
 		writeFileError(w, err)
@@ -673,6 +878,10 @@ func (api *API) uploadMetrics(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
 	var request struct {
 		Events []analytics.Metric `json:"events"`
 	}
@@ -680,7 +889,13 @@ func (api *API) uploadMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
 	}
-	result, err := api.analytics.Upload(r.Context(), session, request.Events)
+	encoded, err := json.Marshal(request.Events)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	fingerprint := sha256.Sum256(encoded)
+	result, err := api.analytics.UploadIdempotent(r.Context(), session, key, fingerprint[:], request.Events)
 	if err != nil {
 		writeAnalyticsError(w, err)
 		return
@@ -776,14 +991,52 @@ func decodeJSON(r *http.Request, target any) error {
 	return decoder.Decode(target)
 }
 
+func requireIdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !strings.Contains(r.Header.Get("Accept"), versionMediaType) {
+		return "", true
+	}
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if !validUUID(key) {
+		writeError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED")
+		return "", false
+	}
+	return key, true
+}
+
+func validUUID(value string) bool {
+	compact := strings.ReplaceAll(value, "-", "")
+	decoded, err := hex.DecodeString(compact)
+	return err == nil && len(decoded) == 16 && len(value) == 36
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
+	contentType := "application/json; charset=utf-8"
+	if writer, ok := w.(*contractResponseWriter); ok && writer.versioned {
+		contentType = versionMediaType + "; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
+	if writer, ok := w.(*contractResponseWriter); ok {
+		writer.errorCode = code
+	}
+	if writer, ok := w.(*contractResponseWriter); ok && writer.versioned {
+		writeJSON(w, status, map[string]any{"error": map[string]any{
+			"code": code, "message": errorMessage(code), "request_id": writer.requestID, "details": map[string]any{},
+		}})
+		return
+	}
 	writeJSON(w, status, map[string]string{"error": code})
+}
+
+func errorMessage(code string) string {
+	if code == "INTERNAL_ERROR" {
+		return "The server could not complete the request."
+	}
+	return "The request could not be completed (" + code + ")."
 }
 
 func writeDeviceError(w http.ResponseWriter, err error) {
@@ -845,6 +1098,8 @@ func writeTransferError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInsufficientStorage, "STORAGE_FULL")
 	case errors.Is(err, transfer.ErrConflict):
 		writeError(w, http.StatusConflict, "TRANSFER_STATE_CONFLICT")
+	case errors.Is(err, transfer.ErrIdempotencyConflict):
+		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}
@@ -875,6 +1130,8 @@ func writeAnalyticsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "INVALID_ANALYTICS_REQUEST")
 	case errors.Is(err, analytics.ErrForbidden):
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
+	case errors.Is(err, analytics.ErrConflict):
+		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 	}

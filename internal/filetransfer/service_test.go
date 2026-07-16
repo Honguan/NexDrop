@@ -78,6 +78,10 @@ func TestUploadDownloadAndComplete(t *testing.T) {
 	if err != nil || !bytes.Equal(assembled, content) {
 		t.Fatalf("assembled = %q, %v", assembled, err)
 	}
+	replayed, err := service.Complete(context.Background(), auth.Session{}, "file-1")
+	if err != nil || replayed.StoragePath != completed.StoragePath {
+		t.Fatalf("replayed completion = %+v, %v", replayed, err)
+	}
 }
 
 func TestUploadRejectsWrongHashAndSize(t *testing.T) {

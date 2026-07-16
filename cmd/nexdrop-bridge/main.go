@@ -2,23 +2,28 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 
 	"nexdrop/internal/nativebridge"
 )
 
 func main() {
-	log.SetOutput(os.Stderr)
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	config, err := nativebridge.LoadConfig()
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	client, err := nativebridge.NewClient(config.URL, config.Token)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	if err := nativebridge.Run(context.Background(), os.Stdin, os.Stdout, client); err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
+}
+
+func fatal(err error) {
+	slog.Error("native bridge stopped", "module", "native_bridge", "error_code", "FATAL", "error", err)
+	os.Exit(1)
 }

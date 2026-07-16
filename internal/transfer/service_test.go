@@ -93,6 +93,7 @@ func TestCreateRejectsInvalidPayloads(t *testing.T) {
 		{TargetType: TargetSingle, TargetDeviceIDs: []string{"device-1"}, ContentType: ContentText},
 		{TargetType: TargetSingle, TargetDeviceIDs: []string{"device-1"}, ContentType: ContentFile, Files: []File{{Name: "bad"}}},
 		{TargetType: TargetGroupAll, GroupID: "", ContentType: ContentText, Content: []byte("text")},
+		{TargetType: TargetSingle, TargetDeviceIDs: []string{"device-1"}, ContentType: ContentFile, Files: []File{{Name: "../secret.txt", SHA256: make([]byte, 32), ChunkSize: 1, ChunkCount: 0}}},
 	}
 	deviceID := "sender-device"
 	for index, request := range tests {

@@ -7,7 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,11 +29,13 @@ import (
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
+	buildversion "nexdrop/internal/version"
 	"nexdrop/internal/webui"
 )
 
 const defaultAddress = ":8080"
-const version = "v1"
+
+var version = buildversion.ProductVersion
 
 type healthResponse struct {
 	Status  string `json:"status"`
@@ -41,9 +43,10 @@ type healthResponse struct {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	handled, err := runMaintenanceCommand(context.Background(), os.Args[1:])
 	if err != nil {
-		log.Fatal(err)
+		fatal("maintenance command failed", err)
 	}
 	if handled {
 		return
@@ -55,11 +58,11 @@ func main() {
 
 	databaseURL := os.Getenv("NEXDROP_DATABASE_URL")
 	if databaseURL == "" {
-		log.Fatal("NEXDROP_DATABASE_URL is required")
+		fatal("configuration failed", errors.New("NEXDROP_DATABASE_URL is required"))
 	}
 	store, err := postgres.Open(context.Background(), databaseURL)
 	if err != nil {
-		log.Fatalf("connect to PostgreSQL: %v", err)
+		fatal("connect to PostgreSQL", err)
 	}
 	defer store.Close()
 	migrationsPath := os.Getenv("NEXDROP_MIGRATIONS_PATH")
@@ -67,7 +70,7 @@ func main() {
 		migrationsPath = "/usr/share/nexdrop/migrations"
 	}
 	if err := store.ApplyMigrations(context.Background(), migrationsPath); err != nil {
-		log.Fatalf("apply database migrations: %v", err)
+		fatal("apply database migrations", err)
 	}
 
 	authService := auth.NewService(store, 15*time.Minute, 30*24*time.Hour)
@@ -81,16 +84,16 @@ func main() {
 	}
 	fileService, err := filetransfer.NewService(store, storagePath)
 	if err != nil {
-		log.Fatalf("configure file storage: %v", err)
+		fatal("configure file storage", err)
 	}
 	analyticsService := analytics.NewService(store)
 	adminService := admin.NewService(store)
 	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
-		log.Fatalf("bootstrap administrator: %v", err)
+		fatal("bootstrap administrator", err)
 	}
 	cleaner, err := maintenance.NewCleaner(store, storagePath)
 	if err != nil {
-		log.Fatalf("configure cleanup worker: %v", err)
+		fatal("configure cleanup worker", err)
 	}
 	go func() {
 		_, _ = cleaner.RunOnce(context.Background(), 100)
@@ -109,7 +112,7 @@ func main() {
 	}
 	webHandler, err := webui.NewHandler(webPath)
 	if err != nil {
-		log.Fatalf("configure Web UI: %v", err)
+		fatal("configure Web UI", err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
@@ -131,10 +134,15 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("NexDrop Node listening on %s", address)
+	slog.Info("NexDrop Node listening", "module", "server", "address", address, "version", version)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		fatal("HTTP server stopped", err)
 	}
+}
+
+func fatal(message string, err error) {
+	slog.Error(message, "module", "server", "error_code", "FATAL", "error", err)
+	os.Exit(1)
 }
 
 func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error) {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -57,9 +57,10 @@ func (status desktopStatus) Status(_ context.Context) (json.RawMessage, error) {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	root := os.Getenv("LOCALAPPDATA")
 	if root == "" {
-		log.Fatal("LOCALAPPDATA is required")
+		fatal(errors.New("LOCALAPPDATA is required"))
 	}
 	root = filepath.Join(root, "NexDrop")
 	origin := os.Getenv("NEXDROP_WEB_ORIGIN")
@@ -68,19 +69,19 @@ func main() {
 	}
 	service, err := desktopbridge.New(origin, spoolQueue{filepath.Join(root, "bridge-queue")}, desktopStatus{filepath.Join(root, "status.json")})
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	token, err := service.IssueNativeToken()
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	listener, err := net.Listen("tcp4", bridgeAddress)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	if err := writeConfig(root, token); err != nil {
 		_ = listener.Close()
-		log.Fatal(err)
+		fatal(err)
 	}
 	server := &http.Server{
 		Handler:           service.Handler(),
@@ -96,8 +97,13 @@ func main() {
 		_ = server.Shutdown(shutdown)
 	}()
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		fatal(err)
 	}
+}
+
+func fatal(err error) {
+	slog.Error("desktop service stopped", "module", "desktop_service", "error_code", "FATAL", "error", err)
+	os.Exit(1)
 }
 
 func writeConfig(root, token string) error {

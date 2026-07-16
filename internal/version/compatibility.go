@@ -12,7 +12,14 @@ const (
 	MinimumClientVersion = "1.0"
 )
 
+var (
+	ProductVersion = "1.0.0"
+	BuildCommit    = "development"
+)
+
 type Information struct {
+	ProductVersion       string `json:"productVersion"`
+	BuildCommit          string `json:"buildCommit"`
 	APIVersion           string `json:"apiVersion"`
 	ProtocolVersion      string `json:"protocolVersion"`
 	PreviousProtocol     string `json:"previousProtocolVersion"`
@@ -20,7 +27,7 @@ type Information struct {
 }
 
 func Current() Information {
-	return Information{APIVersion: APIVersion, ProtocolVersion: CurrentProtocol, PreviousProtocol: PreviousProtocol, MinimumClientVersion: MinimumClientVersion}
+	return Information{ProductVersion: ProductVersion, BuildCommit: BuildCommit, APIVersion: APIVersion, ProtocolVersion: CurrentProtocol, PreviousProtocol: PreviousProtocol, MinimumClientVersion: MinimumClientVersion}
 }
 
 func SupportedProtocol(value string) bool {

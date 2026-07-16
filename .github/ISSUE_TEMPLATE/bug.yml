@@ -1,0 +1,14 @@
+name: 錯誤回報
+description: 回報可重現的 NexDrop 問題
+body:
+  - type: input
+    attributes: {label: 版本, description: 請填 Release 版本與平台}
+    validations: {required: true}
+  - type: textarea
+    attributes: {label: 重現步驟}
+    validations: {required: true}
+  - type: textarea
+    attributes: {label: 預期與實際結果}
+    validations: {required: true}
+  - type: textarea
+    attributes: {label: 去敏診斷資料, description: 不要貼 Token、密碼、私鑰或內容}

@@ -200,6 +200,7 @@ export class APIError extends Error {
 }
 
 const tokenKey = "nexdrop.tokens.v1";
+const versionMediaType = "application/vnd.nexdrop.v1+json";
 
 class APIClient {
   private tokens: TokenPair | null = this.readTokens();
@@ -223,7 +224,7 @@ class APIClient {
   async login(identifier: string, password: string, totp = "") {
     const response = await fetch("/api/auth/login", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: versionMediaType },
       body: JSON.stringify({ identifier, password, totp }),
     });
     if (!response.ok) throw await this.error(response);
@@ -236,7 +237,7 @@ class APIClient {
     if (!refreshToken) return;
     await fetch("/api/auth/logout", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: versionMediaType },
       body: JSON.stringify({ refreshToken }),
     });
   }
@@ -244,7 +245,7 @@ class APIClient {
   async acceptInvitation(token: string, password: string) {
     const response = await fetch("/api/auth/invitations/accept", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: versionMediaType },
       body: JSON.stringify({ token, password }),
     });
     if (!response.ok) throw await this.error(response);
@@ -280,10 +281,14 @@ class APIClient {
 
   private async requestRaw(path: string, init: RequestInit, retry = true): Promise<Response> {
     const headers = new Headers(init.headers);
+    headers.set("Accept", versionMediaType);
+    if (init.method !== "GET" && !headers.has("Idempotency-Key")) {
+      headers.set("Idempotency-Key", crypto.randomUUID());
+    }
     if (this.tokens) headers.set("Authorization", `Bearer ${this.tokens.accessToken}`);
     const response = await fetch(path, { ...init, headers });
     if (response.status === 401 && retry && (await this.refresh())) {
-      return this.requestRaw(path, init, false);
+      return this.requestRaw(path, { ...init, headers }, false);
     }
     if (!response.ok) throw await this.error(response);
     return response;
@@ -313,8 +318,11 @@ class APIClient {
   }
 
   private async error(response: Response) {
-    const body = (await response.json().catch(() => ({}))) as { error?: string };
-    return new APIError(body.error ?? "INTERNAL_ERROR", response.status);
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string | { code?: string };
+    };
+    const code = typeof body.error === "string" ? body.error : body.error?.code;
+    return new APIError(code ?? "INTERNAL_ERROR", response.status);
   }
 
   private readTokens(): TokenPair | null {
