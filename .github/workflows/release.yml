@@ -131,6 +131,33 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            COMMIT=${{ github.sha }}
+          tags: nexdrop:release-verify
+      - name: 驗證發布容器啟動與健康狀態
+        env:
+          POSTGRES_PASSWORD: release-verification-only
+          NEXDROP_CURSOR_SECRET: release-verification-only-cursor-secret-32-bytes
+          NEXDROP_IMAGE: nexdrop:release-verify
+        run: |
+          trap 'docker compose down -v' EXIT
+          test "$(docker run --rm nexdrop:release-verify version)" = '${{ needs.validate.outputs.version }}'
+          docker compose up -d --no-build postgres nexdrop
+          for _ in $(seq 1 30); do
+            container=$(docker compose ps -q nexdrop)
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || true)
+            test "$status" = healthy && break
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+          docker compose exec -T nexdrop wget -q -O - http://127.0.0.1:8080/healthz
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
       - id: build
@@ -142,18 +169,36 @@ jobs:
           build-args: |
             VERSION=${{ needs.validate.outputs.version }}
             COMMIT=${{ github.sha }}
-          tags: |
-            ghcr.io/honguan/nexdrop:${{ needs.validate.outputs.version }}
-            ghcr.io/honguan/nexdrop:1.0
-            ghcr.io/honguan/nexdrop:latest
+          tags: ghcr.io/honguan/nexdrop:staging-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
-      - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
+      - name: 簽章並驗證發布容器
+        run: |
+          image='ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
+          cosign sign --yes "$image"
+          cosign verify \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "$image"
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with: {image: 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}', format: spdx-json, output-file: nexdrop-node.spdx.json}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: container-sbom, path: nexdrop-node.spdx.json, if-no-files-found: error}
+      - name: 提升已驗證映像至正式標籤
+        run: |
+          image='ghcr.io/honguan/nexdrop'
+          digest='${{ steps.build.outputs.digest }}'
+          source="${image}@${digest}"
+          docker buildx imagetools create \
+            --tag "${image}:${{ needs.validate.outputs.version }}" \
+            --tag "${image}:1.0" \
+            --tag "${image}:latest" \
+            "$source"
+          for tag in '${{ needs.validate.outputs.version }}' '1.0' 'latest'; do
+            promoted=$(docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}')
+            test "$promoted" = "$digest"
+          done
   draft:
     needs: [validate, node, extension, android, windows, container]
     runs-on: ubuntu-latest
