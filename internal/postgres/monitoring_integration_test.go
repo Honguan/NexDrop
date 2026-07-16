@@ -28,10 +28,16 @@ func TestSystemMonitoringIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := store.NodeStatistics(ctx, auth.Session{User: auth.User{Admin: true}}, analytics.TimeRange{From: recordedAt.Add(-time.Second), To: recordedAt.Add(time.Second)})
-	if err != nil || len(result) != 1 {
+	if err != nil {
 		t.Fatalf("NodeStatistics() = %+v, %v", result, err)
 	}
-	if result[0].CPUPercent != metric.CPUPercent || result[0].CacheBytes != metric.CacheBytes {
-		t.Fatalf("metric = %+v", result[0])
+	for _, item := range result {
+		if item.RecordedAt.Equal(recordedAt) {
+			if item.CPUPercent != metric.CPUPercent || item.CacheBytes != metric.CacheBytes {
+				t.Fatalf("metric = %+v", item)
+			}
+			return
+		}
 	}
+	t.Fatalf("recorded metric not found in %+v", result)
 }

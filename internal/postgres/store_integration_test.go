@@ -447,6 +447,17 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	`, userID); err != nil {
 		t.Fatal(err)
 	}
+	var originalSingleFileLimit, originalNodeCacheLimit int64
+	if err := store.pool.QueryRow(ctx, `
+		SELECT single_file_limit_bytes, node_cache_limit_bytes FROM node_settings WHERE singleton
+	`).Scan(&originalSingleFileLimit, &originalNodeCacheLimit); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = store.pool.Exec(ctx, `
+			UPDATE node_settings SET single_file_limit_bytes = $1, node_cache_limit_bytes = $2 WHERE singleton
+		`, originalSingleFileLimit, originalNodeCacheLimit)
+	}()
 	if _, err := store.pool.Exec(ctx, `UPDATE node_settings SET single_file_limit_bytes = 0`); err != nil {
 		t.Fatal(err)
 	}
