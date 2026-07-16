@@ -137,9 +137,9 @@ func (store *Store) AdminNodeSettings(ctx context.Context) (admin.NodeSettings, 
 	err := store.pool.QueryRow(ctx, `
 		SELECT single_file_limit_bytes, default_user_quota_bytes, default_group_quota_bytes,
 		       node_cache_limit_bytes, default_user_daily_bytes, default_group_daily_bytes,
-		       disk_warning_percent, disk_stop_percent
+		       disk_warning_percent, disk_stop_percent, public_registration_enabled
 		FROM node_settings WHERE singleton = true
-	`).Scan(&settings.SingleFileLimitBytes, &settings.DefaultUserQuotaBytes, &settings.DefaultGroupQuotaBytes, &settings.NodeCacheLimitBytes, &settings.DefaultUserDailyBytes, &settings.DefaultGroupDailyBytes, &settings.DiskWarningPercent, &settings.DiskStopPercent)
+	`).Scan(&settings.SingleFileLimitBytes, &settings.DefaultUserQuotaBytes, &settings.DefaultGroupQuotaBytes, &settings.NodeCacheLimitBytes, &settings.DefaultUserDailyBytes, &settings.DefaultGroupDailyBytes, &settings.DiskWarningPercent, &settings.DiskStopPercent, &settings.PublicRegistrationEnabled)
 	return settings, err
 }
 
@@ -152,12 +152,13 @@ func (store *Store) UpdateAdminNodeSettings(ctx context.Context, actor auth.Sess
 	err = tx.QueryRow(ctx, `
 		UPDATE node_settings SET single_file_limit_bytes=$1, default_user_quota_bytes=$2,
 		default_group_quota_bytes=$3, node_cache_limit_bytes=$4, default_user_daily_bytes=$5,
-		default_group_daily_bytes=$6, disk_warning_percent=$7, disk_stop_percent=$8
+		default_group_daily_bytes=$6, disk_warning_percent=$7, disk_stop_percent=$8,
+		public_registration_enabled=$9
 		WHERE singleton=true
 		RETURNING single_file_limit_bytes, default_user_quota_bytes, default_group_quota_bytes,
 		node_cache_limit_bytes, default_user_daily_bytes, default_group_daily_bytes,
-		disk_warning_percent, disk_stop_percent
-	`, settings.SingleFileLimitBytes, settings.DefaultUserQuotaBytes, settings.DefaultGroupQuotaBytes, settings.NodeCacheLimitBytes, settings.DefaultUserDailyBytes, settings.DefaultGroupDailyBytes, settings.DiskWarningPercent, settings.DiskStopPercent).Scan(&settings.SingleFileLimitBytes, &settings.DefaultUserQuotaBytes, &settings.DefaultGroupQuotaBytes, &settings.NodeCacheLimitBytes, &settings.DefaultUserDailyBytes, &settings.DefaultGroupDailyBytes, &settings.DiskWarningPercent, &settings.DiskStopPercent)
+		disk_warning_percent, disk_stop_percent, public_registration_enabled
+	`, settings.SingleFileLimitBytes, settings.DefaultUserQuotaBytes, settings.DefaultGroupQuotaBytes, settings.NodeCacheLimitBytes, settings.DefaultUserDailyBytes, settings.DefaultGroupDailyBytes, settings.DiskWarningPercent, settings.DiskStopPercent, settings.PublicRegistrationEnabled).Scan(&settings.SingleFileLimitBytes, &settings.DefaultUserQuotaBytes, &settings.DefaultGroupQuotaBytes, &settings.NodeCacheLimitBytes, &settings.DefaultUserDailyBytes, &settings.DefaultGroupDailyBytes, &settings.DiskWarningPercent, &settings.DiskStopPercent, &settings.PublicRegistrationEnabled)
 	if err != nil {
 		return admin.NodeSettings{}, mapAdminError(err)
 	}

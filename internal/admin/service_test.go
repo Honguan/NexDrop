@@ -29,7 +29,12 @@ func TestAdminValidation(t *testing.T) {
 	if !validIdentity("admin", "admin@example.com", "a-long-password") {
 		t.Fatal("validIdentity() rejected valid identity")
 	}
-	settings := NodeSettings{1, 1, 1, 1, 1, 1, 80, 95}
+	settings := NodeSettings{
+		SingleFileLimitBytes: 1, DefaultUserQuotaBytes: 1,
+		DefaultGroupQuotaBytes: 1, NodeCacheLimitBytes: 1,
+		DefaultUserDailyBytes: 1, DefaultGroupDailyBytes: 1,
+		DiskWarningPercent: 80, DiskStopPercent: 95,
+	}
 	if !validSettings(settings) {
 		t.Fatal("validSettings() rejected valid settings")
 	}

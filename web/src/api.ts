@@ -115,6 +115,7 @@ export type StorageOverview = {
 };
 
 export type NodeSettings = {
+  publicRegistrationEnabled: boolean;
   singleFileLimitBytes: number;
   defaultUserQuotaBytes: number;
   defaultGroupQuotaBytes: number;

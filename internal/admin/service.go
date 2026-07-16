@@ -28,14 +28,15 @@ type User struct {
 }
 
 type NodeSettings struct {
-	SingleFileLimitBytes   int64 `json:"singleFileLimitBytes"`
-	DefaultUserQuotaBytes  int64 `json:"defaultUserQuotaBytes"`
-	DefaultGroupQuotaBytes int64 `json:"defaultGroupQuotaBytes"`
-	NodeCacheLimitBytes    int64 `json:"nodeCacheLimitBytes"`
-	DefaultUserDailyBytes  int64 `json:"defaultUserDailyBytes"`
-	DefaultGroupDailyBytes int64 `json:"defaultGroupDailyBytes"`
-	DiskWarningPercent     int   `json:"diskWarningPercent"`
-	DiskStopPercent        int   `json:"diskStopPercent"`
+	PublicRegistrationEnabled bool  `json:"publicRegistrationEnabled"`
+	SingleFileLimitBytes      int64 `json:"singleFileLimitBytes"`
+	DefaultUserQuotaBytes     int64 `json:"defaultUserQuotaBytes"`
+	DefaultGroupQuotaBytes    int64 `json:"defaultGroupQuotaBytes"`
+	NodeCacheLimitBytes       int64 `json:"nodeCacheLimitBytes"`
+	DefaultUserDailyBytes     int64 `json:"defaultUserDailyBytes"`
+	DefaultGroupDailyBytes    int64 `json:"defaultGroupDailyBytes"`
+	DiskWarningPercent        int   `json:"diskWarningPercent"`
+	DiskStopPercent           int   `json:"diskStopPercent"`
 }
 
 type Quota struct {
