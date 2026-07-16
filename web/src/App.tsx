@@ -23,6 +23,11 @@ import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, en
 
 type View = "send" | "activity" | "devices" | "groups" | "analytics" | "admin";
 type SharedContent = { content: string; groupId: string };
+const pausedTransfers = new Set<string>();
+
+async function waitWhilePaused(transferId: string) {
+  while (pausedTransfers.has(transferId)) await new Promise((resolve) => window.setTimeout(resolve, 250));
+}
 
 const navItems: Array<{ id: View; label: string; glyph: string }> = [
   { id: "send", label: "傳送", glyph: "↗" },
@@ -303,6 +308,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
         for (const [fileIndex, file] of encrypted.files.entries()) {
           const fileID = transfer.files[fileIndex].id;
           for (const [chunkIndex, chunk] of file.chunks.entries()) {
+            await waitWhilePaused(transfer.id);
             await api.uploadChunk(`/api/files/${fileID}/chunks/${chunkIndex}`, chunk.data, chunk.sha256);
           }
           await api.send(`/api/files/${fileID}/complete`, "POST");
@@ -397,6 +403,7 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
     try {
       const chunks: ArrayBuffer[] = [];
       for (let index = 0; index < transfer.files[fileIndex].chunkCount; index++) {
+        await waitWhilePaused(transfer.id);
         chunks.push(await api.downloadChunk(`/api/files/${transfer.files[fileIndex].id}/chunks/${index}`));
       }
       const plaintext = await decryptFileChunks(user.id, wrapped, chunks);
@@ -416,6 +423,19 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
     await reload();
   }
 
+  async function togglePause(transfer: Transfer) {
+    const paused = transfer.status === "PAUSED";
+    if (paused) pausedTransfers.delete(transfer.id); else pausedTransfers.add(transfer.id);
+    await Promise.all(transfer.targets.filter((target) => !["DELIVERED", "READ", "FAILED", "CANCELLED", "EXPIRED"].includes(target.status)).map((target) => api.send(`/api/transfers/${transfer.id}/targets/${target.deviceId}`, "PUT", { status: paused ? "QUEUED" : "PAUSED", bytesTransferred: target.bytesTransferred })));
+    await reload();
+  }
+
+  async function cancel(transferId: string) {
+    pausedTransfers.delete(transferId);
+    await api.send(`/api/transfers/${transferId}/cancel`, "POST");
+    await reload();
+  }
+
   return (
     <section className="page">
       <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />
@@ -427,7 +447,7 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
             <span>{item.targets.map((target) => names[target.deviceId] ?? target.deviceId.slice(0, 8)).join("、")}</span>
             <span className="route-label">{item.targets[0]?.selectedRoute ?? "—"}</span>
             <Status value={item.status} />
-            <div><time>{formatDate(item.createdAt)}</time><button className="text-button" onClick={() => hide(item.id)}>隱藏</button></div>
+            <div><time>{formatDate(item.createdAt)}</time>{item.senderUserId === user.id && !["DELIVERED", "READ", "FAILED", "CANCELLED", "EXPIRED"].includes(item.status) && <><button className="text-button" onClick={() => togglePause(item)}>{item.status === "PAUSED" ? "繼續" : "暫停"}</button><button className="text-danger" onClick={() => cancel(item.id)}>取消</button></>}<button className="text-button" onClick={() => hide(item.id)}>隱藏</button></div>
           </article>
         ))}
         {!transfers.length && <Empty text="還沒有傳輸紀錄" />}

@@ -44,6 +44,7 @@ class TransferService {
   final LanIdentityStore _lanIdentityStore;
   bool _retryingWaitingLan = false;
   bool _flushingDrafts = false;
+  final Set<String> _pausedTransfers = {};
   Device? _currentDevice;
 
   Future<DeviceSession> synchronizeDevice(UserAccount account) async {
@@ -370,6 +371,7 @@ class TransferService {
         final input = await File(encryptedFile.tempPath).open();
         try {
           for (final (chunkIndex, chunk) in encryptedFile.chunks.indexed) {
+            await _waitWhilePaused(transfer.id);
             final bytes = await input.read(chunk.size);
             await api.uploadChunk(
               remoteFile.id,
@@ -886,6 +888,7 @@ class TransferService {
       var transferred = 0;
       try {
         for (var index = 0; index < remoteFile.chunkCount; index++) {
+          await _waitWhilePaused(transfer.id);
           final encrypted = localInput == null
               ? await api.downloadChunk(remoteFile.id, index)
               : await localInput.read(remoteFile.chunkSize);
@@ -949,6 +952,31 @@ class TransferService {
 
   Future<void> pause(String transferId, String deviceId, int bytes) =>
       _reportProgress(transferId, deviceId, 'PAUSED', bytes);
+
+  Future<void> setTransferPaused(TransferSummary transfer, bool paused) async {
+    if (paused) {
+      _pausedTransfers.add(transfer.id);
+    } else {
+      _pausedTransfers.remove(transfer.id);
+    }
+    for (final target in transfer.targets) {
+      if ({
+        'DELIVERED',
+        'READ',
+        'FAILED',
+        'CANCELLED',
+        'EXPIRED',
+      }.contains(target.status)) {
+        continue;
+      }
+      await _reportProgress(
+        transfer.id,
+        target.deviceId,
+        paused ? 'PAUSED' : 'QUEUED',
+        target.bytesTransferred,
+      );
+    }
+  }
 
   Future<void> retryWaitingLan() async {
     if (_retryingWaitingLan) return;
@@ -1208,6 +1236,7 @@ class TransferService {
           final input = await File(recreated.tempPath).open();
           try {
             for (final (chunkIndex, chunk) in recreated.chunks.indexed) {
+              await _waitWhilePaused(transfer.id);
               await api.uploadChunk(
                 transfer.files[index].id,
                 chunkIndex,
@@ -1394,6 +1423,7 @@ class TransferService {
     var sent = 0;
     try {
       for (final (index, chunk) in file.chunks.indexed) {
+        await _waitWhilePaused(transferId);
         final bytes = await input.read(chunk.size);
         if (!completed.contains(index)) {
           await lan.putChunk(endpoint, transferId, fileId, index, bytes);
@@ -1423,6 +1453,12 @@ class TransferService {
       'status': status,
       'bytesTransferred': bytes,
     });
+  }
+
+  Future<void> _waitWhilePaused(String transferId) async {
+    while (_pausedTransfers.contains(transferId)) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
   }
 
   Future<void> _cache(TransferSummary transfer) => database.cacheTransfer(

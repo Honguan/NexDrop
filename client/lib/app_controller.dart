@@ -283,6 +283,12 @@ class AppController extends ChangeNotifier {
     await reload();
   });
 
+  Future<void> setTransferPaused(TransferSummary transfer, bool paused) =>
+      _run(() async {
+        await transfersService.setTransferPaused(transfer, paused);
+        if (nodeOnline) await reload();
+      });
+
   Future<void> hideTransfer(TransferSummary transfer) => _run(() async {
     if (nodeOnline) {
       try {

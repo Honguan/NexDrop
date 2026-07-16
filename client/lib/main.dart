@@ -677,6 +677,22 @@ class _ActivityViewState extends State<ActivityView> {
                   if (transfer.senderDeviceId ==
                       widget.controller.currentDevice?.id)
                     IconButton(
+                      tooltip: transfer.status == 'PAUSED' ? '繼續傳輸' : '暫停傳輸',
+                      icon: Icon(
+                        transfer.status == 'PAUSED'
+                            ? Icons.play_arrow_rounded
+                            : Icons.pause_rounded,
+                      ),
+                      onPressed: () => unawaited(
+                        widget.controller.setTransferPaused(
+                          transfer,
+                          transfer.status != 'PAUSED',
+                        ),
+                      ),
+                    ),
+                  if (transfer.senderDeviceId ==
+                      widget.controller.currentDevice?.id)
+                    IconButton(
                       tooltip: '取消傳輸',
                       icon: const Icon(Icons.cancel_outlined),
                       onPressed: () => _cancel(transfer),
