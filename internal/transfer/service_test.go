@@ -108,9 +108,10 @@ func TestReportProgressValidatesClientState(t *testing.T) {
 	service := NewService(store)
 	deviceID := "sender-device"
 	result, err := service.ReportProgress(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", Progress{
-		DeviceID: "target-device", Status: domain.TransferTransferringLAN, Route: domain.SelectedRouteLAN, BytesTransferred: 42,
+		IdempotencyKey: "11111111-1111-1111-1111-111111111111",
+		DeviceID:       "target-device", Status: domain.TransferTransferringLAN, Route: domain.SelectedRouteLAN, BytesTransferred: 42,
 	})
-	if err != nil || result.Status != domain.TransferTransferringLAN || store.progress.BytesTransferred != 42 {
+	if err != nil || result.Status != domain.TransferTransferringLAN || store.progress.BytesTransferred != 42 || store.progress.IdempotencyKey == "" {
 		t.Fatalf("ReportProgress() = %+v, %v; stored = %+v", result, err, store.progress)
 	}
 	if _, err := service.ReportProgress(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", Progress{DeviceID: "target-device", Status: domain.TransferCancelled}); !errors.Is(err, ErrInvalid) {

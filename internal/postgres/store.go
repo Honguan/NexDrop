@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,11 @@ import (
 
 type Store struct {
 	pool *pgxpool.Pool
+}
+
+type querier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
@@ -905,6 +911,47 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 		return transfer.Transfer{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	resource := "/api/transfers/" + transferID + "/targets/" + progress.DeviceID
+	var requestHash []byte
+	if progress.IdempotencyKey != "" {
+		encoded, err := json.Marshal(progress)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		digest := sha256.Sum256(encoded)
+		requestHash = digest[:]
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))`, session.DeviceID, progress.IdempotencyKey); err != nil {
+			return transfer.Transfer{}, err
+		}
+		var storedHash []byte
+		var state string
+		var responseBody []byte
+		err = tx.QueryRow(ctx, `
+			SELECT request_hash, state, COALESCE(response_body::text::bytea, ''::bytea)
+			FROM idempotency_records
+			WHERE actor_device_id = $1 AND method = 'PUT' AND resource = $2 AND idempotency_key = $3
+		`, session.DeviceID, resource, progress.IdempotencyKey).Scan(&storedHash, &state, &responseBody)
+		if err == nil {
+			if !bytes.Equal(storedHash, requestHash) || state != "COMPLETED" {
+				return transfer.Transfer{}, transfer.ErrIdempotencyConflict
+			}
+			var replay transfer.Transfer
+			if err := json.Unmarshal(responseBody, &replay); err != nil {
+				return transfer.Transfer{}, err
+			}
+			return replay, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return transfer.Transfer{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO idempotency_records (
+				actor_user_id, actor_device_id, method, resource, idempotency_key, request_hash, state
+			) VALUES ($1, $2, 'PUT', $3, $4, $5, 'PROCESSING')
+		`, session.ID, session.DeviceID, resource, progress.IdempotencyKey, requestHash); err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
 	var currentRoute domain.SelectedRoute
 	var currentStatus domain.TransferStatus
 	err = tx.QueryRow(ctx, `
@@ -922,8 +969,19 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 		return transfer.Transfer{}, err
 	}
 	if currentStatus == progress.Status && (currentStatus.IsTerminal() || currentStatus == domain.TransferDelivered) {
-		_ = tx.Rollback(ctx)
-		return store.GetTransfer(ctx, session, transferID)
+		result, err := store.getTransfer(ctx, tx, session, transferID)
+		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		if progress.IdempotencyKey != "" {
+			if err := completeIdempotencyRecord(ctx, tx, *session.DeviceID, resource, progress.IdempotencyKey, requestHash, result); err != nil {
+				return transfer.Transfer{}, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return transfer.Transfer{}, err
+		}
+		return result, nil
 	}
 	if currentStatus.IsTerminal() || (currentStatus == domain.TransferDelivered && progress.Status != domain.TransferRead) {
 		return transfer.Transfer{}, transfer.ErrConflict
@@ -1002,10 +1060,39 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
+	result, err := store.getTransfer(ctx, tx, session, transferID)
+	if err != nil {
+		return transfer.Transfer{}, err
+	}
+	if progress.IdempotencyKey != "" {
+		if err := completeIdempotencyRecord(ctx, tx, *session.DeviceID, resource, progress.IdempotencyKey, requestHash, result); err != nil {
+			return transfer.Transfer{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return transfer.Transfer{}, err
 	}
-	return store.GetTransfer(ctx, session, transferID)
+	return result, nil
+}
+
+func completeIdempotencyRecord(ctx context.Context, tx pgx.Tx, deviceID, resource, key string, requestHash []byte, response any) error {
+	responseBody, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	command, err := tx.Exec(ctx, `
+		UPDATE idempotency_records
+		SET state = 'COMPLETED', response_status = 200, response_body = $5::jsonb, completed_at = now()
+		WHERE actor_device_id = $1 AND method = 'PUT' AND resource = $2
+		  AND idempotency_key = $3 AND request_hash = $4 AND state = 'PROCESSING'
+	`, deviceID, resource, key, requestHash, responseBody)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return transfer.ErrIdempotencyConflict
+	}
+	return nil
 }
 
 func (store *Store) RetryTransferTarget(ctx context.Context, session auth.Session, transferID, deviceID, idempotencyKey string, now time.Time) (transfer.Transfer, error) {
@@ -1289,9 +1376,13 @@ func (store *Store) ListTransferPage(ctx context.Context, session auth.Session, 
 }
 
 func (store *Store) GetTransfer(ctx context.Context, session auth.Session, transferID string) (transfer.Transfer, error) {
+	return store.getTransfer(ctx, store.pool, session, transferID)
+}
+
+func (store *Store) getTransfer(ctx context.Context, query querier, session auth.Session, transferID string) (transfer.Transfer, error) {
 	var result transfer.Transfer
 	var groupID *string
-	err := store.pool.QueryRow(ctx, `
+	err := query.QueryRow(ctx, `
 		SELECT t.id::text, COALESCE(t.client_batch_id::text, ''), t.sender_user_id::text, t.sender_device_id::text, t.target_type,
 		       t.group_id::text, t.content_type, m.encrypted_content, t.status, t.created_at, t.expires_at
 		FROM transfer_tasks t
@@ -1317,7 +1408,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 	if groupID != nil {
 		result.GroupID = *groupID
 	}
-	keyRows, err := store.pool.Query(ctx, `
+	keyRows, err := query.Query(ctx, `
 		SELECT target_device_id::text, wrapped_content_key
 		FROM transfer_content_keys
 		WHERE transfer_id = $1 AND ($2 OR target_device_id = $3)
@@ -1340,7 +1431,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
-	fileRows, err := store.pool.Query(ctx, `
+	fileRows, err := query.Query(ctx, `
 		SELECT id::text, original_name, mime_type, size, sha256, chunk_size, chunk_count, expires_at
 		FROM files WHERE transfer_id = $1 ORDER BY id
 	`, transferID)
@@ -1363,7 +1454,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
-	targetRows, err := store.pool.Query(ctx, `
+	targetRows, err := query.Query(ctx, `
 		SELECT target_device_id::text, selected_route, status, bytes_transferred
 		FROM transfer_targets WHERE transfer_id = $1 ORDER BY target_device_id
 	`, transferID)
@@ -1385,7 +1476,7 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 		return transfer.Transfer{}, err
 	}
 	if len(result.Files) > 0 {
-		rows, err := store.pool.Query(ctx, `
+		rows, err := query.Query(ctx, `
 			SELECT ft.file_id::text, ft.target_device_id::text, ft.selected_route, ft.status
 			FROM transfer_file_targets ft JOIN files f ON f.id = ft.file_id
 			WHERE f.transfer_id = $1 ORDER BY ft.file_id, ft.target_device_id

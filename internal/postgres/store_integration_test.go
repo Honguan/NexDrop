@@ -232,17 +232,59 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if !bytes.Equal(targetTransfers[0].WrappedContentKeys[targetDevice.ID], []byte{1, 2, 3}) {
 		t.Fatalf("target wrapped content keys = %+v", targetTransfers[0].WrappedContentKeys)
 	}
-	_, err = transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
-		DeviceID: targetDevice.ID, Status: domain.TransferVerifying, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
-	})
-	if err != nil {
-		t.Fatal(err)
+	verifyingProgress := transfer.Progress{
+		IdempotencyKey: "6b9de43e-5903-4d29-ab44-cebe100daf4e",
+		DeviceID:       targetDevice.ID, Status: domain.TransferVerifying, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
+	}
+	progressErrors := make(chan error, 2)
+	for range 2 {
+		go func() {
+			result, err := transferService.ReportProgress(ctx, targetSession, textTransfer.ID, verifyingProgress)
+			if err == nil && result.Targets[0].Status != domain.TransferVerifying {
+				err = errors.New("concurrent progress returned wrong status")
+			}
+			progressErrors <- err
+		}()
+	}
+	for range 2 {
+		if err := <-progressErrors; err != nil {
+			t.Fatalf("concurrent progress error = %v", err)
+		}
 	}
 	reported, err := transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
-		DeviceID: targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
+		IdempotencyKey: "7b9de43e-5903-4d29-ab44-cebe100daf4e",
+		DeviceID:       targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
 	})
 	if err != nil || reported.Targets[0].Status != domain.TransferDelivered || reported.Targets[0].BytesTransferred != 14 {
 		t.Fatalf("ReportProgress() = %+v, %v", reported, err)
+	}
+	terminalReplay, err := transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
+		IdempotencyKey: "8b9de43e-5903-4d29-ab44-cebe100daf4e",
+		DeviceID:       targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
+	})
+	if err != nil || terminalReplay.Targets[0].Status != domain.TransferDelivered {
+		t.Fatalf("terminal progress replay = %+v, %v", terminalReplay, err)
+	}
+	_, err = transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
+		IdempotencyKey: "8b9de43e-5903-4d29-ab44-cebe100daf4e",
+		DeviceID:       targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 15,
+	})
+	if !errors.Is(err, transfer.ErrIdempotencyConflict) {
+		t.Fatalf("terminal progress conflict = %v, want ErrIdempotencyConflict", err)
+	}
+	replayedProgress, err := transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
+		IdempotencyKey: "7b9de43e-5903-4d29-ab44-cebe100daf4e",
+		DeviceID:       targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 14,
+	})
+	if err != nil || replayedProgress.Targets[0].Status != domain.TransferDelivered {
+		t.Fatalf("replayed progress = %+v, %v", replayedProgress, err)
+	}
+	_, err = transferService.ReportProgress(ctx, targetSession, textTransfer.ID, transfer.Progress{
+		IdempotencyKey: "7b9de43e-5903-4d29-ab44-cebe100daf4e",
+		DeviceID:       targetDevice.ID, Status: domain.TransferDelivered, Route: domain.SelectedRouteLAN, BytesTransferred: 15,
+	})
+	if !errors.Is(err, transfer.ErrIdempotencyConflict) {
+		t.Fatalf("conflicting progress error = %v, want ErrIdempotencyConflict", err)
 	}
 	readTransfer, err := transferService.Read(ctx, targetSession, textTransfer.ID)
 	if err != nil || readTransfer.Targets[0].Status != domain.TransferRead {

@@ -770,7 +770,8 @@ func (api *API) reportTransferProgress(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := requireIdempotencyKey(w, r); !ok {
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
 		return
 	}
 	var progress transfer.Progress
@@ -779,6 +780,7 @@ func (api *API) reportTransferProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	progress.DeviceID = r.PathValue("deviceId")
+	progress.IdempotencyKey = key
 	result, err := api.transfers.ReportProgress(r.Context(), session, r.PathValue("id"), progress)
 	if err != nil {
 		writeTransferError(w, err)

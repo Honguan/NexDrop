@@ -145,6 +145,7 @@ type RetryStore interface {
 }
 
 type Progress struct {
+	IdempotencyKey   string                `json:"-"`
 	DeviceID         string                `json:"deviceId"`
 	Status           domain.TransferStatus `json:"status"`
 	Route            domain.SelectedRoute  `json:"route,omitempty"`
