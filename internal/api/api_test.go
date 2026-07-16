@@ -785,7 +785,7 @@ func TestUploadMetricsAndReadOverview(t *testing.T) {
 	}
 }
 
-func TestReadAdminSettings(t *testing.T) {
+func TestAdminAPIRequiresReauthentication(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
 		t.Fatal(err)
@@ -806,6 +806,13 @@ func TestReadAdminSettings(t *testing.T) {
 	handler.ServeHTTP(unverifiedResponse, unverified)
 	if unverifiedResponse.Code != http.StatusForbidden {
 		t.Fatalf("unverified admin status = %d, want %d", unverifiedResponse.Code, http.StatusForbidden)
+	}
+	unverifiedAudit := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs", nil)
+	unverifiedAudit.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	unverifiedAuditResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unverifiedAuditResponse, unverifiedAudit)
+	if unverifiedAuditResponse.Code != http.StatusForbidden {
+		t.Fatalf("unverified audit status = %d, want %d", unverifiedAuditResponse.Code, http.StatusForbidden)
 	}
 	store.adminVerified = true
 

@@ -284,7 +284,7 @@ func (api *API) authenticateAdmin(w http.ResponseWriter, r *http.Request) (auth.
 }
 
 func (api *API) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
+	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
 		return
 	}
