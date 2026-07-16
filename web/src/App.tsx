@@ -256,6 +256,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
   const [groupDetails, setGroupDetails] = useState<GroupDetails | null>(null);
   const [content, setContent] = useState(initialShare.content);
   const [files, setFiles] = useState<File[]>([]);
+  const [notification, setNotification] = useState(false);
   const [busy, setBusy] = useState(false);
   const trusted = devices.filter((item) => item.trustStatus === "TRUSTED" && item.publicKey);
 
@@ -312,13 +313,14 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
         targetType: selectedGroup ? "GROUP_ALL_DEVICES" : selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
         targetDeviceIds: selected,
         groupId: selectedGroup || undefined,
-        contentType: content.trim().startsWith("http") ? "URL" : "TEXT",
+        contentType: notification ? "NOTIFICATION" : content.trim().startsWith("http") ? "URL" : "TEXT",
         routeMode: "AUTOMATIC",
         content: encrypted.content,
         wrappedContentKeys: encrypted.wrappedContentKeys,
         });
       }
       setContent("");
+      setNotification(false);
       setFiles([]);
       setSelected([]);
       setSelectedGroup("");
@@ -338,6 +340,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
         <form className="composer card" onSubmit={send}>
           <div className="card-title"><span className="step">01</span><div><h3>輸入內容或選擇檔案</h3><p>內容會在瀏覽器內先加密</p></div></div>
           <textarea value={content} onChange={(event) => { setContent(event.target.value); if (event.target.value) setFiles([]); }} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
+          {!files.length && <label className="check"><input type="checkbox" checked={notification} onChange={(event) => setNotification(event.target.checked)} /> 一般通知訊息</label>}
           <label className="file-input"><input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); if (event.target.files?.length) setContent(""); }} /><span>＋ 選擇檔案</span><small>{files.length ? `${files.length} 個檔案 · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}` : "圖片與一般檔案皆可"}</small></label>
           <div className="composer-meta"><span>{files.length ? "檔名與內容皆加密" : `${content.length.toLocaleString()} 字元`}</span><span className="secure-pill">● 端對端加密</span></div>
           <div className="divider" />

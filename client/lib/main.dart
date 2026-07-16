@@ -379,6 +379,7 @@ class _SendViewState extends State<SendView> {
   List<String> files = const [];
   String routeMode = 'AUTOMATIC';
   bool draggingFiles = false;
+  bool notification = false;
 
   @override
   void initState() {
@@ -439,6 +440,15 @@ class _SendViewState extends State<SendView> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                if (files.isEmpty)
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.notifications_active_outlined),
+                    title: const Text('一般通知訊息'),
+                    subtitle: const Text('以通知類型傳送這段文字。'),
+                    value: notification,
+                    onChanged: (value) => setState(() => notification = value),
+                  ),
                 OutlinedButton.icon(
                   onPressed: _pickFiles,
                   icon: const Icon(Icons.attach_file_rounded),
@@ -556,6 +566,7 @@ class _SendViewState extends State<SendView> {
             groupAll: groupAll,
             files: files,
             routeMode: routeMode,
+            notification: notification,
           )
           .then((_) {
             if (!mounted) return;
@@ -567,6 +578,7 @@ class _SendViewState extends State<SendView> {
               groupAll = true;
               groupDevices = const [];
               routeMode = 'AUTOMATIC';
+              notification = false;
             });
             ScaffoldMessenger.of(
               context,

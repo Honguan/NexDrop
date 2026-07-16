@@ -109,6 +109,7 @@ class TransferService {
     Set<String> lanAvailable = const {},
     bool nodeAvailable = true,
     String routeMode = 'AUTOMATIC',
+    bool notification = false,
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
@@ -130,7 +131,13 @@ class TransferService {
         recipients.every(
           (recipient) => lan.endpointFor(recipient.id) != null,
         )) {
-      return _sendTextLanOnly(content, devices, encrypted, groupId: groupId);
+      return _sendTextLanOnly(
+        content,
+        devices,
+        encrypted,
+        groupId: groupId,
+        notification: notification,
+      );
     }
     final request = <String, dynamic>{
       'targetType': groupId != null
@@ -147,7 +154,11 @@ class TransferService {
           .where((recipient) => lanAvailable.contains(recipient.id))
           .map((recipient) => recipient.id)
           .toList(),
-      'contentType': content.trim().startsWith('http') ? 'URL' : 'TEXT',
+      'contentType': notification
+          ? 'NOTIFICATION'
+          : content.trim().startsWith('http')
+          ? 'URL'
+          : 'TEXT',
       'routeMode': routeMode,
       'content': encrypted.content,
       'wrappedContentKeys': encrypted.wrappedContentKeys,
@@ -426,10 +437,15 @@ class TransferService {
     List<Device> devices,
     EncryptedEnvelope encrypted, {
     String? groupId,
+    bool notification = false,
   }) async {
     final startedAt = DateTime.now().toUtc();
     final transferId = const Uuid().v4();
-    final contentType = plaintext.trim().startsWith('http') ? 'URL' : 'TEXT';
+    final contentType = notification
+        ? 'NOTIFICATION'
+        : plaintext.trim().startsWith('http')
+        ? 'URL'
+        : 'TEXT';
     final targets = <TransferTarget>[];
     for (final device in devices) {
       final endpoint = lan.endpointFor(device.id);

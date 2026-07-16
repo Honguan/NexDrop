@@ -180,6 +180,7 @@ class AppController extends ChangeNotifier {
     List<String> files = const [],
     bool groupAll = true,
     String routeMode = 'AUTOMATIC',
+    bool notification = false,
   }) async {
     await _run(() async {
       await platformShare.startTransferService();
@@ -196,6 +197,7 @@ class AppController extends ChangeNotifier {
             lanAvailable: lan.onlineDeviceIds,
             nodeAvailable: nodeOnline,
             routeMode: routeMode,
+            notification: notification,
           );
         } else {
           await transfersService.sendFiles(
