@@ -42,14 +42,20 @@ type API struct {
 	loginLimit   *fixedWindowLimiter
 	pairingLimit *fixedWindowLimiter
 	adminLimit   *fixedWindowLimiter
+	cursorKey    []byte
 }
 
 func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
+	return NewWithCursorKey([]byte("nexdrop-development-cursor-key"), authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
+}
+
+func NewWithCursorKey(cursorKey []byte, authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
 	return &API{
 		auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService, admin: adminService,
 		loginLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE", 10)),
 		pairingLimit: newFixedWindowLimiter(rateLimit("NEXDROP_PAIRING_RATE_LIMIT_PER_MINUTE", 10)),
 		adminLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE", 30)),
+		cursorKey:    append([]byte(nil), cursorKey...),
 	}
 }
 
@@ -664,7 +670,7 @@ func (api *API) listTransfers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.Contains(r.Header.Get("Accept"), versionMediaType) {
-		options, err := transferPageOptions(r)
+		options, err := api.transferPageOptions(r)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_PAGE")
 			return
@@ -673,6 +679,9 @@ func (api *API) listTransfers(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeTransferError(w, err)
 			return
+		}
+		if result.NextCursor != "" {
+			result.NextCursor = encodeCursor(api.cursorKey, result.NextPageKey.CreatedAt, result.NextPageKey.ID)
 		}
 		writeJSON(w, http.StatusOK, result)
 		return
@@ -685,8 +694,9 @@ func (api *API) listTransfers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func transferPageOptions(r *http.Request) (transfer.PageOptions, error) {
-	options := transfer.PageOptions{Limit: 50, Cursor: strings.TrimSpace(r.URL.Query().Get("cursor"))}
+func (api *API) transferPageOptions(r *http.Request) (transfer.PageOptions, error) {
+	options := transfer.PageOptions{Limit: 50}
+	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
 	var err error
 	if value := r.URL.Query().Get("limit"); value != "" {
 		options.Limit, err = strconv.Atoi(value)
@@ -705,8 +715,8 @@ func transferPageOptions(r *http.Request) (transfer.PageOptions, error) {
 	if options.Limit < 1 || options.Limit > 100 {
 		err = errors.New("invalid limit")
 	}
-	if options.Cursor != "" && !validUUID(options.Cursor) {
-		err = errors.New("invalid cursor")
+	if err == nil && cursor != "" {
+		options.Cursor.CreatedAt, options.Cursor.ID, err = decodeCursor(api.cursorKey, cursor)
 	}
 	return options, err
 }

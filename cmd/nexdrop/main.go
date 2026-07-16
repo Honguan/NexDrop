@@ -60,6 +60,10 @@ func main() {
 	if databaseURL == "" {
 		fatal("configuration failed", errors.New("NEXDROP_DATABASE_URL is required"))
 	}
+	cursorSecret := os.Getenv("NEXDROP_CURSOR_SECRET")
+	if len(cursorSecret) < 32 {
+		fatal("configuration failed", errors.New("NEXDROP_CURSOR_SECRET must contain at least 32 characters"))
+	}
 	store, err := postgres.Open(context.Background(), databaseURL)
 	if err != nil {
 		fatal("connect to PostgreSQL", err)
@@ -104,7 +108,7 @@ func main() {
 		_ = collector.RunOnce(context.Background())
 		collector.Start(context.Background(), time.Minute)
 	}()
-	applicationAPI := api.New(authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
+	applicationAPI := api.NewWithCursorKey([]byte(cursorSecret), authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
 	presenceHub := presence.NewHub(authService, store)
 	webPath := os.Getenv("NEXDROP_WEB_PATH")
 	if webPath == "" {

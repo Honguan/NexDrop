@@ -8,6 +8,7 @@ services:
     environment:
       NEXDROP_HTTP_ADDRESS: ":8080"
       NEXDROP_DATABASE_URL: "postgres://nexdrop:${POSTGRES_PASSWORD}@postgres:5432/nexdrop?sslmode=disable"
+      NEXDROP_CURSOR_SECRET: "${NEXDROP_CURSOR_SECRET}"
       NEXDROP_STORAGE_PATH: "/var/lib/nexdrop"
       NEXDROP_WEB_PATH: "/usr/share/nexdrop/web"
       NEXDROP_MIGRATIONS_PATH: "/usr/share/nexdrop/migrations"

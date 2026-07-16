@@ -112,17 +112,23 @@ type Transfer struct {
 	ExpiresAt          time.Time             `json:"expiresAt"`
 }
 
+type PageKey struct {
+	ID        string
+	CreatedAt time.Time
+}
+
 type PageOptions struct {
 	Limit  int
-	Cursor string
+	Cursor PageKey
 	From   time.Time
 	To     time.Time
 	Status domain.TransferStatus
 }
 
 type Page struct {
-	Items      []Transfer `json:"items"`
-	NextCursor string     `json:"nextCursor,omitempty"`
+	Items       []Transfer `json:"items"`
+	NextCursor  string     `json:"nextCursor,omitempty"`
+	NextPageKey PageKey    `json:"-"`
 }
 
 type Execution struct {

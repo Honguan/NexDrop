@@ -22,6 +22,7 @@ jobs:
       - name: 啟動與健康檢查
         env:
           POSTGRES_PASSWORD: docker-test-only
+          NEXDROP_CURSOR_SECRET: docker-test-only-cursor-secret-32-bytes
           NEXDROP_IMAGE: nexdrop:test
         run: |
           docker compose up -d --no-build postgres nexdrop

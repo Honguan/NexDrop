@@ -310,6 +310,16 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if len(fileTransfer.FileTargets) != 2 || fileTransfer.Targets[0].SelectedRoute != domain.SelectedRouteMixed {
 		t.Fatalf("file transfer = %+v", fileTransfer)
 	}
+	firstPage, err := transferService.ListPage(ctx, session, transfer.PageOptions{Limit: 1})
+	if err != nil || len(firstPage.Items) != 1 || firstPage.NextCursor == "" || firstPage.NextPageKey.CreatedAt.IsZero() {
+		t.Fatalf("first transfer page = %+v, %v", firstPage, err)
+	}
+	secondPage, err := transferService.ListPage(ctx, session, transfer.PageOptions{
+		Limit: 1, Cursor: firstPage.NextPageKey,
+	})
+	if err != nil || len(secondPage.Items) != 1 || secondPage.Items[0].ID == firstPage.Items[0].ID {
+		t.Fatalf("second transfer page = %+v, %v", secondPage, err)
+	}
 	targetFileTransfer, err := store.GetTransfer(ctx, targetSession, fileTransfer.ID)
 	if err != nil || !bytes.Equal(targetFileTransfer.WrappedContentKeys[targetDevice.ID], []byte{4, 5, 6}) {
 		t.Fatalf("target file transfer key = %+v, %v", targetFileTransfer.WrappedContentKeys, err)

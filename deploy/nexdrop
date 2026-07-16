@@ -9,13 +9,32 @@ if [ -n "$command" ]; then
     shift
 fi
 
+ensure_cursor_secret() {
+    if [ ! -f .env ]; then
+        echo ".env is required; copy .env.example and configure it first" >&2
+        exit 1
+    fi
+    if grep -q '^NEXDROP_CURSOR_SECRET=' .env; then
+        value=$(sed -n 's/^NEXDROP_CURSOR_SECRET=//p' .env | tail -n 1)
+        if [ "${#value}" -lt 32 ]; then
+            echo "NEXDROP_CURSOR_SECRET must contain at least 32 characters" >&2
+            exit 1
+        fi
+        return
+    fi
+    secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    printf '\nNEXDROP_CURSOR_SECRET=%s\n' "$secret" >>.env
+}
+
 case "$command" in
     install)
+        ensure_cursor_secret
         docker compose config >/dev/null
 		docker compose pull nexdrop postgres caddy
 		docker compose up -d
         ;;
     update)
+        ensure_cursor_secret
         stamp=$(date -u +%Y%m%dT%H%M%SZ)
         docker compose run --rm nexdrop backup --output "/var/lib/nexdrop/backups/pre-update-$stamp.tar.gz"
 		docker compose pull nexdrop postgres caddy

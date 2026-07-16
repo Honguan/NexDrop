@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,8 @@ type testStore struct {
 	adminVerified   bool
 	fileRecord      filetransfer.FileRecord
 	chunks          map[int]filetransfer.ChunkRecord
+	page            transfer.Page
+	pageOptions     transfer.PageOptions
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -179,6 +182,14 @@ func (*testStore) CreateTransfer(_ context.Context, session auth.Session, prepar
 
 func (*testStore) ListTransfers(context.Context, auth.Session) ([]transfer.Transfer, error) {
 	return []transfer.Transfer{}, nil
+}
+
+func (store *testStore) ListTransferPage(_ context.Context, _ auth.Session, options transfer.PageOptions) (transfer.Page, error) {
+	store.pageOptions = options
+	if store.page.Items == nil {
+		store.page.Items = []transfer.Transfer{}
+	}
+	return store.page, nil
 }
 
 func (*testStore) GetTransfer(context.Context, auth.Session, string) (transfer.Transfer, error) {
@@ -613,6 +624,84 @@ func TestVersionedTransferListUsesPageEnvelope(t *testing.T) {
 	var page transfer.Page
 	if response.Code != http.StatusOK || json.NewDecoder(response.Body).Decode(&page) != nil || page.Items == nil {
 		t.Fatalf("status = %d, page = %+v, body = %s", response.Code, page, response.Body.String())
+	}
+}
+
+func TestLegacyTransferListRemainsArray(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID := "device-1"
+	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}, sessionDeviceID: &deviceID}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/transfers", nil)
+	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(response.Body.String()), "[") {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestVersionedTransferCursorIsSignedAndTamperProof(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID := "device-1"
+	createdAt := time.Date(2026, 7, 16, 8, 30, 0, 123, time.UTC)
+	store := &testStore{
+		credential:      auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)},
+		sessionDeviceID: &deviceID,
+		page: transfer.Page{
+			Items:      []transfer.Transfer{{ID: "11111111-1111-1111-1111-111111111111", CreatedAt: createdAt}},
+			NextCursor: "11111111-1111-1111-1111-111111111111",
+			NextPageKey: transfer.PageKey{
+				ID: "11111111-1111-1111-1111-111111111111", CreatedAt: createdAt,
+			},
+		},
+	}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	pair, err := authService.Login(context.Background(), "owner", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := httptest.NewRequest(http.MethodGet, "/api/transfers?limit=1", nil)
+	first.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	first.Header.Set("Accept", versionMediaType)
+	firstResponse := httptest.NewRecorder()
+	handler.ServeHTTP(firstResponse, first)
+	var page transfer.Page
+	if firstResponse.Code != http.StatusOK || json.NewDecoder(firstResponse.Body).Decode(&page) != nil || page.NextCursor == "" || page.NextCursor == store.page.NextCursor {
+		t.Fatalf("status = %d, page = %+v", firstResponse.Code, page)
+	}
+
+	valid := httptest.NewRequest(http.MethodGet, "/api/transfers?limit=1&cursor="+url.QueryEscape(page.NextCursor), nil)
+	valid.Header = first.Header.Clone()
+	validResponse := httptest.NewRecorder()
+	handler.ServeHTTP(validResponse, valid)
+	if validResponse.Code != http.StatusOK || store.pageOptions.Cursor.ID != store.page.NextCursor || !store.pageOptions.Cursor.CreatedAt.Equal(createdAt) {
+		t.Fatalf("valid cursor status = %d, options = %+v", validResponse.Code, store.pageOptions)
+	}
+
+	replacement := "A"
+	if strings.HasSuffix(page.NextCursor, replacement) {
+		replacement = "B"
+	}
+	tamperedCursor := page.NextCursor[:len(page.NextCursor)-1] + replacement
+	tampered := httptest.NewRequest(http.MethodGet, "/api/transfers?cursor="+url.QueryEscape(tamperedCursor), nil)
+	tampered.Header = first.Header.Clone()
+	tamperedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(tamperedResponse, tampered)
+	if tamperedResponse.Code != http.StatusBadRequest || !strings.Contains(tamperedResponse.Body.String(), "INVALID_PAGE") {
+		t.Fatalf("tampered cursor status = %d, body = %s", tamperedResponse.Code, tamperedResponse.Body.String())
 	}
 }
 

@@ -1321,15 +1321,19 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
 }
 
 func (store *Store) ListTransferPage(ctx context.Context, session auth.Session, options transfer.PageOptions) (transfer.Page, error) {
-	var from, to any
+	var from, to, cursorCreatedAt, cursorID any
 	if !options.From.IsZero() {
 		from = options.From.UTC()
 	}
 	if !options.To.IsZero() {
 		to = options.To.UTC()
 	}
+	if !options.Cursor.CreatedAt.IsZero() {
+		cursorCreatedAt = options.Cursor.CreatedAt.UTC()
+		cursorID = options.Cursor.ID
+	}
 	rows, err := store.pool.Query(ctx, `
-		SELECT DISTINCT t.id::text, t.created_at
+		SELECT DISTINCT t.id, t.created_at
 		FROM transfer_tasks t
 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
 		WHERE t.group_deleted_at IS NULL
@@ -1338,35 +1342,37 @@ func (store *Store) ListTransferPage(ctx context.Context, session auth.Session, 
 		  AND ($3::timestamptz IS NULL OR t.created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR t.created_at <= $4)
 		  AND ($5::text = '' OR t.status = $5)
-		  AND (NULLIF($6::text, '') IS NULL OR (t.created_at, t.id) < (
-		      SELECT cursor_task.created_at, cursor_task.id FROM transfer_tasks cursor_task WHERE cursor_task.id = NULLIF($6::text, '')::uuid
-		  ))
+		  AND ($6::timestamptz IS NULL OR (t.created_at, t.id) < ($6::timestamptz, $7::uuid))
 		ORDER BY t.created_at DESC, t.id DESC
-		LIMIT $7
-	`, session.ID, session.DeviceID, from, to, options.Status, options.Cursor, options.Limit+1)
+		LIMIT $8
+	`, session.ID, session.DeviceID, from, to, options.Status, cursorCreatedAt, cursorID, options.Limit+1)
 	if err != nil {
 		return transfer.Page{}, err
 	}
 	defer rows.Close()
-	ids := make([]string, 0, options.Limit+1)
+	type pageKey struct {
+		id        string
+		createdAt time.Time
+	}
+	keys := make([]pageKey, 0, options.Limit+1)
 	for rows.Next() {
-		var id string
-		var createdAt time.Time
-		if err := rows.Scan(&id, &createdAt); err != nil {
+		var key pageKey
+		if err := rows.Scan(&key.id, &key.createdAt); err != nil {
 			return transfer.Page{}, err
 		}
-		ids = append(ids, id)
+		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
 		return transfer.Page{}, err
 	}
-	page := transfer.Page{Items: make([]transfer.Transfer, 0, min(len(ids), options.Limit))}
-	if len(ids) > options.Limit {
-		page.NextCursor = ids[options.Limit-1]
-		ids = ids[:options.Limit]
+	page := transfer.Page{Items: make([]transfer.Transfer, 0, min(len(keys), options.Limit))}
+	if len(keys) > options.Limit {
+		page.NextCursor = keys[options.Limit-1].id
+		page.NextPageKey = transfer.PageKey{ID: keys[options.Limit-1].id, CreatedAt: keys[options.Limit-1].createdAt.UTC()}
+		keys = keys[:options.Limit]
 	}
-	for _, id := range ids {
-		item, err := store.GetTransfer(ctx, session, id)
+	for _, key := range keys {
+		item, err := store.GetTransfer(ctx, session, key.id)
 		if err != nil {
 			return transfer.Page{}, err
 		}

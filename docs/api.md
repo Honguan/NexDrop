@@ -20,7 +20,9 @@ X-NexDrop-API-Version: 1
 `GET /api/transfers` 新版支援 `limit`（1–100）、`cursor`、`from`、`to`、`status`，依 `created_at DESC, id DESC` 回傳：
 
 ```json
-{"items":[],"nextCursor":"<opaque UUID>"}
+{"items":[],"nextCursor":"<opaque signed cursor>"}
 ```
+
+游標以 HMAC 綁定 UTC 建立時間與 UUID；用戶端不得解析或修改，簽章不符會回傳 `INVALID_PAGE`。
 
 主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、API、協議、最低用戶端與建置 Commit。

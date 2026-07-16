@@ -17,8 +17,8 @@ git clone https://github.com/Honguan/NexDrop.git
 cd NexDrop
 cp .env.example .env
 # 編輯 .env，至少更換 POSTGRES_PASSWORD 與管理員密碼
-docker compose pull
-docker compose up -d
+# 安裝腳本會安全產生並保存 NEXDROP_CURSOR_SECRET
+./deploy/nexdrop install
 docker compose ps
 ```
 
