@@ -29,6 +29,7 @@ jobs:
       NEXDROP_BOOTSTRAP_ADMIN_EMAIL: integration@example.invalid
       NEXDROP_BOOTSTRAP_ADMIN_PASSWORD: Integration-test-only-1234
       NEXDROP_INTEGRATION_DISPOSABLE: 'true'
+      NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE: '200'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
@@ -40,7 +41,9 @@ jobs:
       - name: 驗證完整 API 與 WebSocket 資料流
         run: |
           mkdir -p "$NEXDROP_STORAGE_PATH"
-          go build -o "$RUNNER_TEMP/nexdrop-integration" ./cmd/nexdrop
+          version=$(tr -d '\r\n' < VERSION)
+          go build -trimpath -ldflags "-X nexdrop/internal/version.ProductVersion=${version} -X nexdrop/internal/version.BuildCommit=${GITHUB_SHA}" \
+            -o "$RUNNER_TEMP/nexdrop-integration" ./cmd/nexdrop
           server_pid=''
           cleanup() {
             status=$?
@@ -72,4 +75,21 @@ jobs:
           server_pid=''
           go test -count=1 ./internal/postgres/...
           start_server
+          host_memory=$(awk '/MemTotal/ {printf "%.1f GiB", $2/1024/1024}' /proc/meminfo)
+          go run ./cmd/nexdrop-loadtest \
+            -url http://127.0.0.1:8080 \
+            -username "$NEXDROP_BOOTSTRAP_ADMIN_USERNAME" \
+            -password "$NEXDROP_BOOTSTRAP_ADMIN_PASSWORD" \
+            -setup-scenario -devices 100 -online 50 -transfers 10 \
+            -requests 1000 -concurrency 10 -max-p95 500ms \
+            -environment "GitHub Actions ubuntu-latest; $(nproc) logical CPUs; ${host_memory} memory" \
+            -postgres 'PostgreSQL 17 Alpine service container' \
+            -report load-verification-report.json
           bash scripts/integration-smoke.sh
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: load-verification-report
+          path: load-verification-report.json
+          if-no-files-found: error
+          retention-days: 14
