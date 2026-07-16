@@ -617,6 +617,14 @@ class ActivityView extends StatefulWidget {
 class _ActivityViewState extends State<ActivityView> {
   String? busyId;
 
+  bool _isActive(TransferSummary transfer) => !{
+    'DELIVERED',
+    'READ',
+    'FAILED',
+    'CANCELLED',
+    'EXPIRED',
+  }.contains(transfer.status);
+
   String _displayStatus(TransferSummary transfer) {
     if (transfer.batchId == null) return transfer.status;
     final children = widget.controller.transfers.where(
@@ -675,7 +683,8 @@ class _ActivityViewState extends State<ActivityView> {
                   else
                     Chip(label: Text(_displayStatus(transfer))),
                   if (transfer.senderDeviceId ==
-                      widget.controller.currentDevice?.id)
+                          widget.controller.currentDevice?.id &&
+                      _isActive(transfer))
                     IconButton(
                       tooltip: transfer.status == 'PAUSED' ? '繼續傳輸' : '暫停傳輸',
                       icon: Icon(
@@ -691,7 +700,8 @@ class _ActivityViewState extends State<ActivityView> {
                       ),
                     ),
                   if (transfer.senderDeviceId ==
-                      widget.controller.currentDevice?.id)
+                          widget.controller.currentDevice?.id &&
+                      _isActive(transfer))
                     IconButton(
                       tooltip: '取消傳輸',
                       icon: const Icon(Icons.cancel_outlined),
