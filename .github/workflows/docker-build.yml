@@ -25,8 +25,9 @@ jobs:
           NEXDROP_CURSOR_SECRET: docker-test-only-cursor-secret-32-bytes
           NEXDROP_IMAGE: nexdrop:test
         run: |
+          trap 'docker compose down -v' EXIT
           docker compose up -d --no-build postgres nexdrop
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             container=$(docker compose ps -q nexdrop)
             status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || true)
             test "$status" = healthy && break

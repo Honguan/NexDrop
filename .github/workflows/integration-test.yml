@@ -1,5 +1,6 @@
 name: integration-test
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [master]
