@@ -154,6 +154,42 @@ func TestAdminManagementIntegration(t *testing.T) {
 	if err != nil || len(logs) < 4 {
 		t.Fatalf("AuditLogs() = %+v, %v", logs, err)
 	}
+	auditPage, err := service.AuditLogsPage(ctx, actor, admin.PageOptions{Limit: 1})
+	if err != nil || len(auditPage.Items) != 1 || auditPage.NextPageKey.ID == "" {
+		t.Fatalf("AuditLogsPage() = %+v, %v", auditPage, err)
+	}
+	nextAuditPage, err := service.AuditLogsPage(ctx, actor, admin.PageOptions{Limit: 1, Cursor: auditPage.NextPageKey})
+	if err != nil || len(nextAuditPage.Items) != 1 || nextAuditPage.Items[0].ID == auditPage.Items[0].ID {
+		t.Fatalf("next AuditLogsPage() = %+v, %v", nextAuditPage, err)
+	}
+
+	failureCreatedAt := time.Now().UTC().Truncate(time.Microsecond)
+	for range 2 {
+		var transferID string
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO transfer_tasks (sender_user_id, sender_device_id, target_type, content_type, status, created_at)
+			VALUES ($1, $2, 'SINGLE_DEVICE', 'TEXT', 'FAILED', $3) RETURNING id::text
+		`, created.ID, deviceID, failureCreatedAt).Scan(&transferID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO transfer_targets (transfer_id, target_device_id, selected_route, status, error_code)
+			VALUES ($1, $2, 'NODE', 'FAILED', 'INTEGRATION_FAILURE')
+		`, transferID, deviceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failurePage, err := service.FailuresPage(ctx, actor, admin.PageOptions{Limit: 1, Status: "FAILED", From: failureCreatedAt.Add(-time.Second), To: failureCreatedAt.Add(time.Second)})
+	if err != nil || len(failurePage.Items) != 1 || failurePage.NextPageKey.ID == "" {
+		t.Fatalf("FailuresPage() = %+v, %v", failurePage, err)
+	}
+	nextFailurePage, err := service.FailuresPage(ctx, actor, admin.PageOptions{
+		Limit: 1, Status: "FAILED", Cursor: failurePage.NextPageKey,
+		From: failureCreatedAt.Add(-time.Second), To: failureCreatedAt.Add(time.Second),
+	})
+	if err != nil || len(nextFailurePage.Items) != 1 || nextFailurePage.Items[0].TransferID == failurePage.Items[0].TransferID {
+		t.Fatalf("next FailuresPage() = %+v, %v", nextFailurePage, err)
+	}
 }
 
 func containsAdminDevice(devices []admin.Device, id string) bool {

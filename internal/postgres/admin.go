@@ -380,7 +380,7 @@ func (store *Store) ListAdminFailures(ctx context.Context, limit, offset int) ([
 		SELECT tt.transfer_id::text, tt.target_device_id::text, COALESCE(tt.error_code, 'UNKNOWN'), t.created_at
 		FROM transfer_targets tt JOIN transfer_tasks t ON t.id=tt.transfer_id
 		WHERE tt.error_code IS NOT NULL OR tt.status='FAILED'
-		ORDER BY t.created_at DESC LIMIT $1 OFFSET $2
+		ORDER BY t.created_at DESC, tt.id DESC LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -401,7 +401,7 @@ func (store *Store) ListAdminAuditLogs(ctx context.Context, limit, offset int) (
 	rows, err := store.pool.Query(ctx, `
 		SELECT id::text, actor_user_id::text, actor_device_id::text, action, target_type,
 		       target_id::text, metadata, created_at
-		FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2
+		FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -416,6 +416,100 @@ func (store *Store) ListAdminAuditLogs(ctx context.Context, limit, offset int) (
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (store *Store) ListAdminFailurePage(ctx context.Context, options admin.PageOptions) (admin.FailurePage, error) {
+	from, to, cursorCreatedAt, cursorID := adminPageParameters(options)
+	rows, err := store.pool.Query(ctx, `
+		SELECT tt.transfer_id::text, tt.target_device_id::text, COALESCE(tt.error_code, 'UNKNOWN'),
+		       t.created_at, tt.id::text
+		FROM transfer_targets tt JOIN transfer_tasks t ON t.id=tt.transfer_id
+		WHERE (tt.error_code IS NOT NULL OR tt.status='FAILED')
+		  AND ($1::timestamptz IS NULL OR t.created_at >= $1)
+		  AND ($2::timestamptz IS NULL OR t.created_at <= $2)
+		  AND ($3::text = '' OR tt.status = $3)
+		  AND ($4::timestamptz IS NULL OR (t.created_at, tt.id) < ($4::timestamptz, $5::uuid))
+		ORDER BY t.created_at DESC, tt.id DESC
+		LIMIT $6
+	`, from, to, options.Status, cursorCreatedAt, cursorID, options.Limit+1)
+	if err != nil {
+		return admin.FailurePage{}, err
+	}
+	defer rows.Close()
+	items := make([]admin.Failure, 0, options.Limit+1)
+	keys := make([]admin.PageKey, 0, options.Limit+1)
+	for rows.Next() {
+		var item admin.Failure
+		var key admin.PageKey
+		if err := rows.Scan(&item.TransferID, &item.TargetDeviceID, &item.ErrorCode, &item.CreatedAt, &key.ID); err != nil {
+			return admin.FailurePage{}, err
+		}
+		key.CreatedAt = item.CreatedAt.UTC()
+		items = append(items, item)
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return admin.FailurePage{}, err
+	}
+	page := admin.FailurePage{Items: items}
+	if len(items) > options.Limit {
+		page.Items = items[:options.Limit]
+		page.NextCursor = keys[options.Limit-1].ID
+		page.NextPageKey = keys[options.Limit-1]
+	}
+	return page, nil
+}
+
+func (store *Store) ListAdminAuditLogPage(ctx context.Context, options admin.PageOptions) (admin.AuditLogPage, error) {
+	from, to, cursorCreatedAt, cursorID := adminPageParameters(options)
+	rows, err := store.pool.Query(ctx, `
+		SELECT id::text, actor_user_id::text, actor_device_id::text, action, target_type,
+		       target_id::text, metadata, created_at
+		FROM audit_logs
+		WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+		  AND ($2::timestamptz IS NULL OR created_at <= $2)
+		  AND ($3::text = '' OR action = $3)
+		  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4::timestamptz, $5::uuid))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $6
+	`, from, to, options.Status, cursorCreatedAt, cursorID, options.Limit+1)
+	if err != nil {
+		return admin.AuditLogPage{}, err
+	}
+	defer rows.Close()
+	items := make([]admin.AuditLog, 0, options.Limit+1)
+	for rows.Next() {
+		var item admin.AuditLog
+		if err := rows.Scan(&item.ID, &item.ActorUserID, &item.ActorDeviceID, &item.Action, &item.TargetType, &item.TargetID, &item.Metadata, &item.CreatedAt); err != nil {
+			return admin.AuditLogPage{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return admin.AuditLogPage{}, err
+	}
+	page := admin.AuditLogPage{Items: items}
+	if len(items) > options.Limit {
+		page.Items = items[:options.Limit]
+		last := items[options.Limit-1]
+		page.NextCursor = last.ID
+		page.NextPageKey = admin.PageKey{ID: last.ID, CreatedAt: last.CreatedAt.UTC()}
+	}
+	return page, nil
+}
+
+func adminPageParameters(options admin.PageOptions) (from, to, cursorCreatedAt, cursorID any) {
+	if !options.From.IsZero() {
+		from = options.From.UTC()
+	}
+	if !options.To.IsZero() {
+		to = options.To.UTC()
+	}
+	if !options.Cursor.CreatedAt.IsZero() {
+		cursorCreatedAt = options.Cursor.CreatedAt.UTC()
+		cursorID = options.Cursor.ID
+	}
+	return from, to, cursorCreatedAt, cursorID
 }
 
 func (store *Store) DeleteAdminGroupContent(ctx context.Context, actor auth.Session, transferID string, now time.Time) ([]string, error) {

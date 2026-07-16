@@ -17,12 +17,12 @@ X-NexDrop-API-Version: 1
 
 建立傳輸、上傳分段、完成檔案、同步統計、回報進度及已讀須送 `Idempotency-Key: <UUID>`。相同 key 與內容會重播原結果；不同內容回傳 `IDEMPOTENCY_CONFLICT`。
 
-`GET /api/transfers` 新版支援 `limit`（1–100）、`cursor`、`from`、`to`、`status`，依 `created_at DESC, id DESC` 回傳：
+`GET /api/transfers` 新版支援 `limit`（1–100）、`cursor`、`from`、`to`、`status`，依 `created_at DESC, id DESC` 回傳。管理端 `GET /api/admin/failures` 與 `GET /api/admin/audit-logs` 在協商新版媒體型別時使用相同的分頁參數與 envelope；未協商的 1.x 用戶端仍可使用既有 `offset` 陣列介面。
 
 ```json
 {"items":[],"nextCursor":"<opaque signed cursor>"}
 ```
 
-游標以 HMAC 綁定 UTC 建立時間與 UUID；用戶端不得解析或修改，簽章不符會回傳 `INVALID_PAGE`。
+游標以 HMAC 綁定 UTC 建立時間與穩定 UUID 排序鍵；用戶端不得解析或修改，簽章不符會回傳 `INVALID_PAGE`。管理端失敗列表的 `status` 篩選目標狀態，稽核列表則以 `status` 篩選稽核動作。
 
 主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、API、協議、最低用戶端與建置 Commit。

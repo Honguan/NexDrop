@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"nexdrop/internal/admin"
 	"nexdrop/internal/auth"
@@ -256,6 +258,23 @@ func (api *API) adminFailures(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if strings.Contains(r.Header.Get("Accept"), versionMediaType) {
+		options, err := api.adminPageOptions(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_PAGE")
+			return
+		}
+		result, err := api.admin.FailuresPage(r.Context(), session, options)
+		if err != nil {
+			writeAdminError(w, err)
+			return
+		}
+		if !result.NextPageKey.CreatedAt.IsZero() {
+			result.NextCursor = encodeCursor(api.cursorKey, result.NextPageKey.CreatedAt, result.NextPageKey.ID)
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	limit, offset, ok := adminPage(w, r)
 	if !ok {
 		return
@@ -286,6 +305,23 @@ func (api *API) authenticateAdmin(w http.ResponseWriter, r *http.Request) (auth.
 func (api *API) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticateAdmin(w, r)
 	if !ok {
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), versionMediaType) {
+		options, err := api.adminPageOptions(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_PAGE")
+			return
+		}
+		result, err := api.admin.AuditLogsPage(r.Context(), session, options)
+		if err != nil {
+			writeAdminError(w, err)
+			return
+		}
+		if !result.NextPageKey.CreatedAt.IsZero() {
+			result.NextCursor = encodeCursor(api.cursorKey, result.NextPageKey.CreatedAt, result.NextPageKey.ID)
+		}
+		writeJSON(w, http.StatusOK, result)
 		return
 	}
 	limit, offset, ok := adminPage(w, r)
@@ -328,6 +364,33 @@ func adminPage(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 		return 0, 0, false
 	}
 	return limit, offset, true
+}
+
+func (api *API) adminPageOptions(r *http.Request) (admin.PageOptions, error) {
+	options := admin.PageOptions{Limit: 50, Status: strings.TrimSpace(r.URL.Query().Get("status"))}
+	var err error
+	if value := r.URL.Query().Get("limit"); value != "" {
+		options.Limit, err = strconv.Atoi(value)
+	}
+	if err == nil {
+		if value := r.URL.Query().Get("from"); value != "" {
+			options.From, err = time.Parse(time.RFC3339, value)
+		}
+	}
+	if err == nil {
+		if value := r.URL.Query().Get("to"); value != "" {
+			options.To, err = time.Parse(time.RFC3339, value)
+		}
+	}
+	if options.Limit < 1 || options.Limit > 100 || (!options.From.IsZero() && !options.To.IsZero() && options.From.After(options.To)) {
+		err = errors.New("invalid page")
+	}
+	if err == nil {
+		if cursor := strings.TrimSpace(r.URL.Query().Get("cursor")); cursor != "" {
+			options.Cursor.CreatedAt, options.Cursor.ID, err = decodeCursor(api.cursorKey, cursor)
+		}
+	}
+	return options, err
 }
 
 func writeAdminError(w http.ResponseWriter, err error) {

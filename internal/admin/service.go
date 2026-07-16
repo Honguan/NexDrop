@@ -109,6 +109,31 @@ type AuditLog struct {
 	CreatedAt     time.Time      `json:"createdAt"`
 }
 
+type PageKey struct {
+	ID        string
+	CreatedAt time.Time
+}
+
+type PageOptions struct {
+	Limit  int
+	Cursor PageKey
+	From   time.Time
+	To     time.Time
+	Status string
+}
+
+type FailurePage struct {
+	Items       []Failure `json:"items"`
+	NextCursor  string    `json:"nextCursor,omitempty"`
+	NextPageKey PageKey   `json:"-"`
+}
+
+type AuditLogPage struct {
+	Items       []AuditLog `json:"items"`
+	NextCursor  string     `json:"nextCursor,omitempty"`
+	NextPageKey PageKey    `json:"-"`
+}
+
 type Store interface {
 	BootstrapAdmin(context.Context, string, string, string) error
 	ListAdminUsers(context.Context, int, int) ([]User, error)
@@ -129,6 +154,11 @@ type Store interface {
 	ListAdminFailures(context.Context, int, int) ([]Failure, error)
 	ListAdminAuditLogs(context.Context, int, int) ([]AuditLog, error)
 	DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error)
+}
+
+type PagedStore interface {
+	ListAdminFailurePage(context.Context, PageOptions) (FailurePage, error)
+	ListAdminAuditLogPage(context.Context, PageOptions) (AuditLogPage, error)
 }
 
 type Service struct{ store Store }
@@ -339,6 +369,34 @@ func (service *Service) AuditLogs(ctx context.Context, session auth.Session, lim
 	return service.store.ListAdminAuditLogs(ctx, limit, offset)
 }
 
+func (service *Service) FailuresPage(ctx context.Context, session auth.Session, options PageOptions) (FailurePage, error) {
+	if !session.Admin {
+		return FailurePage{}, ErrForbidden
+	}
+	if !validPageOptions(options) {
+		return FailurePage{}, ErrInvalid
+	}
+	store, ok := service.store.(PagedStore)
+	if !ok {
+		return FailurePage{}, ErrInvalid
+	}
+	return store.ListAdminFailurePage(ctx, options)
+}
+
+func (service *Service) AuditLogsPage(ctx context.Context, session auth.Session, options PageOptions) (AuditLogPage, error) {
+	if !session.Admin {
+		return AuditLogPage{}, ErrForbidden
+	}
+	if !validPageOptions(options) {
+		return AuditLogPage{}, ErrInvalid
+	}
+	store, ok := service.store.(PagedStore)
+	if !ok {
+		return AuditLogPage{}, ErrInvalid
+	}
+	return store.ListAdminAuditLogPage(ctx, options)
+}
+
 func (service *Service) DeleteGroupContent(ctx context.Context, session auth.Session, transferID string) error {
 	if !session.Admin {
 		return ErrForbidden
@@ -372,6 +430,10 @@ func validSettings(value NodeSettings) bool {
 }
 
 func validPage(limit, offset int) bool { return limit > 0 && limit <= 200 && offset >= 0 }
+
+func validPageOptions(options PageOptions) bool {
+	return options.Limit > 0 && options.Limit <= 100 && (options.From.IsZero() || options.To.IsZero() || !options.From.After(options.To))
+}
 
 func isUUID(value string) bool {
 	if len(value) != 36 {

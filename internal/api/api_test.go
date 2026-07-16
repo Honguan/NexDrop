@@ -27,17 +27,21 @@ import (
 )
 
 type testStore struct {
-	credential      auth.Credential
-	accessHash      []byte
-	refresh         []byte
-	devices         []device.Device
-	groups          []group.Group
-	sessionDeviceID *string
-	adminVerified   bool
-	fileRecord      filetransfer.FileRecord
-	chunks          map[int]filetransfer.ChunkRecord
-	page            transfer.Page
-	pageOptions     transfer.PageOptions
+	credential         auth.Credential
+	accessHash         []byte
+	refresh            []byte
+	devices            []device.Device
+	groups             []group.Group
+	sessionDeviceID    *string
+	adminVerified      bool
+	fileRecord         filetransfer.FileRecord
+	chunks             map[int]filetransfer.ChunkRecord
+	page               transfer.Page
+	pageOptions        transfer.PageOptions
+	auditPage          admin.AuditLogPage
+	auditPageOptions   admin.PageOptions
+	failurePage        admin.FailurePage
+	failurePageOptions admin.PageOptions
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -334,6 +338,16 @@ func (*testStore) ListAdminFailures(context.Context, int, int) ([]admin.Failure,
 
 func (*testStore) ListAdminAuditLogs(context.Context, int, int) ([]admin.AuditLog, error) {
 	return []admin.AuditLog{}, nil
+}
+
+func (store *testStore) ListAdminAuditLogPage(_ context.Context, options admin.PageOptions) (admin.AuditLogPage, error) {
+	store.auditPageOptions = options
+	return store.auditPage, nil
+}
+
+func (store *testStore) ListAdminFailurePage(_ context.Context, options admin.PageOptions) (admin.FailurePage, error) {
+	store.failurePageOptions = options
+	return store.failurePage, nil
 }
 
 func (*testStore) DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error) {
@@ -864,5 +878,70 @@ func TestAdminAPIRequiresReauthentication(t *testing.T) {
 	handler.ServeHTTP(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/auth/invitations/accept", bytes.NewReader(acceptPayload)))
 	if acceptResponse.Code != http.StatusCreated {
 		t.Fatalf("accept invitation status = %d, body = %s", acceptResponse.Code, acceptResponse.Body.String())
+	}
+}
+
+func TestVersionedAdminHistoryUsesSignedCursor(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC)
+	auditID := "11111111-1111-4111-8111-111111111111"
+	failureID := "22222222-2222-4222-8222-222222222222"
+	store := &testStore{
+		credential:    auth.Credential{User: auth.User{ID: "33333333-3333-4333-8333-333333333333", Username: "admin", Admin: true}, PasswordHash: string(passwordHash)},
+		adminVerified: true,
+		auditPage:     admin.AuditLogPage{Items: []admin.AuditLog{{ID: auditID, CreatedAt: createdAt}}, NextPageKey: admin.PageKey{ID: auditID, CreatedAt: createdAt}},
+		failurePage:   admin.FailurePage{Items: []admin.Failure{{TransferID: failureID, CreatedAt: createdAt}}, NextPageKey: admin.PageKey{ID: failureID, CreatedAt: createdAt}},
+	}
+	authService := auth.NewService(store, time.Minute, time.Hour)
+	handler := NewWithCursorKey([]byte("admin-history-test-cursor-secret-32-bytes"), authService, nil, nil, nil, nil, nil, nil, admin.NewService(store)).Routes()
+	pair, err := authService.Login(context.Background(), "admin", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		path    string
+		options *admin.PageOptions
+	}{
+		{"/api/admin/audit-logs?limit=1&from=2026-07-01T00:00:00Z&to=2026-07-31T00:00:00Z", &store.auditPageOptions},
+		{"/api/admin/failures?limit=1&status=FAILED", &store.failurePageOptions},
+	} {
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+		request.Header.Set("Accept", versionMediaType)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body = %s", test.path, response.Code, response.Body.String())
+		}
+		var page struct {
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil || page.NextCursor == "" {
+			t.Fatalf("%s page = %+v, %v", test.path, page, err)
+		}
+		if test.options.Limit != 1 {
+			t.Fatalf("%s options = %+v", test.path, *test.options)
+		}
+		tampered := httptest.NewRequest(http.MethodGet, strings.Split(test.path, "?")[0]+"?cursor="+url.QueryEscape(page.NextCursor+"x"), nil)
+		tampered.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+		tampered.Header.Set("Accept", versionMediaType)
+		tamperedResponse := httptest.NewRecorder()
+		handler.ServeHTTP(tamperedResponse, tampered)
+		if tamperedResponse.Code != http.StatusBadRequest {
+			t.Fatalf("tampered %s status = %d, body = %s", test.path, tamperedResponse.Code, tamperedResponse.Body.String())
+		}
+	}
+
+	legacy := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?limit=1&offset=0", nil)
+	legacy.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	legacyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(legacyResponse, legacy)
+	var legacyItems []admin.AuditLog
+	if legacyResponse.Code != http.StatusOK || json.Unmarshal(legacyResponse.Body.Bytes(), &legacyItems) != nil {
+		t.Fatalf("legacy status = %d, body = %s", legacyResponse.Code, legacyResponse.Body.String())
 	}
 }

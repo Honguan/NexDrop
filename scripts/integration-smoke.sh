@@ -165,6 +165,11 @@ expect_status 404 -H "Accept: $accept" -H "Authorization: Bearer $(token <<<"$is
 
 api "$admin_token" -X PUT -H 'Content-Type: application/json' --data '{"byteLimit":1,"dailyTransferLimit":1}' \
   "$base_url/api/admin/quotas/USER/$admin_user_id" | jq -e '.byteLimit == 1' >/dev/null
+audit_page="$(api "$admin_token" "$base_url/api/admin/audit-logs?limit=1")"
+audit_cursor="$(jq -er '.nextCursor' <<<"$audit_page")"
+api "$admin_token" "$base_url/api/admin/audit-logs?limit=1&cursor=$audit_cursor" | jq -e '.items | length >= 1' >/dev/null
+expect_status 400 -H "Accept: $accept" -H "Authorization: Bearer $admin_token" \
+  "$base_url/api/admin/audit-logs?cursor=${audit_cursor}x"
 quota_request="$(jq '.files[0].name="over-quota.bin"' <<<"$file_request")"
 expect_status 507 -H 'Content-Type: application/json' -H "Accept: $accept" \
   -H "Authorization: Bearer $admin_token" -H "Idempotency-Key: $(uuid)" \
