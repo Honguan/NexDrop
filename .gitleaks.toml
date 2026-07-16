@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "NexDrop deterministic test fixtures"
+regexTarget = "match"
+regexes = [
+  '''[4-8]b9de43e-5903-4d29-ab44-cebe100daf4e''',
+  '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''',
+  '''Integration-isolated-1234''',
+]
+paths = ['''(^|/)client/(?:\.dart_tool|build)/''']

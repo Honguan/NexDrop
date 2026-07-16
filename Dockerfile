@@ -1,4 +1,4 @@
-FROM node:24-alpine AS web-build
+FROM node:24-alpine3.24 AS web-build
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -6,7 +6,7 @@ COPY web/index.html web/tsconfig.json web/vite.config.ts ./
 COPY web/src ./src
 RUN npm run build
 
-FROM golang:1.23-alpine AS build
+FROM golang:1.26.5-alpine3.24 AS build
 ARG VERSION=1.0.0
 ARG COMMIT=development
 WORKDIR /src
@@ -15,7 +15,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X nexdrop/internal/version.ProductVersion=${VERSION} -X nexdrop/internal/version.BuildCommit=${COMMIT}" -o /out/nexdrop ./cmd/nexdrop
 
-FROM alpine:3.21
+FROM alpine:3.24.1
 ARG VERSION=1.0.0
 ARG COMMIT=development
 LABEL org.opencontainers.image.title="NexDrop Node" \
