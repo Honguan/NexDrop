@@ -586,8 +586,8 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
 
   const load = useCallback(async () => {
     const [nextUsers, nextDevices, nextGroups, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
-      api.get<AdminUser[]>("/api/admin/users"), api.get<AdminDevice[]>("/api/admin/devices"),
-      api.get<AdminGroup[]>("/api/admin/groups"), api.get<StorageOverview>("/api/admin/storage"),
+      loadAdminPages<AdminUser>("/api/admin/users"), loadAdminPages<AdminDevice>("/api/admin/devices"),
+      loadAdminPages<AdminGroup>("/api/admin/groups"), api.get<StorageOverview>("/api/admin/storage"),
       api.get<NodeSettings>("/api/admin/settings"), api.get<AuditLog[]>("/api/admin/audit-logs"),
       api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(statisticsPath("/api/statistics/node")),
     ]);
@@ -650,6 +650,16 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       </>}
     </section>
   );
+}
+
+async function loadAdminPages<T>(path: string) {
+  const pageSize = 200;
+  const result: T[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await api.get<T[]>(`${path}?limit=${pageSize}&offset=${offset}`);
+    result.push(...page);
+    if (page.length < pageSize) return result;
+  }
 }
 
 const settingFields: Array<{ key: Exclude<keyof NodeSettings, "publicRegistrationEnabled">; label: string; percent?: boolean }> = [

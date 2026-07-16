@@ -199,12 +199,18 @@ func (store *Store) ListAdminGroups(ctx context.Context, limit, offset int) ([]a
 	return result, rows.Err()
 }
 
-func (store *Store) DeleteAdminGroup(ctx context.Context, actor auth.Session, groupID string, _ time.Time) error {
+func (store *Store) DeleteAdminGroup(ctx context.Context, actor auth.Session, groupID string, now time.Time) error {
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE transfer_tasks SET group_id=NULL, group_deleted_at=COALESCE(group_deleted_at, $2)
+		WHERE group_id=$1
+	`, groupID, now); err != nil {
+		return mapAdminError(err)
+	}
 	command, err := tx.Exec(ctx, `DELETE FROM groups WHERE id=$1`, groupID)
 	if err != nil {
 		return mapAdminError(err)

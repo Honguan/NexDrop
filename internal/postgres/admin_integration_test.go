@@ -35,6 +35,7 @@ func TestAdminManagementIntegration(t *testing.T) {
 	defer func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_user_id=$1`, actorID)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM storage_quotas WHERE owner_id IN (SELECT id FROM users WHERE username IN ($1,$2))`, "admin-"+suffix, "user-"+suffix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM transfer_tasks WHERE sender_user_id IN (SELECT id FROM users WHERE username IN ($1,$2))`, "admin-"+suffix, "user-"+suffix)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM users WHERE username IN ($1,$2)`, "admin-"+suffix, "user-"+suffix)
 	}()
 	actor := auth.Session{User: auth.User{ID: actorID, Admin: true}}
@@ -92,12 +93,28 @@ func TestAdminManagementIntegration(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'OWNER')`, groupID, created.ID); err != nil {
 		t.Fatal(err)
 	}
+	var groupTransferID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO transfer_tasks (sender_user_id, sender_device_id, group_id, target_type, content_type, status)
+		VALUES ($1, $2, $3, 'GROUP', 'TEXT', 'DELIVERED') RETURNING id::text
+	`, created.ID, deviceID, groupID).Scan(&groupTransferID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	groups, err := service.Groups(ctx, actor, 50, 0)
 	if err != nil || !containsAdminGroup(groups, groupID) {
 		t.Fatalf("Groups() = %+v, %v", groups, err)
 	}
 	if err := service.DeleteGroup(ctx, actor, groupID); err != nil {
 		t.Fatalf("DeleteGroup() error = %v", err)
+	}
+	var detachedGroupID *string
+	var groupDeletedAt *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT group_id::text, group_deleted_at FROM transfer_tasks WHERE id=$1`, groupTransferID).Scan(&detachedGroupID, &groupDeletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if detachedGroupID != nil || groupDeletedAt == nil {
+		t.Fatalf("deleted group transfer retained group link: group=%v deletedAt=%v", detachedGroupID, groupDeletedAt)
 	}
 
 	accessHash := []byte("admin-integration-access-" + suffix)
