@@ -495,7 +495,7 @@ class LanService {
         'error': 'INVALID_MESSAGE',
       });
     }
-    if (!const {'TEXT', 'URL', 'FILE'}.contains(body['contentType']) ||
+    if (!const {'TEXT', 'URL', 'FILE', 'NOTIFICATION'}.contains(body['contentType']) ||
         body['content'] is! String ||
         body['wrappedContentKey'] is! String) {
       return _json(request.response, HttpStatus.badRequest, {
