@@ -45,6 +45,7 @@ class TransferService {
   bool _retryingWaitingLan = false;
   bool _flushingDrafts = false;
   final Set<String> _pausedTransfers = {};
+  final Set<String> _cancelledTransfers = {};
   Device? _currentDevice;
 
   Future<DeviceSession> synchronizeDevice(UserAccount account) async {
@@ -219,6 +220,7 @@ class TransferService {
     String routeMode = 'AUTOMATIC',
     bool allowLargeFileViaNode = false,
     String? batchId,
+    void Function(TransferSummary transfer)? onCreated,
   }) async {
     final recipients = devices
         .where((device) => device.trusted && device.publicKey != null)
@@ -250,6 +252,7 @@ class TransferService {
           routeMode: routeMode,
           allowLargeFileViaNode: false,
           batchId: offlineBatchId,
+          onCreated: onCreated,
         );
         await sendFiles(
           sourcePaths: regularPaths,
@@ -261,6 +264,7 @@ class TransferService {
           routeMode: routeMode,
           allowLargeFileViaNode: false,
           batchId: offlineBatchId,
+          onCreated: onCreated,
         );
         return waiting;
       }
@@ -284,7 +288,12 @@ class TransferService {
           recipients.every(
             (recipient) => lan.endpointFor(recipient.id) != null,
           )) {
-        return await _sendFilesLanOnly(devices, encrypted, groupId: groupId);
+        return await _sendFilesLanOnly(
+          devices,
+          encrypted,
+          groupId: groupId,
+          onCreated: onCreated,
+        );
       }
       final request = <String, dynamic>{
         'targetType': groupId != null
@@ -324,6 +333,7 @@ class TransferService {
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>;
       var transfer = TransferSummary.fromJson(response);
+      onCreated?.call(transfer);
       await _saveServerWaitingTargets(transfer, encrypted, sourcePaths);
       final lanBytes = <String, int>{};
       try {
@@ -351,6 +361,7 @@ class TransferService {
           lanBytes[target.deviceId] = (lanBytes[target.deviceId] ?? 0) + sent;
         }
       } on Exception {
+        if (_cancelledTransfers.contains(transfer.id)) rethrow;
         if (routeMode != 'AUTOMATIC') rethrow;
         await _discardFailedLanTransfer(transfer.id);
         request['lanAvailableDeviceIds'] = <String>[];
@@ -358,6 +369,7 @@ class TransferService {
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>,
         );
+        onCreated?.call(transfer);
         lanBytes.clear();
         await _saveServerWaitingTargets(transfer, encrypted, sourcePaths);
       }
@@ -523,6 +535,7 @@ class TransferService {
     List<Device> devices,
     EncryptedFileTransfer encrypted, {
     String? groupId,
+    void Function(TransferSummary transfer)? onCreated,
   }) async {
     final startedAt = DateTime.now().toUtc();
     final transferId = const Uuid().v4();
@@ -551,6 +564,29 @@ class TransferService {
     ];
     final targets = <TransferTarget>[];
     final fileTargets = <TransferFileTarget>[];
+    onCreated?.call(
+      TransferSummary(
+        id: transferId,
+        senderDeviceId: _currentDevice?.id,
+        contentType: 'FILE',
+        status: 'TRANSFERRING_LAN',
+        createdAt: startedAt,
+        targets: devices
+            .map(
+              (device) => TransferTarget(
+                deviceId: device.id,
+                route: 'LAN',
+                status: 'TRANSFERRING_LAN',
+                bytesTransferred: 0,
+              ),
+            )
+            .toList(),
+        files: files,
+        fileTargets: const [],
+        encryptedContent: encrypted.content,
+        wrappedContentKeys: encrypted.wrappedContentKeys,
+      ),
+    );
     for (final device in devices) {
       final endpoint = lan.endpointFor(device.id);
       final wrapped = encrypted.wrappedContentKeys[device.id];
@@ -936,8 +972,14 @@ class TransferService {
     return saved;
   }
 
-  Future<void> cancel(String transferId) async {
-    await api.sendJson('/api/transfers/$transferId/cancel', 'POST');
+  Future<void> cancel(TransferSummary transfer) async {
+    _pausedTransfers.remove(transfer.id);
+    _cancelledTransfers.add(transfer.id);
+    try {
+      await api.sendJson('/api/transfers/${transfer.id}/cancel', 'POST');
+    } on Exception {
+      if (!transfer.targets.every((target) => target.route == 'LAN')) rethrow;
+    }
   }
 
   Future<void> _discardFailedLanTransfer(String transferId) async {
@@ -969,12 +1011,16 @@ class TransferService {
       }.contains(target.status)) {
         continue;
       }
-      await _reportProgress(
-        transfer.id,
-        target.deviceId,
-        paused ? 'PAUSED' : 'QUEUED',
-        target.bytesTransferred,
-      );
+      try {
+        await _reportProgress(
+          transfer.id,
+          target.deviceId,
+          paused ? 'PAUSED' : 'QUEUED',
+          target.bytesTransferred,
+        );
+      } on Exception {
+        if (target.route != 'LAN') rethrow;
+      }
     }
   }
 
@@ -1458,6 +1504,9 @@ class TransferService {
   Future<void> _waitWhilePaused(String transferId) async {
     while (_pausedTransfers.contains(transferId)) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (_cancelledTransfers.contains(transferId)) {
+      throw StateError('USER_CANCELLED');
     }
   }
 

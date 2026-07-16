@@ -200,16 +200,21 @@ class AppController extends ChangeNotifier {
             notification: notification,
           );
         } else {
-          await transfersService.sendFiles(
-            sourcePaths: files,
-            devices: resolved,
-            groupId: groupId,
-            groupAll: groupAll,
-            lanAvailable: lan.onlineDeviceIds,
-            nodeAvailable: nodeOnline,
-            routeMode: routeMode,
-            allowLargeFileViaNode: allowLargeFileViaNode,
-          );
+          try {
+            await transfersService.sendFiles(
+              sourcePaths: files,
+              devices: resolved,
+              groupId: groupId,
+              groupAll: groupAll,
+              lanAvailable: lan.onlineDeviceIds,
+              nodeAvailable: nodeOnline,
+              routeMode: routeMode,
+              allowLargeFileViaNode: allowLargeFileViaNode,
+              onCreated: _showActiveTransfer,
+            );
+          } on StateError catch (reason) {
+            if (reason.message != 'USER_CANCELLED') rethrow;
+          }
         }
         if (nodeOnline) {
           await reload();
@@ -227,6 +232,14 @@ class AppController extends ChangeNotifier {
         await platformShare.stopTransferService();
       }
     });
+  }
+
+  void _showActiveTransfer(TransferSummary transfer) {
+    transfers = [
+      transfer,
+      ...transfers.where((item) => item.id != transfer.id),
+    ];
+    notifyListeners();
   }
 
   Future<void> setAllowLargeFileViaNode(bool value) async {
@@ -279,15 +292,52 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> cancelTransfer(TransferSummary transfer) => _run(() async {
-    await transfersService.cancel(transfer.id);
-    await reload();
+    await transfersService.cancel(transfer);
+    if (nodeOnline) {
+      await reload();
+    } else {
+      _replaceTransferStatus(transfer, 'CANCELLED');
+    }
   });
 
   Future<void> setTransferPaused(TransferSummary transfer, bool paused) =>
       _run(() async {
         await transfersService.setTransferPaused(transfer, paused);
-        if (nodeOnline) await reload();
+        if (nodeOnline) {
+          await reload();
+        } else {
+          _replaceTransferStatus(transfer, paused ? 'PAUSED' : 'TRANSFERRING_LAN');
+        }
       });
+
+  void _replaceTransferStatus(TransferSummary transfer, String status) {
+    final updated = TransferSummary(
+      id: transfer.id,
+      contentType: transfer.contentType,
+      status: status,
+      createdAt: transfer.createdAt,
+      senderDeviceId: transfer.senderDeviceId,
+      batchId: transfer.batchId,
+      encryptedContent: transfer.encryptedContent,
+      wrappedContentKeys: transfer.wrappedContentKeys,
+      targets: transfer.targets
+          .map(
+            (target) => TransferTarget(
+              deviceId: target.deviceId,
+              route: target.route,
+              status: status,
+              bytesTransferred: target.bytesTransferred,
+            ),
+          )
+          .toList(),
+      files: transfer.files,
+      fileTargets: transfer.fileTargets,
+    );
+    transfers = [
+      for (final item in transfers) item.id == transfer.id ? updated : item,
+    ];
+    notifyListeners();
+  }
 
   Future<void> hideTransfer(TransferSummary transfer) => _run(() async {
     if (nodeOnline) {

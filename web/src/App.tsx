@@ -26,9 +26,11 @@ import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, en
 type View = "send" | "activity" | "devices" | "groups" | "analytics" | "admin";
 type SharedContent = { content: string; groupId: string };
 const pausedTransfers = new Set<string>();
+const cancelledTransfers = new Set<string>();
 
 async function waitWhilePaused(transferId: string) {
   while (pausedTransfers.has(transferId)) await new Promise((resolve) => window.setTimeout(resolve, 250));
+  if (cancelledTransfers.has(transferId)) throw new Error("傳輸已取消");
 }
 
 const navItems: Array<{ id: View; label: string; glyph: string }> = [
@@ -219,7 +221,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} groups={groups} initialShare={sharedContent} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
+      case "send": return <SendView user={user} devices={devices} groups={groups} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
       case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "groups": return <GroupsView groups={groups} devices={devices} reload={reload} notify={setNotice} />;
@@ -257,7 +259,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
-function SendView({ user, devices, groups, initialShare, onSent, notify }: { user: User; devices: Device[]; groups: Group[]; initialShare: SharedContent; onSent: () => Promise<void>; notify: (value: string) => void }) {
+function SendView({ user, devices, groups, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; groups: Group[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [selectedGroup, setSelectedGroup] = useState(initialShare.groupId);
   const [groupDetails, setGroupDetails] = useState<GroupDetails | null>(null);
@@ -307,6 +309,8 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
           wrappedContentKeys: encrypted.wrappedContentKeys,
           files: encrypted.files.map((file) => file.record),
         });
+        cancelledTransfers.delete(transfer.id);
+        onTransferCreated(transfer);
         for (const [fileIndex, file] of encrypted.files.entries()) {
           const fileID = transfer.files[fileIndex].id;
           for (const [chunkIndex, chunk] of file.chunks.entries()) {
@@ -315,6 +319,7 @@ function SendView({ user, devices, groups, initialShare, onSent, notify }: { use
           }
           await api.send(`/api/files/${fileID}/complete`, "POST");
         }
+        cancelledTransfers.delete(transfer.id);
       } else {
         const encrypted = await encryptText(content.trim(), recipients);
         await api.send<Transfer>("/api/transfers", "POST", {
@@ -434,6 +439,7 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
 
   async function cancel(transferId: string) {
     pausedTransfers.delete(transferId);
+    cancelledTransfers.add(transferId);
     await api.send(`/api/transfers/${transferId}/cancel`, "POST");
     await reload();
   }
