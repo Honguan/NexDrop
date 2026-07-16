@@ -8,9 +8,12 @@
 #ifndef OutputDir
   #define OutputDir "dist"
 #endif
+#ifndef MyAppId
+  #define MyAppId "{{7A2A80F6-0AC8-49DC-87E9-B0F16BA0F472}"
+#endif
 
 [Setup]
-AppId={{7A2A80F6-0AC8-49DC-87E9-B0F16BA0F472}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 DefaultDirName={autopf}\NexDrop
@@ -27,8 +30,8 @@ PrivilegesRequired=lowest
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\NexDrop"; Filename: "{app}\nexdrop_client.exe"
-Name: "{autodesktop}\NexDrop"; Filename: "{app}\nexdrop_client.exe"; Tasks: desktopicon
+Name: "{group}\NexDrop"; Filename: "{app}\NexDrop.exe"
+Name: "{autodesktop}\NexDrop"; Filename: "{app}\NexDrop.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "建立桌面捷徑"; GroupDescription: "其他工作："; Flags: unchecked

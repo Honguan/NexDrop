@@ -64,45 +64,59 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     environment: release
-    env:
-      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - name: 驗證 Android 簽章祕密
-        run: test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
-      - run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
-          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
+      - name: 準備 Android 簽章
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
       - run: flutter pub get && flutter test && flutter build apk --release
         working-directory: client
+      - name: 驗證 Android 正式簽章
+        run: |
+          apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -x "$apksigner"
+          "$apksigner" verify --verbose --print-certs client/build/app/outputs/flutter-apk/app-release.apk | tee apk-signature.txt
+          ! grep -qi 'Android Debug' apk-signature.txt
       - run: cp client/build/app/outputs/flutter-apk/app-release.apk 'NexDrop-Android_${{ needs.validate.outputs.version }}.apk'
+      - if: always()
+        run: rm -f -- client/android/app/release.jks client/android/key.properties apk-signature.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: android-release, path: 'NexDrop-Android_*.apk', if-no-files-found: error}
   windows:
     needs: validate
     runs-on: windows-latest
     environment: release
-    env:
-      CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-      CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - name: 驗證 Windows 簽章祕密
-        shell: pwsh
-        run: if (-not $env:CERTIFICATE_BASE64 -or -not $env:CERTIFICATE_PASSWORD) { throw 'Windows signing secrets are required' }
-      - shell: pwsh
-        run: '[IO.File]::WriteAllBytes("$env:RUNNER_TEMP\nexdrop.pfx", [Convert]::FromBase64String($env:CERTIFICATE_BASE64))'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with: {go-version-file: go.mod, cache: true}
-      - shell: pwsh
-        run: ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}' -CertificatePath "$env:RUNNER_TEMP\nexdrop.pfx" -CertificatePassword $env:CERTIFICATE_PASSWORD
+      - name: 建置並簽章 Windows 產物
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:CERTIFICATE_BASE64 -or -not $env:CERTIFICATE_PASSWORD) { throw 'Windows signing secrets are required' }
+          $certificatePassword = $env:CERTIFICATE_PASSWORD
+          $certificatePath = "$env:RUNNER_TEMP\nexdrop.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+          Remove-Item Env:CERTIFICATE_BASE64,Env:CERTIFICATE_PASSWORD
+          try {
+            ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}' -CertificatePath $certificatePath -CertificatePassword $certificatePassword
+          } finally {
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: windows-release, path: 'dist/NexDrop-Desktop_*', if-no-files-found: error}
   container:

@@ -18,7 +18,7 @@ import (
 	"nexdrop/internal/nativebridge"
 )
 
-const bridgeAddress = "127.0.0.1:41739"
+const defaultBridgePort = "41739"
 
 type spoolQueue struct{ directory string }
 
@@ -75,11 +75,11 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	listener, err := net.Listen("tcp4", bridgeAddress)
+	listener, err := net.Listen("tcp4", bridgeListenAddress())
 	if err != nil {
 		fatal(err)
 	}
-	if err := writeConfig(root, token); err != nil {
+	if err := writeConfig(root, token, listener.Addr().String()); err != nil {
 		_ = listener.Close()
 		fatal(err)
 	}
@@ -106,11 +106,19 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-func writeConfig(root, token string) error {
+func bridgeListenAddress() string {
+	port := os.Getenv("NEXDROP_DESKTOP_BRIDGE_PORT")
+	if port == "" {
+		port = defaultBridgePort
+	}
+	return net.JoinHostPort("127.0.0.1", port)
+}
+
+func writeConfig(root, token, address string) error {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
 	}
-	content, err := json.Marshal(nativebridge.Config{URL: "http://" + bridgeAddress, Token: token})
+	content, err := json.Marshal(nativebridge.Config{URL: "http://" + address, Token: token})
 	if err != nil {
 		return err
 	}

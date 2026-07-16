@@ -35,3 +35,15 @@ func TestDesktopStatusDefaultsToOnline(t *testing.T) {
 		t.Fatalf("Status() = %s, %v", value, err)
 	}
 }
+
+func TestBridgeListenAddress(t *testing.T) {
+	t.Setenv("NEXDROP_DESKTOP_BRIDGE_PORT", "")
+	if got := bridgeListenAddress(); got != "127.0.0.1:41739" {
+		t.Fatalf("default address = %q", got)
+	}
+
+	t.Setenv("NEXDROP_DESKTOP_BRIDGE_PORT", "0")
+	if got := bridgeListenAddress(); got != "127.0.0.1:0" {
+		t.Fatalf("dynamic address = %q", got)
+	}
+}
