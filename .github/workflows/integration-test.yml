@@ -39,21 +39,39 @@ jobs:
       - run: npm ci && npm run build
         working-directory: web
       - name: 驗證完整 API 與 WebSocket 資料流
+        timeout-minutes: 15
         run: |
           mkdir -p "$NEXDROP_STORAGE_PATH"
           version=$(tr -d '\r\n' < VERSION)
           go build -trimpath -ldflags "-X nexdrop/internal/version.ProductVersion=${version} -X nexdrop/internal/version.BuildCommit=${GITHUB_SHA}" \
             -o "$RUNNER_TEMP/nexdrop-integration" ./cmd/nexdrop
           server_pid=''
+          smoke_pid=''
+          restart_barrier=''
+          stop_process() {
+            pid="$1"
+            kill "$pid" 2>/dev/null || true
+            for _ in $(seq 1 20); do
+              if ! kill -0 "$pid" 2>/dev/null; then break; fi
+              sleep 0.25
+            done
+            if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+            wait "$pid" 2>/dev/null || true
+          }
           cleanup() {
             status=$?
+            if [ -n "$smoke_pid" ]; then
+              stop_process "$smoke_pid"
+            fi
             if [ -n "$server_pid" ]; then
-              kill "$server_pid" 2>/dev/null || true
-              wait "$server_pid" 2>/dev/null || true
+              stop_process "$server_pid"
             fi
             if [ "$status" -ne 0 ]; then cat server.log; fi
             rm -rf -- "$NEXDROP_STORAGE_PATH"
             rm -f -- "$RUNNER_TEMP/nexdrop-integration"
+            if [ -n "$restart_barrier" ]; then
+              rm -f -- "$restart_barrier.ready" "$restart_barrier.continue" "$restart_barrier.file-id"
+            fi
             rm -f -- server.log
             trap - EXIT
             exit "$status"
@@ -64,14 +82,13 @@ jobs:
             server_pid=$!
             ready=false
             for _ in $(seq 1 30); do
-              if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then ready=true; break; fi
+              if curl --connect-timeout 1 --max-time 2 --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then ready=true; break; fi
               sleep 1
             done
             test "$ready" = true
           }
           start_server
-          kill "$server_pid"
-          wait "$server_pid" || true
+          stop_process "$server_pid"
           server_pid=''
           go test -count=1 ./internal/postgres/...
           start_server
@@ -85,7 +102,63 @@ jobs:
             -environment "GitHub Actions ubuntu-latest; $(nproc) logical CPUs; ${host_memory} memory" \
             -postgres 'PostgreSQL 17 Alpine service container' \
             -report load-verification-report.json
-          bash scripts/integration-smoke.sh
+          recovery_token=$(curl --connect-timeout 5 --max-time 15 --fail-with-body --silent --show-error -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg identifier "$NEXDROP_BOOTSTRAP_ADMIN_USERNAME" --arg password "$NEXDROP_BOOTSTRAP_ADMIN_PASSWORD" \
+              '{identifier:$identifier,password:$password}')" http://127.0.0.1:8080/api/auth/login | jq -er '.accessToken')
+          postgres_container=$(docker ps --filter publish=5432 --format '{{.ID}}' | head -n 1)
+          test -n "$postgres_container"
+          docker stop "$postgres_container" >/dev/null
+          ready_status=$(curl --max-time 5 --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/readyz || true)
+          test "$ready_status" = 503
+          unavailable_device_name="Must-not-persist-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          unavailable_write=$(curl --max-time 10 --silent --output /dev/null --write-out '%{http_code}' -H "Authorization: Bearer $recovery_token" \
+            -H 'Content-Type: application/json' --data "$(jq -nc --arg name "$unavailable_device_name" \
+              '{displayName:$name,type:"WEB_CHROME",publicKey:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",keyAlgorithm:"X25519"}')" \
+            http://127.0.0.1:8080/api/devices || true)
+          case "$unavailable_write" in 500|503) ;; *) false;; esac
+          docker start "$postgres_container" >/dev/null
+          database_ready=false
+          for _ in $(seq 1 30); do
+              if curl --connect-timeout 1 --max-time 2 --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then database_ready=true; break; fi
+            sleep 1
+          done
+          test "$database_ready" = true
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d nexdrop_test -tAc \
+            "SELECT count(*) FROM devices WHERE display_name='$unavailable_device_name'")" = 0
+
+          restart_barrier="$RUNNER_TEMP/nexdrop-restart-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -f -- "$restart_barrier.ready" "$restart_barrier.continue" "$restart_barrier.file-id"
+          NEXDROP_INTEGRATION_RESTART_BARRIER="$restart_barrier" bash scripts/integration-smoke.sh &
+          smoke_pid=$!
+          reached_barrier=false
+          for _ in $(seq 1 60); do
+            if [ -f "$restart_barrier.ready" ]; then reached_barrier=true; break; fi
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          test "$reached_barrier" = true
+          stop_process "$server_pid"
+          server_pid=''
+          start_server
+          : >"$restart_barrier.continue"
+          smoke_completed=false
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then smoke_completed=true; break; fi
+            sleep 1
+          done
+          test "$smoke_completed" = true
+          wait "$smoke_pid"
+          smoke_pid=''
+
+          file_id=$(cat "$restart_barrier.file-id")
+          stop_process "$server_pid"
+          server_pid=''
+          docker exec "$postgres_container" psql -v ON_ERROR_STOP=1 -U nexdrop -d nexdrop_test \
+            -c "UPDATE files SET expires_at=now()-interval '1 minute' WHERE id='$file_id'::uuid" >/dev/null
+          test "$("$RUNNER_TEMP/nexdrop-integration" cleanup --limit 100 | jq -er '.cleaned')" = 1
+          test "$("$RUNNER_TEMP/nexdrop-integration" cleanup --limit 100 | jq -er '.cleaned')" = 0
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d nexdrop_test -tAc "SELECT status FROM files WHERE id='$file_id'::uuid")" = EXPIRED
+          rm -f -- "$restart_barrier.ready" "$restart_barrier.continue" "$restart_barrier.file-id"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

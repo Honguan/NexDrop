@@ -7,11 +7,16 @@ if [[ "${NEXDROP_INTEGRATION_DISPOSABLE:-}" != "true" ]]; then
 fi
 
 base_url="${NEXDROP_INTEGRATION_BASE_URL:-http://127.0.0.1:8080}"
+restart_barrier="${NEXDROP_INTEGRATION_RESTART_BARRIER:-}"
 admin_username="${NEXDROP_BOOTSTRAP_ADMIN_USERNAME:?admin username is required}"
 admin_password="${NEXDROP_BOOTSTRAP_ADMIN_PASSWORD:?admin password is required}"
 accept='application/vnd.nexdrop.v1+json'
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
+
+curl() {
+  command curl --connect-timeout 5 --max-time 30 "$@"
+}
 
 uuid() { tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid; }
 token() { jq -er '.accessToken'; }
@@ -97,13 +102,25 @@ file_transfer="$(api "$admin_token" -H 'Content-Type: application/json' -H "Idem
   --data "$file_request" "$base_url/api/transfers")"
 file_transfer_id="$(jq -er '.id' <<<"$file_transfer")"
 file_id="$(jq -er '.files[0].id' <<<"$file_transfer")"
+if [[ -n "$restart_barrier" ]]; then
+  printf '%s\n' "$file_id" >"$restart_barrier.file-id"
+fi
 dd if="$tmp_dir/source.bin" of="$tmp_dir/chunk-0.bin" bs=16 count=1 status=none
 dd if="$tmp_dir/source.bin" of="$tmp_dir/chunk-1.bin" bs=16 skip=1 count=1 status=none
 chunk_key="$(uuid)"
-for _ in 1 2; do
-  api "$admin_token" -H "Idempotency-Key: $chunk_key" -H "X-Chunk-SHA256: $(sha256sum "$tmp_dir/chunk-0.bin" | cut -d' ' -f1)" \
-    --data-binary "@$tmp_dir/chunk-0.bin" "$base_url/api/files/$file_id/chunks/0" | jq -e '.index == 0' >/dev/null
-done
+api "$admin_token" -H "Idempotency-Key: $chunk_key" -H "X-Chunk-SHA256: $(sha256sum "$tmp_dir/chunk-0.bin" | cut -d' ' -f1)" \
+  --data-binary "@$tmp_dir/chunk-0.bin" "$base_url/api/files/$file_id/chunks/0" | jq -e '.index == 0' >/dev/null
+if [[ -n "$restart_barrier" ]]; then
+  : >"$restart_barrier.ready"
+  resumed=false
+  for _ in $(seq 1 60); do
+    if [[ -f "$restart_barrier.continue" ]]; then resumed=true; break; fi
+    sleep 1
+  done
+  [[ "$resumed" == "true" ]]
+fi
+api "$admin_token" -H "Idempotency-Key: $chunk_key" -H "X-Chunk-SHA256: $(sha256sum "$tmp_dir/chunk-0.bin" | cut -d' ' -f1)" \
+  --data-binary "@$tmp_dir/chunk-0.bin" "$base_url/api/files/$file_id/chunks/0" | jq -e '.index == 0' >/dev/null
 api "$admin_token" -H "Idempotency-Key: $(uuid)" -H "X-Chunk-SHA256: $(sha256sum "$tmp_dir/chunk-1.bin" | cut -d' ' -f1)" \
   --data-binary "@$tmp_dir/chunk-1.bin" "$base_url/api/files/$file_id/chunks/1" | jq -e '.index == 1' >/dev/null
 api "$admin_token" -X POST -H "Idempotency-Key: $(uuid)" \
