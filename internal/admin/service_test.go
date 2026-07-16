@@ -14,6 +14,18 @@ func TestAdminOperationsRequireAdministrator(t *testing.T) {
 	if _, err := service.Users(context.Background(), session, 50, 0); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("Users() error = %v, want ErrForbidden", err)
 	}
+	if _, err := service.Devices(context.Background(), session, 50, 0); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("Devices() error = %v, want ErrForbidden", err)
+	}
+	if _, err := service.Groups(context.Background(), session, 50, 0); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("Groups() error = %v, want ErrForbidden", err)
+	}
+	if err := service.RevokeDevice(context.Background(), session, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("RevokeDevice() error = %v, want ErrForbidden", err)
+	}
+	if err := service.DeleteGroup(context.Background(), session, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("DeleteGroup() error = %v, want ErrForbidden", err)
+	}
 	if _, err := service.Settings(context.Background(), session); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("Settings() error = %v, want ErrForbidden", err)
 	}

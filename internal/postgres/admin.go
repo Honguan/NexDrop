@@ -132,6 +132,92 @@ func (store *Store) ResetAdminPasswordByIdentifier(ctx context.Context, identifi
 	return tx.Commit(ctx)
 }
 
+func (store *Store) ListAdminDevices(ctx context.Context, limit, offset int) ([]admin.Device, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT d.id::text, d.user_id::text, u.username, d.display_name, d.device_type,
+		       d.trust_status, d.created_at
+		FROM devices d JOIN users u ON u.id = d.user_id
+		ORDER BY d.created_at DESC LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]admin.Device, 0)
+	for rows.Next() {
+		var item admin.Device
+		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.OwnerUsername, &item.DisplayName, &item.Type, &item.TrustStatus, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) RevokeAdminDevice(ctx context.Context, actor auth.Session, deviceID string, now time.Time) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `UPDATE devices SET trust_status='REVOKED', revoked_at=$2 WHERE id=$1 AND trust_status<>'REVOKED'`, deviceID, now)
+	if err != nil {
+		return mapAdminError(err)
+	}
+	if command.RowsAffected() == 0 {
+		return admin.ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `UPDATE user_sessions SET revoked_at=$2 WHERE device_id=$1 AND revoked_at IS NULL`, deviceID, now); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, actor, "DEVICE_REVOKED", "DEVICE", deviceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (store *Store) ListAdminGroups(ctx context.Context, limit, offset int) ([]admin.Group, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT g.id::text, g.name, g.owner_user_id::text, u.username,
+		       (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id=g.id),
+		       (SELECT COUNT(*) FROM group_devices gd WHERE gd.group_id=g.id), g.created_at
+		FROM groups g JOIN users u ON u.id = g.owner_user_id
+		ORDER BY g.created_at DESC LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]admin.Group, 0)
+	for rows.Next() {
+		var item admin.Group
+		if err := rows.Scan(&item.ID, &item.Name, &item.OwnerUserID, &item.OwnerUsername, &item.MemberCount, &item.DeviceCount, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) DeleteAdminGroup(ctx context.Context, actor auth.Session, groupID string, _ time.Time) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `DELETE FROM groups WHERE id=$1`, groupID)
+	if err != nil {
+		return mapAdminError(err)
+	}
+	if command.RowsAffected() == 0 {
+		return admin.ErrNotFound
+	}
+	if err := insertAudit(ctx, tx, actor, "GROUP_DELETED", "GROUP", groupID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (store *Store) AdminNodeSettings(ctx context.Context) (admin.NodeSettings, error) {
 	var settings admin.NodeSettings
 	err := store.pool.QueryRow(ctx, `

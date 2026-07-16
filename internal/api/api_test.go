@@ -276,6 +276,22 @@ func (*testStore) ResetAdminPasswordByIdentifier(context.Context, string, string
 	return nil
 }
 
+func (*testStore) ListAdminDevices(context.Context, int, int) ([]admin.Device, error) {
+	return []admin.Device{}, nil
+}
+
+func (*testStore) RevokeAdminDevice(context.Context, auth.Session, string, time.Time) error {
+	return nil
+}
+
+func (*testStore) ListAdminGroups(context.Context, int, int) ([]admin.Group, error) {
+	return []admin.Group{}, nil
+}
+
+func (*testStore) DeleteAdminGroup(context.Context, auth.Session, string, time.Time) error {
+	return nil
+}
+
 func (*testStore) AdminNodeSettings(context.Context) (admin.NodeSettings, error) {
 	return admin.NodeSettings{SingleFileLimitBytes: 1024, DefaultUserQuotaBytes: 2048, DefaultGroupQuotaBytes: 4096, NodeCacheLimitBytes: 8192, DefaultUserDailyBytes: 16384, DefaultGroupDailyBytes: 32768, DiskWarningPercent: 80, DiskStopPercent: 95}, nil
 }
@@ -586,5 +602,23 @@ func TestReadAdminSettings(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("admin settings status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, endpoint := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodGet, "/api/admin/devices", http.StatusOK},
+		{http.MethodPost, "/api/admin/devices/11111111-1111-1111-1111-111111111111/revoke", http.StatusNoContent},
+		{http.MethodGet, "/api/admin/groups", http.StatusOK},
+		{http.MethodDelete, "/api/admin/groups/22222222-2222-2222-2222-222222222222", http.StatusNoContent},
+	} {
+		request := httptest.NewRequest(endpoint.method, endpoint.path, nil)
+		request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != endpoint.status {
+			t.Fatalf("%s %s status = %d, body = %s", endpoint.method, endpoint.path, response.Code, response.Body.String())
+		}
 	}
 }

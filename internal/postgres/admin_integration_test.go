@@ -66,6 +66,40 @@ func TestAdminManagementIntegration(t *testing.T) {
 		t.Fatalf("ResetPasswordByIdentifier() error = %v", err)
 	}
 
+	var deviceID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO devices (user_id, display_name, device_type, trust_status)
+		VALUES ($1, 'Admin managed device', 'WINDOWS', 'TRUSTED') RETURNING id::text
+	`, created.ID).Scan(&deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices, err := service.Devices(ctx, actor, 50, 0)
+	if err != nil || !containsAdminDevice(devices, deviceID) {
+		t.Fatalf("Devices() = %+v, %v", devices, err)
+	}
+	if err := service.RevokeDevice(ctx, actor, deviceID); err != nil {
+		t.Fatalf("RevokeDevice() error = %v", err)
+	}
+
+	var groupID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO groups (owner_user_id, name) VALUES ($1, $2) RETURNING id::text
+	`, created.ID, "group-"+suffix).Scan(&groupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'OWNER')`, groupID, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := service.Groups(ctx, actor, 50, 0)
+	if err != nil || !containsAdminGroup(groups, groupID) {
+		t.Fatalf("Groups() = %+v, %v", groups, err)
+	}
+	if err := service.DeleteGroup(ctx, actor, groupID); err != nil {
+		t.Fatalf("DeleteGroup() error = %v", err)
+	}
+
 	accessHash := []byte("admin-integration-access-" + suffix)
 	_, err = store.pool.Exec(ctx, `
 		INSERT INTO user_sessions (user_id, access_token_hash, access_expires_at, refresh_token_hash, expires_at)
@@ -90,4 +124,22 @@ func TestAdminManagementIntegration(t *testing.T) {
 	if err != nil || len(logs) < 4 {
 		t.Fatalf("AuditLogs() = %+v, %v", logs, err)
 	}
+}
+
+func containsAdminDevice(devices []admin.Device, id string) bool {
+	for _, device := range devices {
+		if device.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAdminGroup(groups []admin.Group, id string) bool {
+	for _, group := range groups {
+		if group.ID == id && group.MemberCount == 1 {
+			return true
+		}
+	}
+	return false
 }

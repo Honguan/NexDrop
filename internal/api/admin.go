@@ -80,6 +80,64 @@ func (api *API) resetAdminPassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (api *API) adminDevices(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, ok := adminPage(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.admin.Devices(r.Context(), session, limit, offset)
+	if err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) revokeAdminDevice(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	if err := api.admin.RevokeDevice(r.Context(), session, r.PathValue("id")); err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (api *API) adminGroups(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, ok := adminPage(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.admin.Groups(r.Context(), session, limit, offset)
+	if err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) deleteAdminGroup(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	if err := api.admin.DeleteGroup(r.Context(), session, r.PathValue("id")); err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (api *API) adminSettings(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticateAdmin(w, r)
 	if !ok {

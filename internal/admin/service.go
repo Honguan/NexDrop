@@ -27,6 +27,26 @@ type User struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 }
 
+type Device struct {
+	ID            string    `json:"id"`
+	OwnerUserID   string    `json:"ownerUserId"`
+	OwnerUsername string    `json:"ownerUsername"`
+	DisplayName   string    `json:"displayName"`
+	Type          string    `json:"type"`
+	TrustStatus   string    `json:"trustStatus"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type Group struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	OwnerUserID   string    `json:"ownerUserId"`
+	OwnerUsername string    `json:"ownerUsername"`
+	MemberCount   int64     `json:"memberCount"`
+	DeviceCount   int64     `json:"deviceCount"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
 type NodeSettings struct {
 	PublicRegistrationEnabled bool  `json:"publicRegistrationEnabled"`
 	SingleFileLimitBytes      int64 `json:"singleFileLimitBytes"`
@@ -83,6 +103,10 @@ type Store interface {
 	DisableAdminUser(context.Context, auth.Session, string, time.Time) error
 	ResetAdminPassword(context.Context, auth.Session, string, string, time.Time) error
 	ResetAdminPasswordByIdentifier(context.Context, string, string, time.Time) error
+	ListAdminDevices(context.Context, int, int) ([]Device, error)
+	RevokeAdminDevice(context.Context, auth.Session, string, time.Time) error
+	ListAdminGroups(context.Context, int, int) ([]Group, error)
+	DeleteAdminGroup(context.Context, auth.Session, string, time.Time) error
 	AdminNodeSettings(context.Context) (NodeSettings, error)
 	UpdateAdminNodeSettings(context.Context, auth.Session, NodeSettings) (NodeSettings, error)
 	SetAdminQuota(context.Context, auth.Session, Quota) (Quota, error)
@@ -168,6 +192,46 @@ func (service *Service) ResetPasswordByIdentifier(ctx context.Context, identifie
 		return err
 	}
 	return service.store.ResetAdminPasswordByIdentifier(ctx, identifier, string(hash), time.Now().UTC())
+}
+
+func (service *Service) Devices(ctx context.Context, session auth.Session, limit, offset int) ([]Device, error) {
+	if !session.Admin {
+		return nil, ErrForbidden
+	}
+	if !validPage(limit, offset) {
+		return nil, ErrInvalid
+	}
+	return service.store.ListAdminDevices(ctx, limit, offset)
+}
+
+func (service *Service) RevokeDevice(ctx context.Context, session auth.Session, deviceID string) error {
+	if !session.Admin {
+		return ErrForbidden
+	}
+	if !isUUID(deviceID) {
+		return ErrInvalid
+	}
+	return service.store.RevokeAdminDevice(ctx, session, deviceID, time.Now().UTC())
+}
+
+func (service *Service) Groups(ctx context.Context, session auth.Session, limit, offset int) ([]Group, error) {
+	if !session.Admin {
+		return nil, ErrForbidden
+	}
+	if !validPage(limit, offset) {
+		return nil, ErrInvalid
+	}
+	return service.store.ListAdminGroups(ctx, limit, offset)
+}
+
+func (service *Service) DeleteGroup(ctx context.Context, session auth.Session, groupID string) error {
+	if !session.Admin {
+		return ErrForbidden
+	}
+	if !isUUID(groupID) {
+		return ErrInvalid
+	}
+	return service.store.DeleteAdminGroup(ctx, session, groupID, time.Now().UTC())
 }
 
 func (service *Service) Settings(ctx context.Context, session auth.Session) (NodeSettings, error) {

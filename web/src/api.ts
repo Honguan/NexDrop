@@ -105,6 +105,26 @@ export type GroupStatistic = {
 
 export type AdminUser = User & { disabledAt?: string; createdAt: string };
 
+export type AdminDevice = {
+  id: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  displayName: string;
+  type: string;
+  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
+  createdAt: string;
+};
+
+export type AdminGroup = {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  memberCount: number;
+  deviceCount: number;
+  createdAt: string;
+};
+
 export type StorageOverview = {
   fileCount: number;
   storedBytes: number;
