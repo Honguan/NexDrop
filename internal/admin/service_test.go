@@ -14,6 +14,9 @@ func TestAdminOperationsRequireAdministrator(t *testing.T) {
 	if _, err := service.Users(context.Background(), session, 50, 0); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("Users() error = %v, want ErrForbidden", err)
 	}
+	if _, err := service.InviteUser(context.Background(), session, "invitee", "invitee@example.com", false); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("InviteUser() error = %v, want ErrForbidden", err)
+	}
 	if _, err := service.Devices(context.Background(), session, 50, 0); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("Devices() error = %v, want ErrForbidden", err)
 	}
@@ -60,5 +63,12 @@ func TestCLIResetPasswordValidation(t *testing.T) {
 	service := NewService(nil)
 	if err := service.ResetPasswordByIdentifier(context.Background(), "", "a-valid-password"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("ResetPasswordByIdentifier() error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestAcceptInvitationValidation(t *testing.T) {
+	service := NewService(nil)
+	if _, err := service.AcceptInvitation(context.Background(), "short", "a-valid-password"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("AcceptInvitation() error = %v, want ErrInvalid", err)
 	}
 }

@@ -49,6 +49,54 @@ func (api *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
+func (api *API) createAdminInvitation(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Admin    bool   `json:"admin"`
+	}
+	if decodeJSON(r, &request) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.admin.InviteUser(r.Context(), session, request.Username, request.Email, request.Admin)
+	if err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (api *API) acceptInvitation(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if decodeJSON(r, &request) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := api.admin.AcceptInvitation(r.Context(), request.Token, request.Password)
+	if err != nil {
+		switch {
+		case errors.Is(err, admin.ErrInvalid):
+			writeError(w, http.StatusBadRequest, "INVALID_INVITATION")
+		case errors.Is(err, admin.ErrNotFound):
+			writeError(w, http.StatusGone, "INVITATION_EXPIRED")
+		case errors.Is(err, admin.ErrConflict):
+			writeError(w, http.StatusConflict, "INVITATION_ACCOUNT_CONFLICT")
+		default:
+			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
 func (api *API) disableAdminUser(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticateAdmin(w, r)
 	if !ok {

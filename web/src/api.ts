@@ -125,6 +125,16 @@ export type AdminGroup = {
   createdAt: string;
 };
 
+export type Invitation = {
+  id: string;
+  username: string;
+  email: string;
+  admin: boolean;
+  token: string;
+  expiresAt: string;
+  createdAt: string;
+};
+
 export type StorageOverview = {
   fileCount: number;
   storedBytes: number;
@@ -229,6 +239,16 @@ class APIClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken }),
     });
+  }
+
+  async acceptInvitation(token: string, password: string) {
+    const response = await fetch("/api/auth/invitations/accept", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, password }),
+    });
+    if (!response.ok) throw await this.error(response);
+    return (await response.json()) as { username: string };
   }
 
   async get<T>(path: string): Promise<T> {

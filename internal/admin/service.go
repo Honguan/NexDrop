@@ -2,6 +2,9 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"os"
 	"strings"
@@ -45,6 +48,16 @@ type Group struct {
 	MemberCount   int64     `json:"memberCount"`
 	DeviceCount   int64     `json:"deviceCount"`
 	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type Invitation struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email"`
+	Admin     bool      `json:"admin"`
+	Token     string    `json:"token,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type NodeSettings struct {
@@ -100,6 +113,8 @@ type Store interface {
 	BootstrapAdmin(context.Context, string, string, string) error
 	ListAdminUsers(context.Context, int, int) ([]User, error)
 	CreateAdminUser(context.Context, auth.Session, string, string, string, bool) (User, error)
+	CreateAdminInvitation(context.Context, auth.Session, string, string, bool, []byte, time.Time) (Invitation, error)
+	AcceptAdminInvitation(context.Context, []byte, string, time.Time) (User, error)
 	DisableAdminUser(context.Context, auth.Session, string, time.Time) error
 	ResetAdminPassword(context.Context, auth.Session, string, string, time.Time) error
 	ResetAdminPasswordByIdentifier(context.Context, string, string, time.Time) error
@@ -156,6 +171,41 @@ func (service *Service) CreateUser(ctx context.Context, session auth.Session, us
 		return User{}, err
 	}
 	return service.store.CreateAdminUser(ctx, session, strings.TrimSpace(username), strings.TrimSpace(email), string(hash), isAdmin)
+}
+
+func (service *Service) InviteUser(ctx context.Context, session auth.Session, username, email string, isAdmin bool) (Invitation, error) {
+	if !session.Admin {
+		return Invitation{}, ErrForbidden
+	}
+	if !validUsernameEmail(username, email) {
+		return Invitation{}, ErrInvalid
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return Invitation{}, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	tokenHash := sha256.Sum256([]byte(token))
+	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+	result, err := service.store.CreateAdminInvitation(ctx, session, strings.TrimSpace(username), strings.TrimSpace(email), isAdmin, tokenHash[:], expiresAt)
+	if err != nil {
+		return Invitation{}, err
+	}
+	result.Token = token
+	return result, nil
+}
+
+func (service *Service) AcceptInvitation(ctx context.Context, token, password string) (User, error) {
+	token = strings.TrimSpace(token)
+	if len(token) < 32 || len(token) > 256 || len(password) < 12 {
+		return User{}, ErrInvalid
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, err
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	return service.store.AcceptAdminInvitation(ctx, tokenHash[:], string(passwordHash), time.Now().UTC())
 }
 
 func (service *Service) DisableUser(ctx context.Context, session auth.Session, userID string) error {
@@ -309,8 +359,12 @@ func (service *Service) DeleteGroupContent(ctx context.Context, session auth.Ses
 }
 
 func validIdentity(username, email, password string) bool {
+	return validUsernameEmail(username, email) && len(password) >= 12
+}
+
+func validUsernameEmail(username, email string) bool {
 	username, email = strings.TrimSpace(username), strings.TrimSpace(email)
-	return len(username) >= 3 && len(username) <= 64 && len(email) >= 3 && len(email) <= 254 && strings.Contains(email, "@") && len(password) >= 12
+	return len(username) >= 3 && len(username) <= 64 && len(email) >= 3 && len(email) <= 254 && strings.Contains(email, "@")
 }
 
 func validSettings(value NodeSettings) bool {

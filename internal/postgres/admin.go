@@ -64,6 +64,77 @@ func (store *Store) CreateAdminUser(ctx context.Context, actor auth.Session, use
 	return result, nil
 }
 
+func (store *Store) CreateAdminInvitation(ctx context.Context, actor auth.Session, username, email string, isAdmin bool, tokenHash []byte, expiresAt time.Time) (admin.Invitation, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return admin.Invitation{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var userExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE lower(username)=lower($1) OR lower(email)=lower($2))`, username, email).Scan(&userExists); err != nil {
+		return admin.Invitation{}, err
+	}
+	if userExists {
+		return admin.Invitation{}, admin.ErrConflict
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM user_invitations WHERE accepted_at IS NULL AND expires_at <= now() AND (lower(username)=lower($1) OR lower(email)=lower($2))`, username, email); err != nil {
+		return admin.Invitation{}, err
+	}
+	var result admin.Invitation
+	err = tx.QueryRow(ctx, `
+		INSERT INTO user_invitations (invited_by, username, email, is_admin, token_hash, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id::text, username, email, is_admin, expires_at, created_at
+	`, actor.ID, username, email, isAdmin, tokenHash, expiresAt).Scan(&result.ID, &result.Username, &result.Email, &result.Admin, &result.ExpiresAt, &result.CreatedAt)
+	if err != nil {
+		return admin.Invitation{}, mapAdminError(err)
+	}
+	if err := insertAudit(ctx, tx, actor, "USER_INVITED", "USER_INVITATION", result.ID); err != nil {
+		return admin.Invitation{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return admin.Invitation{}, err
+	}
+	return result, nil
+}
+
+func (store *Store) AcceptAdminInvitation(ctx context.Context, tokenHash []byte, passwordHash string, now time.Time) (admin.User, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return admin.User{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var invitationID, username, email string
+	var isAdmin bool
+	err = tx.QueryRow(ctx, `
+		SELECT id::text, username, email, is_admin FROM user_invitations
+		WHERE token_hash=$1 AND accepted_at IS NULL AND expires_at > $2
+		FOR UPDATE
+	`, tokenHash, now).Scan(&invitationID, &username, &email, &isAdmin)
+	if err != nil {
+		return admin.User{}, mapAdminError(err)
+	}
+	var result admin.User
+	err = tx.QueryRow(ctx, `
+		INSERT INTO users (username, email, password_hash, is_admin)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id::text, username, email, is_admin, disabled_at, created_at
+	`, username, email, passwordHash, isAdmin).Scan(&result.ID, &result.Username, &result.Email, &result.Admin, &result.DisabledAt, &result.CreatedAt)
+	if err != nil {
+		return admin.User{}, mapAdminError(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE user_invitations SET accepted_at=$2 WHERE id=$1`, invitationID, now); err != nil {
+		return admin.User{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_logs (action, target_type, target_id, metadata) VALUES ('USER_INVITATION_ACCEPTED', 'USER', $1, jsonb_build_object('invitationId', $2::text))`, result.ID, invitationID); err != nil {
+		return admin.User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return admin.User{}, err
+	}
+	return result, nil
+}
+
 func (store *Store) DisableAdminUser(ctx context.Context, actor auth.Session, userID string, now time.Time) error {
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -33,10 +34,11 @@ func TestAdminManagementIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = store.pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_user_id=$1`, actorID)
-		_, _ = store.pool.Exec(ctx, `DELETE FROM storage_quotas WHERE owner_id IN (SELECT id FROM users WHERE username IN ($1,$2))`, "admin-"+suffix, "user-"+suffix)
-		_, _ = store.pool.Exec(ctx, `DELETE FROM transfer_tasks WHERE sender_user_id IN (SELECT id FROM users WHERE username IN ($1,$2))`, "admin-"+suffix, "user-"+suffix)
-		_, _ = store.pool.Exec(ctx, `DELETE FROM users WHERE username IN ($1,$2)`, "admin-"+suffix, "user-"+suffix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_user_id=$1 OR target_id IN (SELECT id FROM users WHERE username IN ($2,$3,$4)) OR target_id IN (SELECT id FROM user_invitations WHERE invited_by=$1)`, actorID, "admin-"+suffix, "user-"+suffix, "invited-"+suffix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM storage_quotas WHERE owner_id IN (SELECT id FROM users WHERE username IN ($1,$2,$3))`, "admin-"+suffix, "user-"+suffix, "invited-"+suffix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM transfer_tasks WHERE sender_user_id IN (SELECT id FROM users WHERE username IN ($1,$2,$3))`, "admin-"+suffix, "user-"+suffix, "invited-"+suffix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM user_invitations WHERE invited_by=$1`, actorID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM users WHERE username IN ($1,$2,$3)`, "admin-"+suffix, "user-"+suffix, "invited-"+suffix)
 	}()
 	actor := auth.Session{User: auth.User{ID: actorID, Admin: true}}
 	service := admin.NewService(store)
@@ -44,6 +46,17 @@ func TestAdminManagementIntegration(t *testing.T) {
 	created, err := service.CreateUser(ctx, actor, "user-"+suffix, "user-"+suffix+"@example.com", "integration-password", false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	invitation, err := service.InviteUser(ctx, actor, "invited-"+suffix, "invited-"+suffix+"@example.com", false)
+	if err != nil || invitation.Token == "" {
+		t.Fatalf("InviteUser() = %+v, %v", invitation, err)
+	}
+	accepted, err := service.AcceptInvitation(ctx, invitation.Token, "invited-user-password")
+	if err != nil || accepted.Username != "invited-"+suffix {
+		t.Fatalf("AcceptInvitation() = %+v, %v", accepted, err)
+	}
+	if _, err := service.AcceptInvitation(ctx, invitation.Token, "invited-user-password"); !errors.Is(err, admin.ErrNotFound) {
+		t.Fatalf("second AcceptInvitation() error = %v, want ErrNotFound", err)
 	}
 	users, err := service.Users(ctx, actor, 50, 0)
 	if err != nil || len(users) < 2 {

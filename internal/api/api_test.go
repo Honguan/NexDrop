@@ -264,6 +264,14 @@ func (*testStore) CreateAdminUser(context.Context, auth.Session, string, string,
 	return admin.User{}, nil
 }
 
+func (*testStore) CreateAdminInvitation(context.Context, auth.Session, string, string, bool, []byte, time.Time) (admin.Invitation, error) {
+	return admin.Invitation{}, nil
+}
+
+func (*testStore) AcceptAdminInvitation(context.Context, []byte, string, time.Time) (admin.User, error) {
+	return admin.User{}, nil
+}
+
 func (*testStore) DisableAdminUser(context.Context, auth.Session, string, time.Time) error {
 	return nil
 }
@@ -620,5 +628,29 @@ func TestReadAdminSettings(t *testing.T) {
 		if response.Code != endpoint.status {
 			t.Fatalf("%s %s status = %d, body = %s", endpoint.method, endpoint.path, response.Code, response.Body.String())
 		}
+	}
+	invitePayload, err := json.Marshal(map[string]any{"username": "invitee", "email": "invitee@example.com", "admin": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviteRequest := httptest.NewRequest(http.MethodPost, "/api/admin/invitations", bytes.NewReader(invitePayload))
+	inviteRequest.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	inviteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(inviteResponse, inviteRequest)
+	if inviteResponse.Code != http.StatusCreated {
+		t.Fatalf("create invitation status = %d, body = %s", inviteResponse.Code, inviteResponse.Body.String())
+	}
+	var invitation admin.Invitation
+	if err := json.Unmarshal(inviteResponse.Body.Bytes(), &invitation); err != nil || invitation.Token == "" {
+		t.Fatalf("invitation response = %+v, %v", invitation, err)
+	}
+	acceptPayload, err := json.Marshal(map[string]any{"token": invitation.Token, "password": "invited-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptResponse := httptest.NewRecorder()
+	handler.ServeHTTP(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/auth/invitations/accept", bytes.NewReader(acceptPayload)))
+	if acceptResponse.Code != http.StatusCreated {
+		t.Fatalf("accept invitation status = %d, body = %s", acceptResponse.Code, acceptResponse.Body.String())
 	}
 }

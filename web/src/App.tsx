@@ -12,6 +12,7 @@ import {
   Group,
   GroupDetails,
   GroupStatistic,
+  Invitation,
   NodeMetric,
   NodeSettings,
   Overview,
@@ -75,6 +76,30 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   const [needsTOTP, setNeedsTOTP] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [invitationToken, setInvitationToken] = useState(() => new URLSearchParams(location.search).get("invite") ?? "");
+  const [invitationPassword, setInvitationPassword] = useState({ password: "", confirmation: "" });
+  const [invitationAccepted, setInvitationAccepted] = useState(false);
+
+  async function acceptInvitation(event: FormEvent) {
+    event.preventDefault();
+    if (invitationPassword.password !== invitationPassword.confirmation) {
+      setError("兩次輸入的密碼不一致");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const accepted = await api.acceptInvitation(invitationToken, invitationPassword.password);
+      history.replaceState(null, "", location.pathname);
+      setIdentifier(accepted.username);
+      setInvitationToken("");
+      setInvitationAccepted(true);
+    } catch (reason) {
+      setError(messageFor(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -92,6 +117,13 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
       setBusy(false);
     }
   }
+
+  if (invitationToken) return (
+    <main className="login-page">
+      <section className="login-story"><Brand /><div className="story-copy"><p className="eyebrow">ACCOUNT INVITATION</p><h1>完成你的<br />NexDrop 帳號。</h1><p>設定專屬密碼後，即可登入私人傳輸節點。</p></div></section>
+      <section className="login-panel"><form className="login-card" onSubmit={acceptInvitation}><div><p className="eyebrow">INVITATION</p><h2>接受帳號邀請</h2><p className="muted">邀請連結僅能使用一次，並會在七天後失效。</p></div><label>設定密碼<input type="password" autoComplete="new-password" minLength={12} value={invitationPassword.password} onChange={(event) => setInvitationPassword({ ...invitationPassword, password: event.target.value })} required /></label><label>再次輸入密碼<input type="password" autoComplete="new-password" minLength={12} value={invitationPassword.confirmation} onChange={(event) => setInvitationPassword({ ...invitationPassword, confirmation: event.target.value })} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary large" disabled={busy}>{busy ? "正在建立帳號…" : "接受邀請"}</button></form></section>
+    </main>
+  );
 
   return (
     <main className="login-page">
@@ -136,6 +168,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
             <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={totp} onChange={(event) => setTotp(event.target.value)} required />
           </label>}
           {error && <p className="form-error" role="alert">{error}</p>}
+          {invitationAccepted && <p className="muted" role="status">邀請已接受，請使用新密碼登入。</p>}
           <button className="primary large" disabled={busy}>{busy ? "正在連線…" : "安全登入"}</button>
           <p className="login-foot">登入即表示裝置將透過 HTTPS 連線至此節點。</p>
         </form>
@@ -584,6 +617,8 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [nodeMetrics, setNodeMetrics] = useState<NodeMetric[]>([]);
   const [tab, setTab] = useState<"users" | "resources" | "node" | "audit">("users");
   const [newUser, setNewUser] = useState({ username: "", email: "", password: "", admin: false });
+  const [inviteMode, setInviteMode] = useState(false);
+  const [invitationLink, setInvitationLink] = useState("");
   const [verified, setVerified] = useState(false);
   const [totpReady, setTOTPReady] = useState(user.totpEnabled);
   const [verification, setVerification] = useState({ password: "", code: "" });
@@ -615,7 +650,19 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   }
   async function createUser(event: FormEvent) {
     event.preventDefault();
-    try { await api.send("/api/admin/users", "POST", newUser); setNewUser({ username: "", email: "", password: "", admin: false }); await load(); notify("使用者邀請已建立"); } catch (reason) { notify(messageFor(reason)); }
+    try {
+      if (inviteMode) {
+        const invitation = await api.send<Invitation>("/api/admin/invitations", "POST", { username: newUser.username, email: newUser.email, admin: newUser.admin });
+        setInvitationLink(`${location.origin}${location.pathname}?invite=${encodeURIComponent(invitation.token)}`);
+        notify("一次性邀請連結已建立");
+      } else {
+        await api.send("/api/admin/users", "POST", newUser);
+        setInvitationLink("");
+        await load();
+        notify("使用者帳號已建立");
+      }
+      setNewUser({ username: "", email: "", password: "", admin: false });
+    } catch (reason) { notify(messageFor(reason)); }
   }
   async function disable(id: string) {
     try { await api.send(`/api/admin/users/${id}`, "DELETE"); await load(); notify("使用者已停用"); } catch (reason) { notify(messageFor(reason)); }
@@ -649,7 +696,7 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       <div className="card settings-form"><div className="list-title"><div><p className="eyebrow">OPERATIONS</p><h3>節點維運</h3></div><span>主機管理指令</span></div><div className="settings-grid"><label>立即清理<code>deploy/nexdrop cleanup</code></label><label>建立備份<code>deploy/nexdrop backup --include-files</code></label><label>還原備份<code>deploy/nexdrop restore --file ... --confirm</code></label><label>安全更新<code>deploy/nexdrop update</code></label></div><small>備份、還原與更新須在節點主機執行，避免將 Docker 管理權限暴露給 Web 程序。</small></div>
       {settings && <div className="card settings-form"><h3>帳號建立政策</h3><label className="check"><input type="checkbox" checked={settings.publicRegistrationEnabled} onChange={(event) => setSettings({ ...settings, publicRegistrationEnabled: event.target.checked })} /> 公開註冊開關（第一版預設關閉）</label><small>變更後請在「節點與儲存」按下儲存設定；關閉時僅允許管理員建立或邀請帳號。</small></div>}
       <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>裝置與群組</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核與失敗（{failures.length}）</button></div>
-      {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>建立或邀請使用者</h3><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label><label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label><label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">建立帳號</button></form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
+      {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>{inviteMode ? "邀請使用者" : "建立使用者"}</h3><label className="check"><input type="checkbox" checked={inviteMode} onChange={(event) => { setInviteMode(event.target.checked); setInvitationLink(""); }} /> 由受邀者自行設定密碼</label><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label>{!inviteMode && <label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label>}<label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">{inviteMode ? "建立邀請連結" : "建立帳號"}</button>{invitationLink && <label>一次性邀請連結<input readOnly value={invitationLink} onFocus={(event) => event.currentTarget.select()} /><small>連結七天內有效，接受後立即失效。</small></label>}</form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
       {tab === "resources" && <div className="admin-layout"><div className="card user-list"><div className="list-title"><h3>所有裝置</h3><span>{adminDevices.length} 台</span></div>{adminDevices.map((item) => <article key={item.id}><span className="avatar small">{item.displayName[0]?.toUpperCase()}</span><p><strong>{item.displayName}</strong><small>{item.ownerUsername} · {item.type}</small></p><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revokeDevice(item.id)}>撤銷</button>}</article>)}{!adminDevices.length && <Empty text="尚無裝置" />}</div><div className="card user-list"><div className="list-title"><h3>所有群組</h3><span>{adminGroups.length} 個</span></div>{adminGroups.map((item) => <article key={item.id}><span className="avatar small">{item.name[0]?.toUpperCase()}</span><p><strong>{item.name}</strong><small>{item.ownerUsername} · {item.memberCount} 位成員 · {item.deviceCount} 台裝置</small></p><time>{formatDate(item.createdAt)}</time><button className="text-danger" onClick={() => deleteGroup(item.id)}>刪除</button></article>)}{!adminGroups.length && <Empty text="尚無群組" />}</div></div>}
       {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="在線設備" value={nodeMetrics.at(-1)!.onlineDevices.toLocaleString()} note="即時連線" /><Metric label="進行中傳輸" value={nodeMetrics.at(-1)!.activeTransfers.toLocaleString()} note="目前工作" /></div>}{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
       {tab === "audit" && <><form className="card settings-form" onSubmit={deleteGroupContent}><div className="list-title"><div><p className="eyebrow">CONTENT CONTROL</p><h3>刪除群組內容</h3></div><button className="text-danger">從節點刪除</button></div><label>群組傳輸 ID<input value={groupTransferId} onChange={(event) => setGroupTransferId(event.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required /></label><small>內容會從群組內容流移除並刪除節點檔案；無法保證刪除設備已下載的副本。</small></form><div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div></>}
@@ -692,7 +739,7 @@ function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { m
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
-function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
+function messageFor(reason: unknown) { if (reason instanceof APIError) return ({ INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 
 function readSharedContent() {
   if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };
