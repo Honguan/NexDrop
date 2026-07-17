@@ -989,6 +989,9 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	if currentStatus.IsTerminal() || (currentStatus == domain.TransferDelivered && progress.Status != domain.TransferRead) {
 		return transfer.Transfer{}, transfer.ErrConflict
 	}
+	if (currentStatus == domain.TransferSourceFileMissing || currentStatus == domain.TransferSourceFileChanged) && progress.Status == domain.TransferCheckingRoute {
+		return transfer.Transfer{}, transfer.ErrConflict
+	}
 	if currentStatus != progress.Status && !currentStatus.CanTransitionTo(progress.Status) {
 		return transfer.Transfer{}, transfer.ErrConflict
 	}

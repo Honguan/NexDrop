@@ -324,6 +324,34 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || !bytes.Equal(targetFileTransfer.WrappedContentKeys[targetDevice.ID], []byte{4, 5, 6}) {
 		t.Fatalf("target file transfer key = %+v, %v", targetFileTransfer.WrappedContentKeys, err)
 	}
+	recoveryCases := []struct {
+		status      domain.TransferStatus
+		progressKey string
+		retryKey    string
+	}{
+		{domain.TransferSourceFileMissing, "9b9de43e-5903-4d29-ab44-cebe100daf4e", "ab9de43e-5903-4d29-ab44-cebe100daf4e"},
+		{domain.TransferSourceFileChanged, "bb9de43e-5903-4d29-ab44-cebe100daf4e", "cb9de43e-5903-4d29-ab44-cebe100daf4e"},
+	}
+	for _, testCase := range recoveryCases {
+		if _, err := store.pool.Exec(ctx, `
+			UPDATE transfer_targets SET status = $3
+			WHERE transfer_id = $1 AND target_device_id = $2
+		`, fileTransfer.ID, targetDevice.ID, testCase.status); err != nil {
+			t.Fatal(err)
+		}
+		_, err = transferService.ReportProgress(ctx, targetSession, fileTransfer.ID, transfer.Progress{
+			IdempotencyKey: testCase.progressKey,
+			DeviceID:       targetDevice.ID,
+			Status:         domain.TransferCheckingRoute,
+		})
+		if !errors.Is(err, transfer.ErrConflict) {
+			t.Fatalf("%s progress recovery error = %v, want ErrConflict", testCase.status, err)
+		}
+		retried, err := transferService.Retry(ctx, session, fileTransfer.ID, targetDevice.ID, testCase.retryKey)
+		if err != nil || retried.Targets[0].Status != domain.TransferCheckingRoute {
+			t.Fatalf("%s Retry() = %+v, %v", testCase.status, retried, err)
+		}
+	}
 	var smallFileID string
 	for _, file := range fileTransfer.Files {
 		if file.Name == "small.bin" {
