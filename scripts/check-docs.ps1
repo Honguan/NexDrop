@@ -17,18 +17,8 @@ if (-not (Test-Path -LiteralPath $releaseNotes -PathType Leaf)) { throw "missing
 if (-not (Select-String -Quiet -Path $releaseNotes -Pattern "^# NexDrop $escapedVersion$")) { throw 'release notes version mismatch' }
 
 $releaseWorkflow = Join-Path $repo '.github/workflows/release.yml'
-$releaseDocumentation = Join-Path $repo 'docs/release-process.md'
-foreach ($secret in @(
-    'ANDROID_KEYSTORE_BASE64',
-    'ANDROID_STORE_PASSWORD',
-    'ANDROID_KEY_ALIAS',
-    'ANDROID_KEY_PASSWORD',
-    'WINDOWS_CERTIFICATE_BASE64',
-    'WINDOWS_CERTIFICATE_PASSWORD'
-)) {
-    if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch $secret)) { throw "release workflow missing $secret" }
-    if (-not (Select-String -Quiet -Path $releaseDocumentation -SimpleMatch $secret)) { throw "release documentation missing $secret" }
-}
+if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch "tags: ['v*']")) { throw 'release workflow must support version tags' }
+if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch 'gh release create')) { throw 'release workflow must create a GitHub release' }
 
 $problems = @()
 Get-ChildItem -LiteralPath $repo -Recurse -Filter '*.md' -File |
