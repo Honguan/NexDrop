@@ -48,7 +48,11 @@ jobs:
             -o "$RUNNER_TEMP/nexdrop-integration" ./cmd/nexdrop
           server_pid=''
           smoke_pid=''
+          migration_pid=''
           restart_barrier=''
+          rollback_database='nexdrop_migration_rollback'
+          postgres_container=$(docker ps --filter publish=5432 --format '{{.ID}}' | head -n 1)
+          test -n "$postgres_container"
           stop_process() {
             pid="$1"
             kill "$pid" 2>/dev/null || true
@@ -67,13 +71,22 @@ jobs:
             if [ -n "$server_pid" ]; then
               stop_process "$server_pid"
             fi
-            if [ "$status" -ne 0 ]; then cat server.log; fi
+            if [ -n "$migration_pid" ]; then
+              stop_process "$migration_pid"
+            fi
+            docker exec "$postgres_container" dropdb --if-exists --force -U nexdrop "$rollback_database" >/dev/null 2>&1 || true
+            docker exec "$postgres_container" rm -f /tmp/nexdrop-pre-upgrade.dump >/dev/null 2>&1 || true
+            if [ "$status" -ne 0 ]; then
+              cat server.log 2>/dev/null || true
+              cat migration-server.log 2>/dev/null || true
+            fi
             rm -rf -- "$NEXDROP_STORAGE_PATH"
+            rm -rf -- "$RUNNER_TEMP/nexdrop-initial-migration"
             rm -f -- "$RUNNER_TEMP/nexdrop-integration"
             if [ -n "$restart_barrier" ]; then
               rm -f -- "$restart_barrier.ready" "$restart_barrier.continue" "$restart_barrier.file-id"
             fi
-            rm -f -- server.log
+            rm -f -- server.log migration-server.log
             trap - EXIT
             exit "$status"
           }
@@ -88,6 +101,46 @@ jobs:
             done
             test "$ready" = true
           }
+          start_migration_server() {
+            database_url="$1"
+            migrations_path="$2"
+            NEXDROP_DATABASE_URL="$database_url" NEXDROP_MIGRATIONS_PATH="$migrations_path" \
+              NEXDROP_HTTP_ADDRESS='127.0.0.1:18080' "$RUNNER_TEMP/nexdrop-integration" >migration-server.log 2>&1 &
+            migration_pid=$!
+            ready=false
+            for _ in $(seq 1 30); do
+              if curl --connect-timeout 1 --max-time 2 --fail --silent http://127.0.0.1:18080/readyz >/dev/null; then ready=true; break; fi
+              sleep 1
+            done
+            test "$ready" = true
+            stop_process "$migration_pid"
+            migration_pid=''
+          }
+          rollback_url="postgres://nexdrop:test-only-password@127.0.0.1:5432/${rollback_database}?sslmode=disable"
+          docker exec "$postgres_container" dropdb --if-exists --force -U nexdrop "$rollback_database"
+          docker exec "$postgres_container" createdb -U nexdrop "$rollback_database"
+          mkdir -p "$RUNNER_TEMP/nexdrop-initial-migration"
+          cp migrations/001_initial.sql "$RUNNER_TEMP/nexdrop-initial-migration/"
+          start_migration_server "$rollback_url" "$RUNNER_TEMP/nexdrop-initial-migration"
+          docker exec "$postgres_container" psql -v ON_ERROR_STOP=1 -U nexdrop -d "$rollback_database" \
+            -c "INSERT INTO users (username,email,password_hash) VALUES ('rollback-sentinel','rollback@example.invalid','unused')"
+          docker exec "$postgres_container" pg_dump -U nexdrop -d "$rollback_database" -Fc -f /tmp/nexdrop-pre-upgrade.dump
+          start_migration_server "$rollback_url" migrations
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
+            "SELECT count(*) FROM schema_migrations")" = 9
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
+            "SELECT to_regclass('public.idempotency_records') IS NOT NULL")" = t
+          docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
+          docker exec "$postgres_container" createdb -U nexdrop "$rollback_database"
+          docker exec "$postgres_container" pg_restore --exit-on-error -U nexdrop -d "$rollback_database" /tmp/nexdrop-pre-upgrade.dump
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
+            "SELECT count(*) FROM users WHERE username='rollback-sentinel'")" = 1
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
+            "SELECT count(*) FROM schema_migrations")" = 1
+          test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
+            "SELECT to_regclass('public.idempotency_records') IS NULL")" = t
+          docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
+          docker exec "$postgres_container" rm -f /tmp/nexdrop-pre-upgrade.dump
           start_server
           stop_process "$server_pid"
           server_pid=''
@@ -106,8 +159,6 @@ jobs:
           recovery_token=$(curl --connect-timeout 5 --max-time 15 --fail-with-body --silent --show-error -H 'Content-Type: application/json' \
             --data "$(jq -nc --arg identifier "$NEXDROP_BOOTSTRAP_ADMIN_USERNAME" --arg password "$NEXDROP_BOOTSTRAP_ADMIN_PASSWORD" \
               '{identifier:$identifier,password:$password}')" http://127.0.0.1:8080/api/auth/login | jq -er '.accessToken')
-          postgres_container=$(docker ps --filter publish=5432 --format '{{.ID}}' | head -n 1)
-          test -n "$postgres_container"
           docker stop "$postgres_container" >/dev/null
           ready_status=$(curl --max-time 5 --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/readyz || true)
           test "$ready_status" = 503

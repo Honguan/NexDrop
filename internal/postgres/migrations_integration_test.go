@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestMigrationsUpgradeAndRollbackIntegration(t *testing.T) {
+func TestMigrationUpgradeAndFailureAtomicityIntegration(t *testing.T) {
 	databaseURL := os.Getenv("NEXDROP_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("NEXDROP_TEST_DATABASE_URL is not set")
