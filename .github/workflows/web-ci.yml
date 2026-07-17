@@ -1,13 +1,13 @@
 name: web-ci
 on:
   pull_request:
-    paths: ['web/**', '.github/workflows/web-ci.yml']
   push:
     branches: [master]
 permissions:
   contents: read
 jobs:
   test:
+    name: web-ci
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: web}}
     steps:

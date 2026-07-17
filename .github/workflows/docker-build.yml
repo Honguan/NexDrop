@@ -1,13 +1,13 @@
 name: docker-build
 on:
   pull_request:
-    paths: ['Dockerfile', 'compose.yaml', 'cmd/**', 'internal/**', 'web/**', 'migrations/**']
   push:
     branches: [master]
 permissions:
   contents: read
 jobs:
   build:
+    name: docker-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

@@ -991,7 +991,11 @@ func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Sessi
 	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 	session, err := api.auth.Authenticate(r.Context(), token)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "INVALID_TOKEN")
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			writeError(w, http.StatusUnauthorized, "INVALID_TOKEN")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE")
+		}
 		return auth.Session{}, false
 	}
 	return session, true

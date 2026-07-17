@@ -1,13 +1,13 @@
 name: extension-ci
 on:
   pull_request:
-    paths: ['extension/**', '.github/workflows/extension-ci.yml']
   push:
     branches: [master]
 permissions:
   contents: read
 jobs:
   test:
+    name: extension-ci
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: extension}}
     steps:

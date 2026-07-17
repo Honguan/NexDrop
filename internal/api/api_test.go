@@ -29,6 +29,7 @@ import (
 type testStore struct {
 	credential         auth.Credential
 	accessHash         []byte
+	sessionError       error
 	refresh            []byte
 	devices            []device.Device
 	groups             []group.Group
@@ -55,10 +56,39 @@ func (store *testStore) CreateSession(_ context.Context, _ string, access []byte
 }
 
 func (store *testStore) SessionByAccessToken(_ context.Context, access []byte, _ time.Time) (auth.Session, error) {
+	if store.sessionError != nil {
+		return auth.Session{}, store.sessionError
+	}
 	if !bytes.Equal(access, store.accessHash) {
-		return auth.Session{}, errors.New("not found")
+		return auth.Session{}, auth.ErrInvalidCredentials
 	}
 	return auth.Session{User: store.credential.User, SessionID: "session-1", DeviceID: store.sessionDeviceID, AdminVerified: store.adminVerified}, nil
+}
+
+func TestAuthenticationStoreFailureReturnsServiceUnavailable(t *testing.T) {
+	store := &testStore{sessionError: errors.New("database unavailable")}
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	request := httptest.NewRequest(http.MethodGet, "/api/account", nil)
+	request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
+	request.Header.Set("Authorization", "Bearer access-token")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("authentication store failure status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "SERVICE_UNAVAILABLE" {
+		t.Fatalf("authentication store failure code = %q", body.Error.Code)
+	}
 }
 
 func (store *testStore) RotateSession(_ context.Context, oldRefresh, access []byte, _ time.Time, refresh []byte, _ time.Time, _ time.Time) error {

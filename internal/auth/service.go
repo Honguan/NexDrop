@@ -203,7 +203,10 @@ func (service *Service) Authenticate(ctx context.Context, accessToken string) (S
 	}
 	session, err := service.store.SessionByAccessToken(ctx, hashToken(accessToken), service.now().UTC())
 	if err != nil {
-		return Session{}, ErrInvalidCredentials
+		if errors.Is(err, ErrInvalidCredentials) {
+			return Session{}, ErrInvalidCredentials
+		}
+		return Session{}, fmt.Errorf("authenticate session: %w", err)
 	}
 	return session, nil
 }

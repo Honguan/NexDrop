@@ -103,6 +103,9 @@ func (store *Store) SessionByAccessToken(ctx context.Context, tokenHash []byte, 
 		  AND s.revoked_at IS NULL
 		  AND u.disabled_at IS NULL
 	`, tokenHash, now).Scan(&session.SessionID, &session.ID, &session.Username, &session.Email, &session.Admin, &session.TOTPEnabled, &session.DeviceID, &session.AdminVerified)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return auth.Session{}, auth.ErrInvalidCredentials
+	}
 	return session, err
 }
 

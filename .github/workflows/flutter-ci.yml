@@ -1,13 +1,13 @@
 name: flutter-ci
 on:
   pull_request:
-    paths: ['client/**', '.github/workflows/flutter-ci.yml']
   push:
     branches: [master]
 permissions:
   contents: read
 jobs:
   test:
+    name: flutter-ci (${{ matrix.os }})
     strategy:
       matrix: {os: [ubuntu-latest, windows-latest]}
     runs-on: ${{ matrix.os }}

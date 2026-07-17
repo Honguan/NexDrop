@@ -45,7 +45,7 @@ func (store *memoryStore) CreateSession(_ context.Context, userID string, access
 func (store *memoryStore) SessionByAccessToken(_ context.Context, accessHash []byte, _ time.Time) (Session, error) {
 	session, ok := store.sessions[string(accessHash)]
 	if !ok {
-		return Session{}, errors.New("not found")
+		return Session{}, ErrInvalidCredentials
 	}
 	return session, nil
 }
@@ -102,6 +102,9 @@ func TestLoginAuthenticateAndLogout(t *testing.T) {
 	}
 	if session.ID != "user-1" {
 		t.Fatalf("authenticated user = %q, want user-1", session.ID)
+	}
+	if _, err := service.Authenticate(context.Background(), "unknown-access-token"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("unknown access token error = %v, want ErrInvalidCredentials", err)
 	}
 	refreshed, err := service.Refresh(context.Background(), pair.RefreshToken)
 	if err != nil {

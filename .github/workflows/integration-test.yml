@@ -8,6 +8,7 @@ permissions:
   contents: read
 jobs:
   postgres:
+    name: integration-test
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -115,7 +116,7 @@ jobs:
             -H 'Content-Type: application/json' --data "$(jq -nc --arg name "$unavailable_device_name" \
               '{displayName:$name,type:"WEB_CHROME",publicKey:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",keyAlgorithm:"X25519"}')" \
             http://127.0.0.1:8080/api/devices || true)
-          case "$unavailable_write" in 500|503) ;; *) false;; esac
+          test "$unavailable_write" = 503
           docker start "$postgres_container" >/dev/null
           database_ready=false
           for _ in $(seq 1 30); do
