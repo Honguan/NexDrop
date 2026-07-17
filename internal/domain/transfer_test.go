@@ -3,26 +3,52 @@ package domain
 import "testing"
 
 func TestTransferStatusAllowsOnlyDocumentedTransitions(t *testing.T) {
-	tests := []struct {
-		from TransferStatus
-		to   TransferStatus
-		want bool
-	}{
-		{TransferCreated, TransferCheckingRoute, true},
-		{TransferCheckingRoute, TransferQueued, true},
-		{TransferWaitingForLAN, TransferCheckingRoute, true},
-		{TransferTransferringLAN, TransferVerifying, true},
-		{TransferDelivered, TransferRead, true},
-		{TransferQueued, TransferPaused, true},
-		{TransferPaused, TransferQueued, true},
-		{TransferCreated, TransferDelivered, false},
-		{TransferQueued, TransferRead, false},
-		{TransferRead, TransferCheckingRoute, false},
-		{TransferFailed, TransferCheckingRoute, false},
+	statuses := []TransferStatus{
+		TransferCreated, TransferCheckingRoute, TransferWaitingForTarget, TransferWaitingForNode,
+		TransferWaitingForLAN, TransferQueued, TransferUploadingToNode, TransferAvailableOnNode,
+		TransferDownloading, TransferTransferringLAN, TransferPaused, TransferVerifying,
+		TransferDelivered, TransferRead, TransferFailed, TransferCancelled, TransferExpired,
+		TransferSourceFileMissing, TransferSourceFileChanged,
 	}
-	for _, test := range tests {
-		if got := test.from.CanTransitionTo(test.to); got != test.want {
-			t.Errorf("%s -> %s = %t, want %t", test.from, test.to, got, test.want)
+	allowed := map[TransferStatus]map[TransferStatus]bool{
+		TransferCreated: {TransferCheckingRoute: true},
+		TransferCheckingRoute: {
+			TransferTransferringLAN: true, TransferQueued: true, TransferWaitingForTarget: true,
+			TransferWaitingForNode: true, TransferWaitingForLAN: true, TransferFailed: true, TransferCancelled: true,
+		},
+		TransferQueued:          {TransferUploadingToNode: true, TransferPaused: true, TransferCancelled: true, TransferExpired: true},
+		TransferUploadingToNode: {TransferAvailableOnNode: true, TransferPaused: true, TransferFailed: true, TransferCancelled: true},
+		TransferAvailableOnNode: {TransferDownloading: true, TransferPaused: true, TransferExpired: true, TransferCancelled: true},
+		TransferTransferringLAN: {TransferVerifying: true, TransferPaused: true, TransferFailed: true, TransferCancelled: true},
+		TransferDownloading:     {TransferVerifying: true, TransferPaused: true, TransferFailed: true, TransferCancelled: true},
+		TransferVerifying:       {TransferDelivered: true, TransferFailed: true},
+		TransferDelivered:       {TransferRead: true},
+		TransferWaitingForLAN: {
+			TransferCheckingRoute: true, TransferSourceFileMissing: true, TransferSourceFileChanged: true,
+			TransferPaused: true, TransferCancelled: true, TransferExpired: true,
+		},
+		TransferWaitingForTarget:  {TransferCheckingRoute: true, TransferPaused: true, TransferCancelled: true, TransferExpired: true},
+		TransferWaitingForNode:    {TransferCheckingRoute: true, TransferPaused: true, TransferCancelled: true, TransferExpired: true},
+		TransferPaused:            {TransferQueued: true},
+		TransferSourceFileMissing: {TransferCheckingRoute: true},
+		TransferSourceFileChanged: {TransferCheckingRoute: true},
+	}
+	for _, from := range statuses {
+		for _, to := range statuses {
+			if got, want := from.CanTransitionTo(to), allowed[from][to]; got != want {
+				t.Errorf("%s -> %s = %t, want %t", from, to, got, want)
+			}
+		}
+	}
+}
+
+func TestTerminalTransferStatusesCannotResume(t *testing.T) {
+	for _, status := range []TransferStatus{TransferRead, TransferFailed, TransferCancelled, TransferExpired} {
+		if !status.IsTerminal() {
+			t.Errorf("%s is not terminal", status)
+		}
+		if status.CanTransitionTo(TransferCheckingRoute) {
+			t.Errorf("%s resumed from a terminal state", status)
 		}
 	}
 }
