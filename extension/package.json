@@ -11,7 +11,7 @@
 	"package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1"
   },
   "devDependencies": {
-    "@types/chrome": "0.1.38",
+    "@types/chrome": "0.2.2",
     "typescript": "5.9.3"
   }
 }
