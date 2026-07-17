@@ -320,6 +320,9 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || len(secondPage.Items) != 1 || secondPage.Items[0].ID == firstPage.Items[0].ID {
 		t.Fatalf("second transfer page = %+v, %v", secondPage, err)
 	}
+	if _, err := store.ListTransferPage(ctx, session, transfer.PageOptions{Limit: 101}); !errors.Is(err, transfer.ErrInvalid) {
+		t.Fatalf("oversized transfer page error = %v, want ErrInvalid", err)
+	}
 	targetFileTransfer, err := store.GetTransfer(ctx, targetSession, fileTransfer.ID)
 	if err != nil || !bytes.Equal(targetFileTransfer.WrappedContentKeys[targetDevice.ID], []byte{4, 5, 6}) {
 		t.Fatalf("target file transfer key = %+v, %v", targetFileTransfer.WrappedContentKeys, err)

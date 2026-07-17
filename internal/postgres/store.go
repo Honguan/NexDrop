@@ -1327,6 +1327,9 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
 }
 
 func (store *Store) ListTransferPage(ctx context.Context, session auth.Session, options transfer.PageOptions) (transfer.Page, error) {
+	if options.Limit < 1 || options.Limit > 100 {
+		return transfer.Page{}, transfer.ErrInvalid
+	}
 	var from, to, cursorCreatedAt, cursorID any
 	if !options.From.IsZero() {
 		from = options.From.UTC()

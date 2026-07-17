@@ -27,11 +27,28 @@ type TrustDirectory interface {
 	Fingerprint(shortDeviceID string) (string, bool)
 }
 
+type CertificateTrustDirectory interface {
+	TrustDirectory
+	CertificatePEM(shortDeviceID string) (string, bool)
+}
+
 type StaticTrust map[string]string
 
 func (trust StaticTrust) Fingerprint(shortDeviceID string) (string, bool) {
 	value, ok := trust[shortDeviceID]
 	return value, ok
+}
+
+type StaticCertificateTrust map[string]Identity
+
+func (trust StaticCertificateTrust) Fingerprint(shortDeviceID string) (string, bool) {
+	identity, ok := trust[shortDeviceID]
+	return identity.Fingerprint, ok
+}
+
+func (trust StaticCertificateTrust) CertificatePEM(shortDeviceID string) (string, bool) {
+	identity, ok := trust[shortDeviceID]
+	return identity.CertificatePEM, ok
 }
 
 func GenerateIdentity(shortDeviceID string, now time.Time) (Identity, error) {
@@ -82,13 +99,35 @@ func serverTLSConfig(identity Identity, trust TrustDirectory) *tls.Config {
 	}
 }
 
-func clientTLSConfig(identity Identity, trust TrustDirectory, expectedDeviceID string) *tls.Config {
+func clientTLSConfig(identity Identity, trust TrustDirectory, expectedDeviceID string) (*tls.Config, error) {
+	certificateTrust, ok := trust.(CertificateTrustDirectory)
+	if !ok {
+		return nil, errors.New("trusted LAN certificate unavailable")
+	}
+	certificatePEM, ok := certificateTrust.CertificatePEM(expectedDeviceID)
+	block, rest := pem.Decode([]byte(certificatePEM))
+	if !ok || block == nil || block.Type != "CERTIFICATE" || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, errors.New("invalid trusted LAN certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, errors.New("invalid trusted LAN certificate")
+	}
+	expectedFingerprint, ok := trust.Fingerprint(expectedDeviceID)
+	actualFingerprint := sha256.Sum256(certificate.Raw)
+	expectedBytes, decodeErr := hex.DecodeString(expectedFingerprint)
+	if !ok || decodeErr != nil || len(expectedBytes) != sha256.Size || subtle.ConstantTimeCompare(expectedBytes, actualFingerprint[:]) != 1 {
+		return nil, errors.New("LAN peer fingerprint mismatch")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
 	return &tls.Config{
 		MinVersion:            tls.VersionTLS13,
 		Certificates:          []tls.Certificate{identity.Certificate},
-		InsecureSkipVerify:    true,
+		RootCAs:               roots,
+		ServerName:            "nexdrop-" + expectedDeviceID + ".local",
 		VerifyPeerCertificate: verifyPeer(trust, expectedDeviceID),
-	}
+	}, nil
 }
 
 func verifyPeer(trust TrustDirectory, expectedDeviceID string) func([][]byte, [][]*x509.Certificate) error {
