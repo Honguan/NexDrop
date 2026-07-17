@@ -8,6 +8,6 @@
 
 相容性：API v1、協議 1.1，最低用戶端 1.0。正式產物附於本 Release，請先以 `checksums-sha256.txt`、GitHub Artifact Attestation 與平台簽章驗證。
 
-正式發布前的已通過證據與待驗證閘門記錄於 [1.0.0 發布就緒證據](release-readiness-v1.0.0.md)。待辦項目未全部通過前，本文件只作為草稿 Release Notes，不代表 Stable 已完成。
+正式發布證據與驗證閘門記錄於 [1.0.0 發布就緒證據](https://github.com/Honguan/NexDrop/blob/v1.0.0/docs/release-readiness-v1.0.0.md)。
 
-已知問題：Android 與 Windows 正式產物只有在簽章祕密齊備時建立；內部 CA 憑證需預先加入用戶端信任庫。
+安裝警告：本次 Android APK 未使用正式 keystore 簽章，裝置可能要求允許未知來源；Windows EXE 與 ZIP 未使用程式碼簽章憑證，下載或啟動時可能顯示 SmartScreen 警告。內部 CA 憑證需預先加入用戶端信任庫。
