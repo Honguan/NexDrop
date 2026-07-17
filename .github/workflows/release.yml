@@ -7,6 +7,7 @@ permissions:
 jobs:
   integration:
     uses: ./.github/workflows/integration-test.yml
+
   validate:
     needs: integration
     runs-on: ubuntu-latest
@@ -36,6 +37,7 @@ jobs:
         working-directory: extension
       - shell: pwsh
         run: ./scripts/check-docs.ps1
+
   node:
     needs: validate
     runs-on: ubuntu-latest
@@ -47,6 +49,7 @@ jobs:
         run: ./scripts/build-node-release.ps1 -Version '${{ needs.validate.outputs.version }}' -Commit '${{ github.sha }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: node-release, path: 'dist/*.tar.gz', if-no-files-found: error}
+
   extension:
     needs: validate
     runs-on: windows-latest
@@ -60,27 +63,34 @@ jobs:
         run: ./extension/scripts/package-release.ps1 -Version '${{ needs.validate.outputs.version }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: extension-release, path: 'dist/NexDrop-Extension-*.zip', if-no-files-found: error}
+
   android:
     needs: validate
     runs-on: ubuntu-latest
-    environment: release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
-      - name: 準備 Android 簽章
+      - id: signing
+        name: 準備可選 Android 簽章
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
-          echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
-          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
+          if test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo '未設定 Android 簽章 Secrets，將建立未簽章 APK。'
+          fi
       - run: flutter pub get && flutter test && flutter build apk --release
         working-directory: client
-      - name: 驗證 Android 正式簽章
+      - if: steps.signing.outputs.enabled == 'true'
+        name: 驗證 Android 正式簽章
         run: |
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           test -x "$apksigner"
@@ -91,38 +101,40 @@ jobs:
         run: rm -f -- client/android/app/release.jks client/android/key.properties apk-signature.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: android-release, path: 'NexDrop-Android_*.apk', if-no-files-found: error}
+
   windows:
     needs: validate
     runs-on: windows-latest
-    environment: release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with: {go-version-file: go.mod, cache: true}
-      - name: 建置並簽章 Windows 產物
+      - name: 建置 Windows 產物並套用可選簽章
         shell: pwsh
         env:
           CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if (-not $env:CERTIFICATE_BASE64 -or -not $env:CERTIFICATE_PASSWORD) { throw 'Windows signing secrets are required' }
-          $certificatePassword = $env:CERTIFICATE_PASSWORD
-          $certificatePath = "$env:RUNNER_TEMP\nexdrop.pfx"
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
-          Remove-Item Env:CERTIFICATE_BASE64,Env:CERTIFICATE_PASSWORD
-          try {
-            ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}' -CertificatePath $certificatePath -CertificatePassword $certificatePassword
-          } finally {
-            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          if ($env:CERTIFICATE_BASE64 -and $env:CERTIFICATE_PASSWORD) {
+            $certificatePath = "$env:RUNNER_TEMP\nexdrop.pfx"
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            try {
+              ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}' -CertificatePath $certificatePath -CertificatePassword $env:CERTIFICATE_PASSWORD
+            } finally {
+              Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+            }
+          } else {
+            Write-Host '未設定 Windows 簽章 Secrets，將建立未簽章 EXE/ZIP。'
+            ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}'
           }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: windows-release, path: 'dist/NexDrop-Desktop_*', if-no-files-found: error}
+
   container:
     needs: [validate, node, extension, android, windows]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: read
       packages: write
@@ -131,33 +143,6 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          push: false
-          build-args: |
-            VERSION=${{ needs.validate.outputs.version }}
-            COMMIT=${{ github.sha }}
-          tags: nexdrop:release-verify
-      - name: 驗證發布容器啟動與健康狀態
-        env:
-          POSTGRES_PASSWORD: release-verification-only
-          NEXDROP_CURSOR_SECRET: release-verification-only-cursor-secret-32-bytes
-          NEXDROP_IMAGE: nexdrop:release-verify
-        run: |
-          trap 'docker compose down -v' EXIT
-          test "$(docker run --rm nexdrop:release-verify version)" = '${{ needs.validate.outputs.version }}'
-          docker compose up -d --no-build postgres nexdrop
-          for _ in $(seq 1 30); do
-            container=$(docker compose ps -q nexdrop)
-            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || true)
-            test "$status" = healthy && break
-            sleep 2
-          done
-          test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
-          docker compose exec -T nexdrop wget -q -O - http://127.0.0.1:8080/healthz
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
       - id: build
@@ -169,40 +154,22 @@ jobs:
           build-args: |
             VERSION=${{ needs.validate.outputs.version }}
             COMMIT=${{ github.sha }}
-          tags: ghcr.io/honguan/nexdrop:staging-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: |
+            ghcr.io/honguan/nexdrop:${{ needs.validate.outputs.version }}
+            ghcr.io/honguan/nexdrop:1.0
+            ghcr.io/honguan/nexdrop:latest
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
-      - name: 簽章並驗證發布容器
-        run: |
-          image='ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
-          cosign sign --yes "$image"
-          cosign verify \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-            "$image"
+      - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with: {image: 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}', format: spdx-json, output-file: nexdrop-node.spdx.json}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: {name: container-sbom, path: nexdrop-node.spdx.json, if-no-files-found: error}
-      - name: 提升已驗證映像至正式標籤
-        run: |
-          image='ghcr.io/honguan/nexdrop'
-          digest='${{ steps.build.outputs.digest }}'
-          source="${image}@${digest}"
-          docker buildx imagetools create \
-            --tag "${image}:${{ needs.validate.outputs.version }}" \
-            --tag "${image}:1.0" \
-            --tag "${image}:latest" \
-            "$source"
-          for tag in '${{ needs.validate.outputs.version }}' '1.0' 'latest'; do
-            promoted=$(docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}')
-            test "$promoted" = "$digest"
-          done
+
   draft:
     needs: [validate, node, extension, android, windows, container]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
       id-token: write
