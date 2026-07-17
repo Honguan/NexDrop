@@ -1,6 +1,6 @@
 # Node 與命令列
 
-`cmd/nexdrop` 是 Linux Node；`cmd/nexdrop-desktop-service` 提供 Windows 本機整合；`cmd/nexdrop-bridge` 是瀏覽器 Native Messaging 主機。需求為 Go 1.23+。
+`cmd/nexdrop` 是 Linux Node；`cmd/nexdrop-desktop-service` 提供 Windows 本機整合；`cmd/nexdrop-bridge` 是瀏覽器 Native Messaging 主機。需求為 Go 1.26.5+。
 
 ```bash
 go build ./cmd/nexdrop
