@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -456,6 +457,28 @@ func TestAPIVersionHeadersAndNegotiatedError(t *testing.T) {
 	}
 }
 
+func TestTransferRequestLogIncludesCorrelationFields(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+
+	handler := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	const transferID = "11111111-1111-4111-8111-111111111111"
+	request := httptest.NewRequest(http.MethodGet, "/api/transfers/"+transferID, nil)
+	request.Header.Set("Authorization", "Bearer invalid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["request_id"] == "" || record["transfer_id"] != transferID || record["error_code"] != "INVALID_TOKEN" {
+		t.Fatalf("correlation fields = %#v", record)
+	}
+}
+
 func TestLegacyErrorRemainsCompatible(t *testing.T) {
 	handler := New(nil, nil, nil, nil, nil, nil, nil, nil).Routes()
 	response := httptest.NewRecorder()
@@ -486,6 +509,31 @@ func TestLoginRateLimitReturnsRetryAfter(t *testing.T) {
 	}
 	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
 		t.Fatalf("status = %d, Retry-After = %q, body = %s", response.Code, response.Header().Get("Retry-After"), response.Body.String())
+	}
+}
+
+func TestAdminRateLimitUsesSessionIdentity(t *testing.T) {
+	api := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil)
+	api.adminLimit = newFixedWindowLimiter(1)
+	handler := api.Routes()
+
+	request := func(token string) *httptest.ResponseRecorder {
+		value := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+		value.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, value)
+		return response
+	}
+
+	if response := request("session-a"); response.Code == http.StatusTooManyRequests {
+		t.Fatalf("first session-a request status = %d", response.Code)
+	}
+	if response := request("session-b"); response.Code == http.StatusTooManyRequests {
+		t.Fatalf("first session-b request status = %d", response.Code)
+	}
+	response := request("session-a")
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
+		t.Fatalf("second session-a status = %d, Retry-After = %q", response.Code, response.Header().Get("Retry-After"))
 	}
 }
 

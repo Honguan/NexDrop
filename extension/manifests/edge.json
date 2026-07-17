@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "NexDrop",
+  "version": "1.0.0",
+  "description": "將分頁、連結與選取文字送到你的 NexDrop 設備。",
+  "permissions": ["activeTab", "contextMenus", "storage", "nativeMessaging", "notifications"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "NexDrop",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}

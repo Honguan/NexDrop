@@ -5,11 +5,12 @@ import (
 	"log/slog"
 	"os"
 
+	"nexdrop/internal/logging"
 	"nexdrop/internal/nativebridge"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(logging.NewJSONHandler(os.Stderr, slog.LevelInfo)))
 	config, err := nativebridge.LoadConfig()
 	if err != nil {
 		fatal(err)

@@ -23,3 +23,10 @@ jobs:
         run: |
           test -f dist/manifest.json
           ! grep -R -E '(BEGIN .*PRIVATE KEY|NEXDROP_.*PASSWORD=)' dist
+      - name: 封裝 Chrome 與 Edge ZIP
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./scripts/package-release.ps1 -Version $version
+          if (-not (Test-Path "../dist/NexDrop-Extension-Chrome_${version}.zip")) { throw 'Chrome ZIP missing' }
+          if (-not (Test-Path "../dist/NexDrop-Extension-Edge_${version}.zip")) { throw 'Edge ZIP missing' }
