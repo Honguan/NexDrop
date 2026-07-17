@@ -15,22 +15,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: {node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json}
       - run: npm ci
-      - id: lint
-        name: TypeScript lint
-        continue-on-error: true
-        shell: bash
-        run: |
-          npm run lint > tsc-diagnostics.txt 2>&1
-      - name: Upload TypeScript diagnostics
-        if: ${{ steps.lint.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: web-typescript-diagnostics
-          path: web/tsc-diagnostics.txt
-          if-no-files-found: error
-      - name: Fail on TypeScript lint errors
-        if: ${{ steps.lint.outcome == 'failure' }}
-        run: exit 1
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
