@@ -7,7 +7,7 @@
 | 項目 | 證據 |
 | --- | --- |
 | 交付變更合併 | [PR #15](https://github.com/Honguan/NexDrop/pull/15) 的必要檢查全部成功，並合併為 Commit `47c56fc3262cbe658d191fe6a7f6a9b81b977e20` |
-| 產品版本與文件一致性 | `VERSION`、Web、Extension、Flutter、CHANGELOG 與 Release Notes 由 docs 與 release workflow 驗證 |
+| 產品版本與文件一致性 | `docs` 已對照 `VERSION` 驗證 Web、Extension、Flutter、CHANGELOG 與 Release Notes；Tag 一致性仍由 Release Workflow 驗證 |
 | Go 後端 | `server-ci` 已執行格式、vet、單元測試、race test 與 build |
 | Web | `web-ci` 已執行鎖定安裝、lint、typecheck、單元測試與 production build |
 | Extension | `extension-ci` 已驗證 Chrome／Edge Manifest V3、權限、秘密掃描與個別 ZIP 封裝 |
@@ -15,10 +15,21 @@
 | PostgreSQL 與端對端資料流 | `integration-test` 已驗證 migration、登入與 Token 輪替、設備、傳輸、分段續傳、WebSocket、權限、清理、重啟與故障恢復 |
 | 容量目標 | `integration-test` 已執行 100 台註冊、50 台在線、10 筆並行傳輸與一般 API p95 小於 500 ms 的負載驗證 |
 | 容器基線 | `docker-build` 已建置測試映像並通過啟動與健康檢查 |
-| 安全基線 | `security` 已執行 CodeQL、Go／npm／Dart 相依掃描、秘密掃描、容器掃描、授權檢查與 SBOM 驗證 |
+| 安全基線 | `security` 已執行 CodeQL、Go／npm／Dart 相依掃描、秘密掃描、容器掃描與授權檢查，並產生 CycloneDX SBOM |
 | 文件 | `docs` 已驗證 Markdown、相對連結、版本、套件 manifest 與簽章 Secrets 契約 |
 
 上述 CI 證據集中於 [PR #15](https://github.com/Honguan/NexDrop/pull/15)。PR 保留全部必要檢查成功的紀錄；Release Workflow 仍須針對正式 Tag 重新執行發布驗證。
+
+## 支援平台與建置版本
+
+| 產物 | 版本與平台 |
+| --- | --- |
+| NexDrop Node | 產品 `1.0.0`；Linux amd64／arm64；Go 1.26.5；Alpine 3.24.1；PostgreSQL 17 |
+| NexDrop Desktop | 產品 `1.0.0`；Windows 10／11 x64；Flutter stable |
+| NexDrop Android | 產品 `1.0.0`；Android；application ID `io.github.honguan.nexdrop`；Flutter stable；JVM 工具鏈 17 |
+| NexDrop Web | 產品 `1.0.0`；現代桌面與手機瀏覽器；Node.js 24 建置 |
+| NexDrop Extension | 產品 `1.0.0`；Chrome／Edge；Manifest V3；Node.js 24 建置 |
+| 公開契約 | API v1；傳輸協議 1.1；最低用戶端版本 1.0 |
 
 ## 尚待正式發布驗證
 
