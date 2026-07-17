@@ -68,7 +68,7 @@ jobs:
         with: {image-ref: 'nexdrop:security', severity: 'HIGH,CRITICAL', ignore-unfixed: true, exit-code: '1'}
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with: {image-ref: 'nexdrop:security', format: 'cyclonedx', output: 'nexdrop.cdx.json'}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: security-sbom, path: nexdrop.cdx.json, if-no-files-found: error}
   gate:
     name: security

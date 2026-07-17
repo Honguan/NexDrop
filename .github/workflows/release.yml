@@ -47,7 +47,7 @@ jobs:
         with: {go-version-file: go.mod, cache: true}
       - shell: pwsh
         run: ./scripts/build-node-release.ps1 -Version '${{ needs.validate.outputs.version }}' -Commit '${{ github.sha }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: node-release, path: 'dist/*.tar.gz', if-no-files-found: error}
 
   extension:
@@ -61,7 +61,7 @@ jobs:
         working-directory: extension
       - shell: pwsh
         run: ./extension/scripts/package-release.ps1 -Version '${{ needs.validate.outputs.version }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: extension-release, path: 'dist/NexDrop-Extension-*.zip', if-no-files-found: error}
 
   android:
@@ -99,7 +99,7 @@ jobs:
       - run: cp client/build/app/outputs/flutter-apk/app-release.apk 'NexDrop-Android_${{ needs.validate.outputs.version }}.apk'
       - if: always()
         run: rm -f -- client/android/app/release.jks client/android/key.properties apk-signature.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: android-release, path: 'NexDrop-Android_*.apk', if-no-files-found: error}
 
   windows:
@@ -129,7 +129,7 @@ jobs:
             Write-Host '未設定 Windows 簽章 Secrets，將建立未簽章 EXE/ZIP。'
             ./client/windows/build-release.ps1 -Version '${{ needs.validate.outputs.version }}'
           }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: windows-release, path: 'dist/NexDrop-Desktop_*', if-no-files-found: error}
 
   container:
@@ -164,7 +164,7 @@ jobs:
       - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with: {image: 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}', format: spdx-json, output-file: nexdrop-node.spdx.json}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: container-sbom, path: nexdrop-node.spdx.json, if-no-files-found: error}
 
   draft:
