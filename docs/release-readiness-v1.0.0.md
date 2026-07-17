@@ -7,7 +7,7 @@
 | 項目 | 證據 |
 | --- | --- |
 | 交付變更合併 | [PR #15](https://github.com/Honguan/NexDrop/pull/15) 的必要檢查全部成功，並合併為 Commit `47c56fc3262cbe658d191fe6a7f6a9b81b977e20` |
-| 產品版本與文件一致性 | `docs` 已對照 `VERSION` 驗證 Web、Extension、Flutter、CHANGELOG 與 Release Notes；Tag 一致性仍由 Release Workflow 驗證 |
+| 產品版本與文件一致性 | [PR #16 docs job](https://github.com/Honguan/NexDrop/actions/runs/29554504475/job/87803745719) 已對照 `VERSION` 驗證 Web、Extension、Flutter、CHANGELOG 與 Release Notes；Tag 一致性仍由 Release Workflow 驗證 |
 | Go 後端 | `server-ci` 已執行格式、vet、單元測試、race test 與 build |
 | Web | `web-ci` 已執行鎖定安裝、lint、typecheck、單元測試與 production build |
 | Extension | `extension-ci` 已驗證 Chrome／Edge Manifest V3、權限、秘密掃描與個別 ZIP 封裝 |
@@ -18,7 +18,7 @@
 | 安全基線 | `security` 已執行 CodeQL、Go／npm／Dart 相依掃描、秘密掃描、容器掃描與授權檢查，並產生 CycloneDX SBOM |
 | 文件 | `docs` 已驗證 Markdown、相對連結、版本、套件 manifest 與簽章 Secrets 契約 |
 
-上述 CI 證據集中於 [PR #15](https://github.com/Honguan/NexDrop/pull/15)。PR 保留全部必要檢查成功的紀錄；Release Workflow 仍須針對正式 Tag 重新執行發布驗證。
+產品與功能 CI 證據集中於 [PR #15](https://github.com/Honguan/NexDrop/pull/15)，新增的版本文件檢查則由 [PR #16](https://github.com/Honguan/NexDrop/pull/16) 留存。Release Workflow 仍須針對正式 Tag 重新執行發布驗證。
 
 ## 支援平台與建置版本
 
