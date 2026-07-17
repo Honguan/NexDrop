@@ -212,7 +212,7 @@ jobs:
           test "$(docker exec "$postgres_container" psql -U nexdrop -d nexdrop_test -tAc "SELECT status FROM files WHERE id='$file_id'::uuid")" = EXPIRED
           rm -f -- "$restart_barrier.ready" "$restart_barrier.continue" "$restart_barrier.file-id"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: load-verification-report
           path: load-verification-report.json
