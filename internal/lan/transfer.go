@@ -180,7 +180,11 @@ func (client *TransferClient) request(ctx context.Context, target Advertisement,
 	if target.Validate() != nil || net.ParseIP(target.Address) == nil {
 		return errors.New("invalid LAN target")
 	}
-	transport := &http.Transport{TLSClientConfig: clientTLSConfig(client.identity, client.trust, target.ShortDeviceID)}
+	tlsConfig, err := clientTLSConfig(client.identity, client.trust, target.ShortDeviceID)
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	defer transport.CloseIdleConnections()
 	httpClient := &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	request, err := http.NewRequestWithContext(ctx, method, "https://"+net.JoinHostPort(target.Address, strconv.Itoa(target.Port))+path, body)

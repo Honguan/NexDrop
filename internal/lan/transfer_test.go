@@ -18,6 +18,28 @@ type memoryChunkStore struct {
 	chunks map[int][]byte
 }
 
+func TestClientTLSConfigUsesTrustedCertificateVerification(t *testing.T) {
+	now := time.Now()
+	clientIdentity, err := GenerateIdentity("sender01", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverIdentity, err := GenerateIdentity("receive1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := clientTLSConfig(clientIdentity, StaticCertificateTrust{"receive1": serverIdentity}, "receive1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.InsecureSkipVerify || config.RootCAs == nil || config.ServerName != "nexdrop-receive1.local" {
+		t.Fatalf("insecure client TLS config = %+v", config)
+	}
+	if _, err := clientTLSConfig(clientIdentity, StaticTrust{"receive1": serverIdentity.Fingerprint}, "receive1"); err == nil {
+		t.Fatal("client TLS config accepted trust without a certificate")
+	}
+}
+
 func (store *memoryChunkStore) CompletedChunks(context.Context, string, string) ([]int, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -89,7 +111,7 @@ func TestTLSChunkTransferSupportsResumeAndMutualTrust(t *testing.T) {
 	target.Challenge = "Y2hhbGxlbmdlLXRva2VuIQ"
 	challenge := target.Challenge
 	server.challenge = func() string { return challenge }
-	client, err := NewTransferClient(sender, StaticTrust{"receive1": receiver.Fingerprint})
+	client, err := NewTransferClient(sender, StaticCertificateTrust{"receive1": receiver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +147,7 @@ func TestTLSChunkTransferRejectsStaleChallenge(t *testing.T) {
 	defer server.Close()
 	go server.Serve(listener)
 	target := Advertisement{ShortDeviceID: "receive1", ServiceVersion: "1", Protocol: ProtocolVersion, Address: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, Challenge: "c3RhbGUtY2hhbGxlbmdlIQ"}
-	client, _ := NewTransferClient(sender, StaticTrust{"receive1": receiver.Fingerprint})
+	client, _ := NewTransferClient(sender, StaticCertificateTrust{"receive1": receiver})
 	if err := client.PutChunk(context.Background(), target, "transfer01", "file0001", 0, []byte("content")); err == nil {
 		t.Fatal("stale discovery challenge was accepted")
 	}
