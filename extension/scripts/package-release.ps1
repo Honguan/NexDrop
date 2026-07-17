@@ -49,6 +49,8 @@ try {
         $archive = Get-OutputChild $output "NexDrop-Extension-${browser}_${Version}.zip"
         try {
             Copy-Item -Recurse (Join-Path $extension 'dist') $stage
+            $browserManifest = Join-Path $extension "manifests/$($browser.ToLowerInvariant()).json"
+            Copy-Item -LiteralPath $browserManifest -Destination (Join-Path $stage 'manifest.json') -Force
             Test-ExtensionPackage $stage $browser $Version
             Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $temporaryArchive
             Expand-Archive -LiteralPath $temporaryArchive -DestinationPath $verification

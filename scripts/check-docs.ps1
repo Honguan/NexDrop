@@ -5,6 +5,9 @@ $goVersion = ([regex]::Match((Get-Content -Raw (Join-Path $repo 'go.mod')), '(?m
 
 if ((Get-Content -Raw (Join-Path $repo 'web/package.json') | ConvertFrom-Json).version -ne $version) { throw 'web/package.json version mismatch' }
 if ((Get-Content -Raw (Join-Path $repo 'extension/package.json') | ConvertFrom-Json).version -ne $version) { throw 'extension/package.json version mismatch' }
+foreach ($manifest in @('extension/manifest.json', 'extension/manifests/chrome.json', 'extension/manifests/edge.json')) {
+    if ((Get-Content -Raw -Encoding UTF8 (Join-Path $repo $manifest) | ConvertFrom-Json).version -ne $version) { throw "$manifest version mismatch" }
+}
 if (-not (Select-String -Quiet -Path (Join-Path $repo 'client/pubspec.yaml') -Pattern "^version: $([regex]::Escape($version))\+")) { throw 'client/pubspec.yaml version mismatch' }
 if (-not $goVersion -or -not (Select-String -Quiet -Path (Join-Path $repo 'cmd/README.md') -SimpleMatch "Go $goVersion+")) { throw 'cmd/README.md Go version mismatch' }
 
