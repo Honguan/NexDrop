@@ -6,8 +6,27 @@ on:
 permissions:
   contents: read
 jobs:
+  changes:
+    name: flutter-ci changes
+    runs-on: ubuntu-latest
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: {fetch-depth: 0}
+      - id: filter
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "client=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- client; then
+            echo "client=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "client=true" >> "$GITHUB_OUTPUT"
+          fi
   test:
     name: flutter-ci (${{ matrix.os }})
+    needs: changes
     strategy:
       fail-fast: false
       matrix: {os: [ubuntu-latest, windows-latest]}
@@ -15,12 +34,19 @@ jobs:
     defaults: {run: {working-directory: client}}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      - name: 無 Client 變更
+        if: ${{ needs.changes.outputs.client != 'true' }}
+        run: echo "No client changes; Flutter build is not required."
+      - if: ${{ needs.changes.outputs.client == 'true' }}
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
-      - if: runner.os == 'Linux'
+      - if: ${{ needs.changes.outputs.client == 'true' }}
+        run: flutter pub get
+      - if: ${{ needs.changes.outputs.client == 'true' }}
+        run: flutter analyze
+      - if: ${{ needs.changes.outputs.client == 'true' }}
+        run: flutter test
+      - if: ${{ needs.changes.outputs.client == 'true' && runner.os == 'Linux' }}
         run: flutter build apk --debug
-      - if: runner.os == 'Windows'
+      - if: ${{ needs.changes.outputs.client == 'true' && runner.os == 'Windows' }}
         run: flutter build windows --release
