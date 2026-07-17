@@ -22,6 +22,7 @@ import (
 	"nexdrop/internal/device"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/logging"
 	"nexdrop/internal/maintenance"
 	"nexdrop/internal/monitoring"
 	"nexdrop/internal/operations"
@@ -43,7 +44,7 @@ type healthResponse struct {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(logging.NewJSONHandler(os.Stderr, slog.LevelInfo)))
 	handled, err := runMaintenanceCommand(context.Background(), os.Args[1:])
 	if err != nil {
 		fatal("maintenance command failed", err)

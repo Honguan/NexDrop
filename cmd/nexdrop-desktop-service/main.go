@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nexdrop/internal/desktopbridge"
+	"nexdrop/internal/logging"
 	"nexdrop/internal/nativebridge"
 )
 
@@ -57,7 +58,7 @@ func (status desktopStatus) Status(_ context.Context) (json.RawMessage, error) {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	slog.SetDefault(slog.New(logging.NewJSONHandler(os.Stderr, slog.LevelInfo)))
 	root := os.Getenv("LOCALAPPDATA")
 	if root == "" {
 		fatal(errors.New("LOCALAPPDATA is required"))
