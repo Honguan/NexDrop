@@ -8,6 +8,24 @@ on:
 permissions:
   contents: read
 jobs:
+  changes:
+    name: security changes
+    runs-on: ubuntu-latest
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: {fetch-depth: 0}
+      - id: filter
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "client=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- client .github/workflows/security.yml; then
+            echo "client=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "client=true" >> "$GITHUB_OUTPUT"
+          fi
   secrets:
     name: security-secrets
     runs-on: ubuntu-latest
@@ -46,6 +64,8 @@ jobs:
       - run: go run github.com/google/go-licenses@v1.6.0 check ./... --disallowed_types=forbidden,restricted
   dart:
     name: security-dart
+    needs: changes
+    if: ${{ needs.changes.outputs.client == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -80,4 +100,4 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r '[.[].result] | all(. == "success" or . == "skipped")' <<<"$RESULTS")" = true
