@@ -112,8 +112,23 @@ func enforceRateLimit(w http.ResponseWriter, r *http.Request, limiter *fixedWind
 	return false
 }
 
+func (api *API) adminRateLimited(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity := "anonymous"
+		if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
+			digest := sha256.Sum256([]byte(authorization))
+			identity = hex.EncodeToString(digest[:])
+		}
+		if !enforceRateLimit(w, r, api.adminLimit, identity) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (api *API) Routes() http.Handler {
 	mux := http.NewServeMux()
+	adminMux := http.NewServeMux()
 	mux.HandleFunc("GET /api/version", api.version)
 	mux.HandleFunc("POST /api/auth/login", api.login)
 	mux.HandleFunc("POST /api/auth/refresh", api.refresh)
@@ -160,22 +175,23 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/statistics/devices", api.statisticsDevices)
 	mux.HandleFunc("GET /api/statistics/groups", api.statisticsGroups)
 	mux.HandleFunc("GET /api/statistics/node", api.statisticsNode)
-	mux.HandleFunc("GET /api/admin/users", api.adminUsers)
-	mux.HandleFunc("POST /api/admin/users", api.createAdminUser)
-	mux.HandleFunc("POST /api/admin/invitations", api.createAdminInvitation)
-	mux.HandleFunc("DELETE /api/admin/users/{id}", api.disableAdminUser)
-	mux.HandleFunc("POST /api/admin/users/{id}/reset-password", api.resetAdminPassword)
-	mux.HandleFunc("GET /api/admin/devices", api.adminDevices)
-	mux.HandleFunc("POST /api/admin/devices/{id}/revoke", api.revokeAdminDevice)
-	mux.HandleFunc("GET /api/admin/groups", api.adminGroups)
-	mux.HandleFunc("DELETE /api/admin/groups/{id}", api.deleteAdminGroup)
-	mux.HandleFunc("GET /api/admin/settings", api.adminSettings)
-	mux.HandleFunc("PUT /api/admin/settings", api.updateAdminSettings)
-	mux.HandleFunc("PUT /api/admin/quotas/{ownerType}/{ownerId}", api.setAdminQuota)
-	mux.HandleFunc("GET /api/admin/storage", api.adminStorage)
-	mux.HandleFunc("GET /api/admin/failures", api.adminFailures)
-	mux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
-	mux.HandleFunc("DELETE /api/admin/group-transfers/{id}", api.deleteAdminGroupContent)
+	adminMux.HandleFunc("GET /api/admin/users", api.adminUsers)
+	adminMux.HandleFunc("POST /api/admin/users", api.createAdminUser)
+	adminMux.HandleFunc("POST /api/admin/invitations", api.createAdminInvitation)
+	adminMux.HandleFunc("DELETE /api/admin/users/{id}", api.disableAdminUser)
+	adminMux.HandleFunc("POST /api/admin/users/{id}/reset-password", api.resetAdminPassword)
+	adminMux.HandleFunc("GET /api/admin/devices", api.adminDevices)
+	adminMux.HandleFunc("POST /api/admin/devices/{id}/revoke", api.revokeAdminDevice)
+	adminMux.HandleFunc("GET /api/admin/groups", api.adminGroups)
+	adminMux.HandleFunc("DELETE /api/admin/groups/{id}", api.deleteAdminGroup)
+	adminMux.HandleFunc("GET /api/admin/settings", api.adminSettings)
+	adminMux.HandleFunc("PUT /api/admin/settings", api.updateAdminSettings)
+	adminMux.HandleFunc("PUT /api/admin/quotas/{ownerType}/{ownerId}", api.setAdminQuota)
+	adminMux.HandleFunc("GET /api/admin/storage", api.adminStorage)
+	adminMux.HandleFunc("GET /api/admin/failures", api.adminFailures)
+	adminMux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
+	adminMux.HandleFunc("DELETE /api/admin/group-transfers/{id}", api.deleteAdminGroupContent)
+	mux.Handle("/api/admin/", api.adminRateLimited(adminMux))
 	return apiContract(mux)
 }
 

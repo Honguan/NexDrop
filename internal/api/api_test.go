@@ -489,6 +489,31 @@ func TestLoginRateLimitReturnsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestAdminRateLimitUsesSessionIdentity(t *testing.T) {
+	api := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil)
+	api.adminLimit = newFixedWindowLimiter(1)
+	handler := api.Routes()
+
+	request := func(token string) *httptest.ResponseRecorder {
+		value := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+		value.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, value)
+		return response
+	}
+
+	if response := request("session-a"); response.Code == http.StatusTooManyRequests {
+		t.Fatalf("first session-a request status = %d", response.Code)
+	}
+	if response := request("session-b"); response.Code == http.StatusTooManyRequests {
+		t.Fatalf("first session-b request status = %d", response.Code)
+	}
+	response := request("session-a")
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
+		t.Fatalf("second session-a status = %d, Retry-After = %q", response.Code, response.Header().Get("Retry-After"))
+	}
+}
+
 func TestCreateAndListDevice(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
