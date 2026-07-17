@@ -2,6 +2,16 @@
 
 本檔案記錄 NexDrop 使用者可感知的變更，格式遵循 Keep a Changelog 與語意化版本。
 
+## [Unreleased]
+
+### Added
+
+- 互動式安裝精靈、安全隨機預設、`configure` 設定指令及可指定目標版本的備份式更新流程。
+
+### Changed
+
+- Web 與 Flutter 用戶端會依 `Retry-After` 顯示明確的限流等待時間，並改善無效請求訊息。
+
 ## [1.0.0] - 2026-07-16
 
 ### Added

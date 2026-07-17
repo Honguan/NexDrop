@@ -1,3 +1,5 @@
+import { retryAfterSeconds } from "./errors";
+
 export type User = {
   id: string;
   username: string;
@@ -194,6 +196,7 @@ export class APIError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(code);
   }
@@ -322,7 +325,11 @@ class APIClient {
       error?: string | { code?: string };
     };
     const code = typeof body.error === "string" ? body.error : body.error?.code;
-    return new APIError(code ?? "INTERNAL_ERROR", response.status);
+    return new APIError(
+      code ?? "INTERNAL_ERROR",
+      response.status,
+      retryAfterSeconds(response.headers.get("Retry-After")),
+    );
   }
 
   private readTokens(): TokenPair | null {

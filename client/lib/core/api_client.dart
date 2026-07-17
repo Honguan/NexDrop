@@ -11,13 +11,31 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'models.dart';
 
 class ApiException implements Exception {
-  const ApiException(this.code, this.statusCode);
+  const ApiException(this.code, this.statusCode, {this.retryAfterSeconds});
 
   final String code;
   final int statusCode;
+  final int? retryAfterSeconds;
 
   @override
   String toString() => code;
+}
+
+String apiExceptionMessage(ApiException error) {
+  if (error.code == 'RATE_LIMITED') {
+    return error.retryAfterSeconds == null
+        ? '操作過於頻繁，請稍後再試'
+        : '操作過於頻繁，請在 ${error.retryAfterSeconds} 秒後再試';
+  }
+  return {
+        'INVALID_REQUEST': '請確認所有必填欄位與格式',
+        'INVALID_CREDENTIALS': '帳號或密碼不正確',
+        'PERMISSION_DENIED': '你沒有執行此操作的權限',
+        'INVALID_TOKEN': '登入已失效，請重新登入',
+        'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
+        'QUOTA_EXCEEDED': '已超過可用配額',
+      }[error.code] ??
+      '操作失敗：${error.code}';
 }
 
 class ApiClient {
@@ -281,9 +299,18 @@ class ApiClient {
             : (error as Map<String, dynamic>?)?['code'] as String? ??
                   'REQUEST_FAILED',
         response.statusCode,
+        retryAfterSeconds: int.tryParse(
+          response.headers['retry-after'] ?? '',
+        ),
       );
     } catch (_) {
-      return ApiException('REQUEST_FAILED', response.statusCode);
+      return ApiException(
+        'REQUEST_FAILED',
+        response.statusCode,
+        retryAfterSeconds: int.tryParse(
+          response.headers['retry-after'] ?? '',
+        ),
+      );
     }
   }
 

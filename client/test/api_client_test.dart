@@ -35,5 +35,35 @@ void main() {
         expect(accept, 'application/vnd.nexdrop.v1+json');
       });
     }
+
+    test('preserves Retry-After and formats a rate limit message', () async {
+      final api = ApiClient(
+        client: MockClient(
+          (_) async => http.Response(
+            '{"error":{"code":"RATE_LIMITED"}}',
+            429,
+            headers: {'retry-after': '42'},
+          ),
+        ),
+      );
+
+      await expectLater(
+        api.login('https://node.example', 'user', 'password'),
+        throwsA(
+          isA<ApiException>()
+              .having((error) => error.code, 'code', 'RATE_LIMITED')
+              .having(
+                (error) => error.retryAfterSeconds,
+                'retryAfterSeconds',
+                42,
+              )
+              .having(
+                apiExceptionMessage,
+                'message',
+                '操作過於頻繁，請在 42 秒後再試',
+              ),
+        ),
+      );
+    });
   });
 }

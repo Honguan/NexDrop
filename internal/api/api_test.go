@@ -504,11 +504,15 @@ func TestLoginRateLimitReturnsRetryAfter(t *testing.T) {
 	var response *httptest.ResponseRecorder
 	for range 11 {
 		request := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"wrong"}`))
+		request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
 		response = httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 	}
 	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
 		t.Fatalf("status = %d, Retry-After = %q, body = %s", response.Code, response.Header().Get("Retry-After"), response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Retry-After") {
+		t.Fatalf("rate-limit message does not explain retry timing: %s", response.Body.String())
 	}
 }
 
