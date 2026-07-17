@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -453,6 +454,28 @@ func TestAPIVersionHeadersAndNegotiatedError(t *testing.T) {
 	}
 	if body.Error.Code != "INVALID_TOKEN" || body.Error.Message == "" || body.Error.RequestID != requestID || body.Error.Details == nil {
 		t.Fatalf("error response = %+v", body.Error)
+	}
+}
+
+func TestTransferRequestLogIncludesCorrelationFields(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+
+	handler := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	const transferID = "11111111-1111-4111-8111-111111111111"
+	request := httptest.NewRequest(http.MethodGet, "/api/transfers/"+transferID, nil)
+	request.Header.Set("Authorization", "Bearer invalid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["request_id"] == "" || record["transfer_id"] != transferID || record["error_code"] != "INVALID_TOKEN" {
+		t.Fatalf("correlation fields = %#v", record)
 	}
 }
 

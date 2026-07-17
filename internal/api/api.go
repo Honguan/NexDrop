@@ -229,7 +229,13 @@ func apiContract(next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		slog.Info("API request", "module", "api", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "error_code", writer.errorCode, "duration_ms", time.Since(started).Milliseconds())
+		attributes := []any{"module", "api", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "error_code", writer.errorCode, "duration_ms", time.Since(started).Milliseconds()}
+		if strings.HasPrefix(r.URL.Path, "/api/transfers/") {
+			if transferID := r.PathValue("id"); transferID != "" {
+				attributes = append(attributes, "transfer_id", transferID)
+			}
+		}
+		slog.Info("API request", attributes...)
 	})
 }
 
