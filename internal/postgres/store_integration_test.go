@@ -88,8 +88,8 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE devices SET trust_status = 'PENDING' WHERE id = $1`, pendingDevice.ID); err != nil {
-		t.Fatal(err)
+	if pendingDevice.TrustStatus != device.TrustPending {
+		t.Fatalf("second CreateDevice() trust status = %s, want PENDING", pendingDevice.TrustStatus)
 	}
 	pairingSession.DeviceID = &pendingDevice.ID
 	session.DeviceID = &created.ID

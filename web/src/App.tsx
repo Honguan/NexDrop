@@ -501,7 +501,7 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
       });
       rememberDevice(user.id, created.id);
       await reload();
-      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已由同一節點自動信任" : "此瀏覽器已產生配對碼");
+      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已成為第一台信任設備" : "此瀏覽器已產生配對碼");
     } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
   }
 
