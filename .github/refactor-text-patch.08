@@ -1,0 +1,178 @@
+ func (store *testStore) CreateDevice(_ context.Context, _ auth.Session, name string, kind device.Type, publicKey []byte, algorithm string) (device.Device, error) {
+-	item := device.Device{ID: "device-1", DisplayName: name, Type: kind, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: device.TrustPending}
++	item := device.Device{ID: "device-1", DisplayName: name, Type: kind, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: device.TrustTrusted}
+ 	store.devices = append(store.devices, item)
+ 	return item, nil
+ }
+@@ -541,6 +541,34 @@ func TestAdminRateLimitUsesSessionIdentity(t *testing.T) {
+ 	}
+ }
+ 
++func TestNodeKeyEnrollment(t *testing.T) {
++	t.Setenv("NEXDROP_NODE_OWNER", "owner")
++	t.Setenv("NEXDROP_NODE_KEY", "0123456789abcdef0123456789abcdef")
++	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
++	if err != nil {
++		t.Fatal(err)
++	}
++	store := &testStore{credential: auth.Credential{
++		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
++		PasswordHash: string(passwordHash),
++	}}
++	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
++
++	request := httptest.NewRequest(http.MethodPost, "/api/node/enroll", bytes.NewBufferString(`{"nodeKey":"0123456789abcdef0123456789abcdef"}`))
++	response := httptest.NewRecorder()
++	handler.ServeHTTP(response, request)
++	if response.Code != http.StatusOK {
++		t.Fatalf("enroll status = %d, body = %s", response.Code, response.Body.String())
++	}
++
++	invalid := httptest.NewRequest(http.MethodPost, "/api/node/enroll", bytes.NewBufferString(`{"nodeKey":"wrong-wrong-wrong-wrong"}`))
++	invalidResponse := httptest.NewRecorder()
++	handler.ServeHTTP(invalidResponse, invalid)
++	if invalidResponse.Code != http.StatusUnauthorized || !strings.Contains(invalidResponse.Body.String(), "INVALID_NODE_KEY") {
++		t.Fatalf("invalid enrollment status = %d, body = %s", invalidResponse.Code, invalidResponse.Body.String())
++	}
++}
++
+ func TestCreateAndListDevice(t *testing.T) {
+ 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+ 	if err != nil {
+diff --git a/internal/auth/service.go b/internal/auth/service.go
+index 83b83c8..d42f0a7 100644
+--- a/internal/auth/service.go
++++ b/internal/auth/service.go
+@@ -171,6 +171,25 @@ func (service *Service) validPassword(ctx context.Context, identifier, password
+ 	return err == nil && bcrypt.CompareHashAndPassword([]byte(credential.PasswordHash), []byte(password)) == nil
+ }
+ 
++// CurrentTOTPCode returns the six-digit code for a bootstrap secret. It is
++// exported for the deployment CLI so a fresh installation can print the
++// initial OTP together with the authenticator URI.
++func CurrentTOTPCode(secret string, now time.Time) (string, error) {
++	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(normalizeSecret(secret))
++	if err != nil || len(key) < 16 {
++		return "", ErrInvalidCredentials
++	}
++	counter := uint64(now.UTC().Unix() / 30)
++	message := make([]byte, 8)
++	binary.BigEndian.PutUint64(message, counter)
++	digest := hmac.New(sha1.New, key)
++	_, _ = digest.Write(message)
++	sum := digest.Sum(nil)
++	index := sum[len(sum)-1] & 0x0f
++	value := (uint32(sum[index])&0x7f)<<24 | uint32(sum[index+1])<<16 | uint32(sum[index+2])<<8 | uint32(sum[index+3])
++	return fmt.Sprintf("%06d", value%1000000), nil
++}
++
+ func validTOTP(secret, code string, now time.Time) bool {
+ 	if len(code) != 6 {
+ 		return false
+diff --git a/internal/postgres/admin.go b/internal/postgres/admin.go
+index a3772b2..aa089e8 100644
+--- a/internal/postgres/admin.go
++++ b/internal/postgres/admin.go
+@@ -220,6 +220,7 @@ func (store *Store) ListAdminDevices(ctx context.Context, limit, offset int) ([]
+ 		       c.last_seen_at, d.created_at
+ 		FROM devices d JOIN users u ON u.id = d.user_id
+ 		LEFT JOIN device_connections c ON c.device_id=d.id
++		WHERE d.deleted_at IS NULL
+ 		ORDER BY d.created_at DESC LIMIT $1 OFFSET $2
+ 	`, limit, offset)
+ 	if err != nil {
+@@ -266,8 +267,9 @@ func (store *Store) DeleteAdminDevice(ctx context.Context, actor auth.Session, d
+ 	}
+ 	defer func() { _ = tx.Rollback(ctx) }()
+ 	command, err := tx.Exec(ctx, `
+-		DELETE FROM devices d
+-		WHERE d.id=$1 AND NOT EXISTS (
++		UPDATE devices d
++		SET deleted_at=$2, trust_status='REVOKED', revoked_at=COALESCE(revoked_at, $2)
++		WHERE d.id=$1 AND d.deleted_at IS NULL AND NOT EXISTS (
+ 			SELECT 1 FROM device_connections c
+ 			WHERE c.device_id=d.id AND c.disconnected_at IS NULL
+ 			  AND c.last_seen_at >= $2 - interval '45 seconds'
+@@ -279,6 +281,9 @@ func (store *Store) DeleteAdminDevice(ctx context.Context, actor auth.Session, d
+ 	if command.RowsAffected() == 0 {
+ 		return admin.ErrConflict
+ 	}
++	if _, err := tx.Exec(ctx, `UPDATE user_sessions SET revoked_at=$2 WHERE device_id=$1 AND revoked_at IS NULL`, deviceID, now); err != nil {
++		return err
++	}
+ 	if err := insertAudit(ctx, tx, actor, "DEVICE_DELETED", "DEVICE", deviceID); err != nil {
+ 		return err
+ 	}
+diff --git a/internal/postgres/store.go b/internal/postgres/store.go
+index 8984b44..85adc8a 100644
+--- a/internal/postgres/store.go
++++ b/internal/postgres/store.go
+@@ -240,6 +240,14 @@ func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name
+ 	if command.RowsAffected() == 0 {
+ 		return device.Device{}, device.ErrForbidden
+ 	}
++	if _, err := tx.Exec(ctx, `
++		INSERT INTO notifications (device_id, notification_type, payload, created_at)
++		SELECT id, 'DEVICE_JOINED', jsonb_build_object('deviceId', $1::text, 'displayName', $2), now()
++		FROM devices
++		WHERE user_id=$3 AND id<>$1 AND trust_status='TRUSTED' AND deleted_at IS NULL
++	`, result.ID, result.DisplayName, session.ID); err != nil {
++		return device.Device{}, err
++	}
+ 	if err := tx.Commit(ctx); err != nil {
+ 		return device.Device{}, err
+ 	}
+@@ -259,7 +267,7 @@ func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.De
+ 		JOIN device_keys k ON k.device_id = d.id
+ 		LEFT JOIN device_lan_identities l ON l.device_id = d.id
+ 		LEFT JOIN device_connections connection ON connection.device_id = d.id
+-		WHERE d.user_id = $1
++		WHERE d.user_id = $1 AND d.deleted_at IS NULL
+ 		ORDER BY d.created_at
+ 	`, userID)
+ 	if err != nil {
+@@ -1336,7 +1344,7 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
+ 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
+ 		WHERE t.group_deleted_at IS NULL
+ 		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $1)
+-		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
++		  AND ($2::uuid IS NOT NULL AND (t.sender_device_id = $2 OR target.target_device_id = $2))
+ 		ORDER BY t.created_at DESC
+ 	`, session.ID, session.DeviceID)
+ 	if err != nil {
+@@ -1389,7 +1397,7 @@ func (store *Store) ListTransferPage(ctx context.Context, session auth.Session,
+ 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
+ 		WHERE t.group_deleted_at IS NULL
+ 		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $1)
+-		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
++		  AND ($2::uuid IS NOT NULL AND (t.sender_device_id = $2 OR target.target_device_id = $2))
+ 		  AND ($3::timestamptz IS NULL OR t.created_at >= $3)
+ 		  AND ($4::timestamptz IS NULL OR t.created_at <= $4)
+ 		  AND ($5::text = '' OR t.status = $5)
+@@ -1446,12 +1454,12 @@ func (store *Store) getTransfer(ctx context.Context, query querier, session auth
+ 		LEFT JOIN messages m ON m.transfer_id = t.id
+ 		WHERE t.id = $1 AND t.group_deleted_at IS NULL
+ 		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $2)
+-		  AND (
+-			t.sender_user_id = $2 OR ($3::uuid IS NOT NULL AND EXISTS (
++		  AND ($3::uuid IS NOT NULL AND (
++			t.sender_device_id = $3 OR EXISTS (
+ 				SELECT 1 FROM transfer_targets access_target
+ 				WHERE access_target.transfer_id = t.id AND access_target.target_device_id = $3
+-			))
+-		)
++			)
++		  ))
+ 	`, transferID, session.ID, session.DeviceID).Scan(
+ 		&result.ID, &result.BatchID, &result.SenderUserID, &result.SenderDeviceID, &result.TargetType,
+ 		&groupID, &result.ContentType, &result.Content, &result.Status, &result.CreatedAt, &result.ExpiresAt,
+@@ -1469,7 +1477,7 @@ func (store *Store) getTransfer(ctx context.Context, query querier, session auth
+ 		SELECT target_device_id::text, wrapped_content_key
+ 		FROM transfer_content_keys
+ 		WHERE transfer_id = $1 AND ($2 OR target_device_id = $3)
+-	`, transferID, result.SenderUserID == session.ID, session.DeviceID)
++	`, transferID, session.DeviceID != nil && result.SenderDeviceID == *session.DeviceID, session.DeviceID)
+ 	if err != nil {
+ 		return transfer.Transfer{}, err
+ 	}
+diff --git a/internal/postgres/store_integration_test.go b/internal/postgres/store_integration_test.go

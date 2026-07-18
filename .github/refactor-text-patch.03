@@ -1,0 +1,142 @@
+ prompt_value() {
+@@ -216,12 +289,16 @@ prompt_secret() (
+ )
+ 
+ edit_all_install_configuration() {
+-    set_env_value NEXDROP_DOMAIN "$(prompt_value '節點網域' "$(env_value NEXDROP_DOMAIN)")"
++    set_env_value NEXDROP_NODE_URL "$(prompt_value '節點連結（預設 IP；網域請填 https://...）' "$(env_value NEXDROP_NODE_URL)")"
++    set_env_value NEXDROP_SITE_ADDRESS "$(site_address_for_node_url "$(env_value NEXDROP_NODE_URL)")"
++    set_env_value NEXDROP_ALLOWED_IPS "$(prompt_value '允許來源 IP（逗號分隔，留空不限）' "$(env_value NEXDROP_ALLOWED_IPS)")"
+     set_env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME "$(prompt_value '管理員帳號' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")"
++    set_env_value NEXDROP_NODE_OWNER "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)"
+     set_env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL "$(prompt_value '管理員電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)")"
+     set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(prompt_secret '管理員密碼' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)")"
+     set_env_value POSTGRES_PASSWORD "$(prompt_secret 'PostgreSQL 密碼' "$(env_value POSTGRES_PASSWORD)")"
+     set_env_value NEXDROP_CURSOR_SECRET "$(prompt_secret '分頁游標秘密' "$(env_value NEXDROP_CURSOR_SECRET)")"
++    set_env_value NEXDROP_NODE_KEY "$(prompt_secret '節點密鑰' "$(env_value NEXDROP_NODE_KEY)")"
+ }
+ 
+ edit_install_configuration_until_valid() {
+@@ -239,7 +316,7 @@ configure_install() {
+         cat <<EOF
+ 
+ 已產生安全隨機預設：
+-  節點網域：$(env_value NEXDROP_DOMAIN)
++  節點連結：$(env_value NEXDROP_NODE_URL)
+   管理員帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
+   管理員電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
+   管理員密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
+@@ -264,7 +341,7 @@ confirm_existing_configuration() {
+         cat <<EOF
+ 
+ 偵測到既有設定：
+-  節點網域：$(env_value NEXDROP_DOMAIN)
++  節點連結：$(env_value NEXDROP_NODE_URL)
+   管理員帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
+   管理員電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
+   Bootstrap 初始密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)（若已重設則失效）
+@@ -275,8 +352,11 @@ EOF
+             a|A) return ;;
+             s|S) show_credentials --show-secrets; return ;;
+             e|E)
+-                set_env_value NEXDROP_DOMAIN "$(prompt_value '節點網域' "$(env_value NEXDROP_DOMAIN)")"
++                set_env_value NEXDROP_NODE_URL "$(prompt_value '節點連結（預設 IP；網域請填 https://...）' "$(env_value NEXDROP_NODE_URL)")"
++                set_env_value NEXDROP_SITE_ADDRESS "$(site_address_for_node_url "$(env_value NEXDROP_NODE_URL)")"
++                set_env_value NEXDROP_ALLOWED_IPS "$(prompt_value '允許來源 IP（逗號分隔，留空不限）' "$(env_value NEXDROP_ALLOWED_IPS)")"
+                 set_env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME "$(prompt_value '管理員帳號' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")"
++                set_env_value NEXDROP_NODE_OWNER "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)"
+                 set_env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL "$(prompt_value '管理員電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)")"
+                 set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(prompt_secret 'Bootstrap 管理員密碼' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)")"
+                 validate_public_configuration
+@@ -289,22 +369,35 @@ EOF
+ 
+ show_credentials() {
+     ensure_env
++    node_url=$(env_value NEXDROP_NODE_URL)
++    node_key=$(env_value NEXDROP_NODE_KEY)
++    username=$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
++    email=$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
++    totp_secret=$(env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)
++    otp_code=$(docker compose run --rm --no-deps -T nexdrop totp-code --secret "$totp_secret" 2>/dev/null || printf '%s' '請啟動節點後再取得')
++    import_json=$(printf '{"nodeUrl":"%s","nodeKey":"%s"}' "$node_url" "$node_key")
+     cat <<EOF
+-NexDrop 管理員初始登入資料（請勿貼到公開位置）：
+-  節點網址：https://$(env_value NEXDROP_DOMAIN)
+-  管理員帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
+-  管理員電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
++NexDrop 2.0 節點與登入資料（請勿貼到公開位置）：
++  節點連結：$node_url
++  節點密鑰：$node_key
++  一鍵匯入：$import_json
++
++Web 管理後台：
++  網址：$node_url
++  帳號：$username
++  電子郵件：$email
+   Bootstrap 初始密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
+-  注意：若已透過 Web 或 reset-password 變更密碼，上述初始密碼已失效，系統無法還原目前密碼。
++  OTP 設定密鑰：$totp_secret
++  目前六位數 OTP：$otp_code
++  Authenticator URI：otpauth://totp/NexDrop:$username?secret=$totp_secret&issuer=NexDrop&algorithm=SHA1&digits=6&period=30
++  來源 IP 限制：$(env_value NEXDROP_ALLOWED_IPS)
+ EOF
+-    if [ "${1:-}" != "--show-secrets" ]; then
+-        echo "如需查看 PostgreSQL 密碼與游標秘密，請明確執行 ./deploy/nexdrop credentials --show-secrets。"
+-        return
+-    fi
+-    cat <<EOF
++    if [ "${1:-}" = "--show-secrets" ]; then
++        cat <<EOF
+   PostgreSQL 密碼：$(env_value POSTGRES_PASSWORD)
+   分頁游標秘密：$(env_value NEXDROP_CURSOR_SECRET)
+ EOF
++    fi
+ }
+ 
+ verify_database_credentials() {
+@@ -343,10 +436,8 @@ run_install() {
+     verify_database_credentials
+     docker compose up -d --wait --wait-timeout 120
+     if [ "$CREATED_ENV" = true ] || [ "$GENERATED_DEFAULTS" = true ]; then
+-        echo "安裝完成。首次管理員登入資料如下；請立即安全保存："
+-        echo "  帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)"
+-        echo "  電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)"
+-        echo "  密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)"
++        echo "安裝完成。請立即安全保存以下資料："
++        show_credentials
+         echo "設定已保存於 .env。之後可執行 ./deploy/nexdrop credentials 再次查看。"
+     fi
+ }
+@@ -463,7 +554,9 @@ case "$command" in
+         ensure_env
+         explain_configuration
+         echo "此命令只更新網域與 Bootstrap 管理員資料；既有管理員密碼請使用 reset-password。"
+-        set_env_value NEXDROP_DOMAIN "$(prompt_value '節點網域' "$(env_value NEXDROP_DOMAIN)")"
++        set_env_value NEXDROP_NODE_URL "$(prompt_value '節點連結（預設 IP；網域請填 https://...）' "$(env_value NEXDROP_NODE_URL)")"
++    set_env_value NEXDROP_SITE_ADDRESS "$(site_address_for_node_url "$(env_value NEXDROP_NODE_URL)")"
++    set_env_value NEXDROP_ALLOWED_IPS "$(prompt_value '允許來源 IP（逗號分隔，留空不限）' "$(env_value NEXDROP_ALLOWED_IPS)")"
+         set_env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME "$(prompt_value 'Bootstrap 管理員帳號' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")"
+         set_env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL "$(prompt_value 'Bootstrap 管理員電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)")"
+         set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(prompt_secret 'Bootstrap 管理員密碼' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)")"
+diff --git a/docs/api.md b/docs/api.md
+index b38d6fd..da54ad7 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1,4 +1,4 @@
+-# API v1
++# API v1（NexDrop 2.0）
+ 
+ 基礎路徑為 `/api`，時間使用 UTC RFC 3339，資源 ID 使用 UUID。所有回應包含：
+ 
+@@ -29,12 +29,14 @@ X-NexDrop-API-Version: 1
+ 
+ 主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、API、協議、最低用戶端與建置 Commit。
+ 
+-## 裝置狀態與信任
++## 節點加入與裝置狀態
+ 
+-已驗證帳號向目前 Linux 節點呼叫 `POST /api/devices` 時，節點會將該裝置直接建立為 `TRUSTED`，並把目前工作階段連結至新裝置。`PENDING`、配對碼及核准端點保留給既有待配對資料與 1.x 相容流程；第一方用戶端不會在同一節點重複要求配對碼。
++一般設備先以 `POST /api/node/enroll` 提交安裝器輸出的節點密鑰，取得節點擁有者的裝置工作階段；接著呼叫 `POST /api/devices` 建立自己的加密裝置身分。新裝置會直接建立為 `TRUSTED`，並將目前工作階段連結至該裝置。NexDrop 2.0 不再公開裝置配對碼、待核准或人工核准端點。
++
++節點密鑰只用於一般設備加入，不取代 Web 管理後台的帳號、密碼與六位數 TOTP。建議透過 `./deploy/nexdrop credentials` 複製完整節點匯入 JSON，避免手動輸入錯誤。
+ 

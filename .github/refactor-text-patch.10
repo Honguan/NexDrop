@@ -1,0 +1,125 @@
+index 92dc3e0..60dbde3 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -179,9 +179,9 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+   const knownDevices = useRef<Set<string> | null>(null);
+ 
+   const reload = useCallback(async () => {
+-	const [nextDevices, transferPage] = await Promise.all([
++    const [nextDevices, transferPage] = await Promise.all([
+       api.get<Device[]>("/api/devices"),
+-	  api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
++      api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
+     ]);
+     if (knownDevices.current) {
+       for (const joined of nextDevices.filter((item) => !knownDevices.current!.has(item.id) && item.trustStatus === "TRUSTED")) {
+@@ -190,17 +190,27 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+     }
+     knownDevices.current = new Set(nextDevices.map((item) => item.id));
+     setDevices(nextDevices);
+-	setTransfers(transferPage.items);
++    setTransfers(transferPage.items);
+   }, []);
+ 
+   useEffect(() => {
+     const synchronize = async () => {
+-      const storedDeviceID = deviceID(user.id);
+-      if (storedDeviceID) {
+-        const challenge = await api.send<{ id: string; sessionId: string; ephemeralPublicKey: string; nonce: string }>(`/api/devices/${storedDeviceID}/session-challenge`, "POST");
+-        const proof = await proveDeviceSession(user.id, challenge.ephemeralPublicKey, challenge.nonce, challenge.sessionId);
+-        await api.send(`/api/devices/${storedDeviceID}/attach-session`, "POST", { challengeId: challenge.id, proof });
++      let localDeviceID = deviceID(user.id);
++      const keys = await ensureDeviceKey(user.id);
++      const available = await api.get<Device[]>("/api/devices");
++      if (!localDeviceID || !available.some((item) => item.id === localDeviceID && item.trustStatus === "TRUSTED")) {
++        const created = await api.send<Device>("/api/devices", "POST", {
++          displayName: browserName(),
++          type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
++          publicKey: keys.publicKey,
++          keyAlgorithm: "X25519",
++        });
++        localDeviceID = created.id;
++        rememberDevice(user.id, created.id);
+       }
++      const challenge = await api.send<{ id: string; sessionId: string; ephemeralPublicKey: string; nonce: string }>(`/api/devices/${localDeviceID}/session-challenge`, "POST");
++      const proof = await proveDeviceSession(user.id, challenge.ephemeralPublicKey, challenge.nonce, challenge.sessionId);
++      await api.send(`/api/devices/${localDeviceID}/attach-session`, "POST", { challengeId: challenge.id, proof });
+       await reload();
+     };
+     synchronize().catch((reason) => setNotice(messageFor(reason))).finally(() => setLoading(false));
+@@ -511,14 +521,10 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
+     } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
+   }
+ 
+-  async function remove(id: string) {
+-    try { await api.send(`/api/devices/${id}`, "DELETE"); await reload(); notify("離線設備已刪除"); } catch (reason) { notify(messageFor(reason)); }
+-  }
+-
+   return <section className="page">
+-    <PageHeading eyebrow="NODE DEVICES" title="設備" description="設備只要輸入節點連結與節點密鑰即可加入，不再使用配對碼。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "加入中…" : registered ? "此瀏覽器已加入" : "+ 將此瀏覽器加入節點"}</button>} />
++    <PageHeading eyebrow="NODE DEVICES" title="設備" description="設備只要輸入節點連結與節點密鑰即可直接加入。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "加入中…" : registered ? "此瀏覽器已加入" : "+ 將此瀏覽器加入節點"}</button>} />
+     <div className="cards-grid devices-grid">
+-      {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} />{!item.online && item.id !== localDevice?.id && <button className="text-danger" onClick={() => remove(item.id)}>刪除離線設備</button>}</div></article>)}
++      {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} /></div></article>)}
+       {!devices.length && <Empty text="尚未加入任何設備" />}
+     </div>
+   </section>;
+@@ -714,7 +720,7 @@ function Metric({ label, value, note, danger }: { label: string; value: string;
+ 
+ function browserName() { return `${navigator.userAgent.includes("Edg/") ? "Edge" : "Chrome"} · ${navigator.platform || "Web"}`; }
+ function labelDeviceType(value: string) { return ({ WINDOWS: "Windows", ANDROID: "Android", WEB_CHROME: "Chrome Web", WEB_EDGE: "Edge Web" } as Record<string, string>)[value] ?? value; }
+-function statusLabel(value: string) { return ({ ONLINE: "在線", OFFLINE: "離線", PENDING: "待核准", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
++function statusLabel(value: string) { return ({ ONLINE: "在線", OFFLINE: "離線", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
+ function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+ function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
+ function currentNodeStatisticsPath() { const now = Date.now(); return `/api/statistics/node?${new URLSearchParams({ from: new Date(now - 2 * 60 * 1000).toISOString(), to: new Date(now + 60 * 1000).toISOString() })}`; }
+diff --git a/web/src/api.ts b/web/src/api.ts
+index f319f0a..5f59409 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -14,7 +14,7 @@ export type Device = {
+   type: string;
+   publicKey?: string;
+   keyAlgorithm?: string;
+-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
++  trustStatus: "TRUSTED" | "REVOKED";
+   online: boolean;
+   lastSeenAt?: string;
+   createdAt: string;
+@@ -91,7 +91,7 @@ export type DeviceStatistic = {
+   deviceId: string;
+   displayName: string;
+   deviceType: string;
+-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
++  trustStatus: "TRUSTED" | "REVOKED";
+   online: boolean;
+   lastSeenAt?: string;
+   sentCount: number;
+@@ -119,7 +119,7 @@ export type AdminDevice = {
+   ownerUsername: string;
+   displayName: string;
+   type: string;
+-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
++  trustStatus: "TRUSTED" | "REVOKED";
+   online: boolean;
+   lastSeenAt?: string;
+   createdAt: string;
+diff --git a/web/tests/admin-pairing-regression.test.mjs b/web/tests/admin-pairing-regression.test.mjs
+index 2a24001..b9f6f73 100644
+--- a/web/tests/admin-pairing-regression.test.mjs
++++ b/web/tests/admin-pairing-regression.test.mjs
+@@ -10,12 +10,11 @@ test("管理後台可局部載入且輪詢不會超過預設限制", async () =>
+   assert.match(app, />重試</);
+ });
+ 
+-test("待核准設備自行產生配對碼並由信任設備核准", async () => {
++test("2.0 移除配對介面並統一為聊天室", async () => {
+   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+-  assert.match(app, /第一台信任設備/);
+-  assert.match(app, /此設備配對碼/);
+-  assert.match(app, /pairing-code/);
+-  assert.match(app, /核准新設備/);
+-  assert.doesNotMatch(app, /請由管理員核准這個瀏覽器設備/);
+-  assert.doesNotMatch(app, /設備已核准/);
++  assert.match(app, /節點聊天室/);
++  assert.match(app, /chat-shell/);

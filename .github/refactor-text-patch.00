@@ -1,0 +1,210 @@
+diff --git a/.env.example b/.env.example
+index 5f13b61..e3d7f87 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,13 +1,23 @@
+-# install 會覆寫為 64 字元十六進位亂數。自訂值至少 16 字元，可使用英數及 . _ ~ ! @ % + , : / -。
++# install 會自動產生並保留所有秘密。
+ POSTGRES_PASSWORD=replace-with-openssl-rand-hex-32
+-# NEXDROP_CURSOR_SECRET 由 install 產生並在 update 時保留；直接使用 Compose 時須自行設定至少 32 字元穩定亂數。
+ NEXDROP_CURSOR_SECRET=replace-with-openssl-rand-hex-32
+-NEXDROP_IMAGE=ghcr.io/honguan/nexdrop:1.0.5
+-NEXDROP_DOMAIN=localhost
++NEXDROP_IMAGE=ghcr.io/honguan/nexdrop:2.0.0
++
++# 預設使用伺服器區網 IP；也可改成由 DNS A 記錄指向本機的 https://drop.example.com。
++NEXDROP_NODE_URL=http://127.0.0.1
++NEXDROP_SITE_ADDRESS=:80
++# 逗號分隔；留空代表不限制。可填 192.0.2.10,2001:db8::10。
++NEXDROP_ALLOWED_IPS=
++
++# 一般設備只需要 NEXDROP_NODE_URL 與 NEXDROP_NODE_KEY。
++NEXDROP_NODE_OWNER=admin
++NEXDROP_NODE_KEY=replace-with-random-node-key
++
++# Web 管理後台仍使用帳號、密碼與六位數 OTP。
+ NEXDROP_BOOTSTRAP_ADMIN_USERNAME=admin
+ NEXDROP_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+-# 至少 12 字元；支援英數及 . _ ~ ! @ % + , : / -。install 會覆寫為隨機值。
+ NEXDROP_BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-random-admin-password
++NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET=replace-with-base32-totp-secret
++
+ NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE=10
+-NEXDROP_PAIRING_RATE_LIMIT_PER_MINUTE=10
+ NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE=30
+diff --git a/.github/workflows/export-refactor-source.yml b/.github/workflows/export-refactor-source.yml
+deleted file mode 100644
+index a4e0ebb..0000000
+--- a/.github/workflows/export-refactor-source.yml
++++ /dev/null
+@@ -1,22 +0,0 @@
+-name: Export refactor source
+-
+-on:
+-  pull_request:
+-    branches: [master]
+-
+-permissions:
+-  contents: read
+-
+-jobs:
+-  export:
+-    if: github.head_ref == 'agent/refactor-node-chat-enrollment'
+-    runs-on: ubuntu-latest
+-    steps:
+-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+-      - name: Archive source
+-        run: tar --exclude=.git --exclude=node_modules --exclude=build --exclude=dist -czf "$RUNNER_TEMP/nexdrop-refactor-source.tar.gz" .
+-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+-        with:
+-          name: nexdrop-refactor-source
+-          path: ${{ runner.temp }}/nexdrop-refactor-source.tar.gz
+-          if-no-files-found: error
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 99fc29c..a4a4c23 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -171,7 +171,7 @@ jobs:
+             COMMIT=${{ github.sha }}
+           tags: |
+             ghcr.io/honguan/nexdrop:${{ needs.validate.outputs.version }}
+-            ghcr.io/honguan/nexdrop:1.0
++            ghcr.io/honguan/nexdrop:2.0
+             ghcr.io/honguan/nexdrop:latest
+       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+         with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e942228..2efef98 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,26 @@
+ 
+ ## [Unreleased]
+ 
++## [2.0.0] - 2026-07-19
++
++### Added
++
++- 節點連結與節點密鑰的一鍵匯入／複製流程。
++- 統一設備聊天室、圖片／檔案拖放、設備加入與新內容通知。
++- 管理後台離線設備刪除、最後上線與在線狀態。
++- 安裝完成輸出 IP 節點網址、節點密鑰、Web OTP 與可選來源 IP 白名單。
++
++### Changed
++
++- 一般設備直接使用節點密鑰加入，不再使用管理員帳密、OTP、配對碼、待核准或人工核准。
++- 傳送、接收及傳輸紀錄整合為聊天室；預設廣播給全部設備。
++- 指定設備內容改為設備層級可見，其他設備無法讀取該筆對話。
++
++### Removed
++
++- 第一方介面的配對碼、挑戰 ID、待核准設備與管理員配對操作。
++- 節點設定中的六位數設備驗證碼。
++
+ ## [1.0.6] - 2026-07-18
+ 
+ ### Changed
+@@ -109,3 +129,5 @@
+ [1.0.4]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.4
+ [1.0.5]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.5
+ [1.0.6]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.6
++
++[2.0.0]: https://github.com/Honguan/NexDrop/releases/tag/v2.0.0
+diff --git a/Dockerfile b/Dockerfile
+index b920a18..e8e7502 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -7,7 +7,7 @@ COPY web/src ./src
+ RUN npm run build
+ 
+ FROM golang:1.26.5-alpine3.24 AS build
+-ARG VERSION=1.0.6
++ARG VERSION=2.0.0
+ ARG COMMIT=development
+ WORKDIR /src
+ COPY go.mod go.sum ./
+@@ -16,7 +16,7 @@ COPY internal ./internal
+ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X nexdrop/internal/version.ProductVersion=${VERSION} -X nexdrop/internal/version.BuildCommit=${COMMIT}" -o /out/nexdrop ./cmd/nexdrop
+ 
+ FROM alpine:3.24.1
+-ARG VERSION=1.0.6
++ARG VERSION=2.0.0
+ ARG COMMIT=development
+ LABEL org.opencontainers.image.title="NexDrop Node" \
+       org.opencontainers.image.version="${VERSION}" \
+diff --git a/README.md b/README.md
+index c3b9866..86f0cf7 100644
+--- a/README.md
++++ b/README.md
+@@ -1,69 +1,59 @@
+ # NexDrop
+ 
+-NexDrop 是可自行架設的混合式多裝置傳輸平台。它會優先在區網直接傳輸，無法直連時改由私有 Node 暫存，支援 Windows 10/11、Android、Web、Chrome 與 Edge。
++NexDrop 2.0 是可自行架設的多設備加密聊天室與檔案傳輸平台，支援 Windows、Android、Web、Chrome 與 Edge。設備只需「節點連結＋節點密鑰」即可加入；傳送、接收與歷史紀錄統一顯示在聊天室。
+ 
+-目前版本為 **1.0.5**。主要能力包含同節點裝置自動信任、端對端加密文字與檔案、分段續傳、即時設備狀態、逐設備統計、節點管理、配額、備份及還原。
++## 主要能力
+ 
+-## 架構
+-
+-Go 模組化單體提供 API、WebSocket、任務與管理服務；PostgreSQL 保存狀態；Flutter 共用 Windows/Android 用戶端；React 提供 Web UI；Manifest V3 擴充功能可獨立配對為一台設備。詳見 [架構文件](docs/architecture.md)。
++- 預設向節點所有設備廣播文字、網址、圖片與檔案，也可指定私人接收設備。
++- 私人內容只對傳送設備及指定設備可見。
++- 顯示傳送設備、時間、在線狀態與送達／失敗狀態。
++- Web、Windows、Android 支援拖放圖片與檔案。
++- 新設備加入與收到新內容時顯示通知。
++- 管理後台可刪除離線設備，並以帳號、密碼及六位數 OTP 登入。
++- 區網優先，無法直連時由自行部署的 Linux Node 接力。
+ 
+ ## 快速部署 Linux Node
+ 
+-需求：Docker Engine 24+、Docker Compose v2、可解析至主機的網域名稱。
++需求：Docker Engine 24+、Docker Compose v2。
+ 
+ ```bash
+ git clone https://github.com/Honguan/NexDrop.git
+ cd NexDrop
+ ./deploy/nexdrop install
+-docker compose ps
+ ```
+ 
+-安裝精靈會自動取得 Docker 所需的管理員權限，說明網域與密碼條件，並產生 PostgreSQL 密碼、游標秘密及管理員密碼。畫面會顯示全部預設值，讓你接受、逐項修改或重新隨機產生；`.env` 會維持為原執行使用者可讀的 `600` 權限。自動化環境可使用 `./deploy/nexdrop install --non-interactive`。
+-
+-預設由 Caddy 開放 `80/tcp`、`443/tcp`、`443/udp`；Node 僅在 Compose 網路使用 `8080/tcp`。本機原始碼映像可用 `docker compose build --pull nexdrop` 建置。
+-
+-## 開發與建置
+-
+-```bash
+-go test ./...
+-go build ./cmd/nexdrop
+-cd web && npm ci && npm test && npm run build
+-cd ../extension && npm ci && npm test && npm run build
+-cd ../client && flutter analyze && flutter test
+-```
++安裝器預設偵測伺服器 IP，完成後輸出：
+ 
+-- Node 與命令列：[cmd/README.md](cmd/README.md)
+-- Windows／Android：[client/README.md](client/README.md)
+-- Web：[web/README.md](web/README.md)
+-- Extension：[extension/README.md](extension/README.md)
+-- 部署管理：[deploy/README.md](deploy/README.md)
++- 節點 IP 連結
++- 節點密鑰
++- 一鍵匯入 JSON
++- Web 管理員帳號、密碼
++- OTP 設定密鑰、目前六位數 OTP 與 Authenticator URI
+ 
+-## 設定與管理
++要改用網域，先設定 DNS A／AAAA 記錄，再執行 `./deploy/nexdrop configure` 填入 `https://你的網域`。可同時設定只允許特定來源 IP。
+ 
+-設定範例位於 [.env.example](.env.example)，完整說明見 [設定文件](docs/configuration.md)。常用命令：
++## 常用命令
+ 
+ ```bash
+-./deploy/nexdrop status
+ ./deploy/nexdrop credentials
+ ./deploy/nexdrop configure
+-./deploy/nexdrop configure-secrets
++./deploy/nexdrop status
+ ./deploy/nexdrop logs nexdrop
+-./deploy/nexdrop doctor

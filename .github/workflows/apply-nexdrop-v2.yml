@@ -1,0 +1,31 @@
+name: Apply NexDrop 2.0 refactor
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/refactor-node-chat-enrollment'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/refactor-node-chat-enrollment
+          fetch-depth: 0
+      - name: Apply prepared refactor
+        shell: bash
+        run: |
+          cat .github/refactor-text-patch.* > "$RUNNER_TEMP/nexdrop-v2.patch"
+          echo 'de1d2391b7a13ce51c07104d85f7408319ed2fe1589f89608566e7afeda094e4  '"$RUNNER_TEMP/nexdrop-v2.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/nexdrop-v2.patch"
+          git apply --whitespace=nowarn "$RUNNER_TEMP/nexdrop-v2.patch"
+          rm -f .github/refactor-text-patch.* .github/workflows/apply-nexdrop-v2.yml .github/workflows/export-refactor-source.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'refactor: implement node-key enrollment and unified chat'
+          git push origin HEAD:agent/refactor-node-chat-enrollment

@@ -1,0 +1,234 @@
+ ./deploy/nexdrop backup --output /var/lib/nexdrop/backups/manual.tar.gz
+-./deploy/nexdrop cleanup --limit 100
+ ./deploy/nexdrop update
+-# 或鎖定版本：./deploy/nexdrop update 1.0.5
++# 鎖定本版
++./deploy/nexdrop update 2.0.0
+ ```
+ 
+-## 安全與發布
+-
+-正式環境必須使用 HTTPS、強密碼及固定完整映像版本，不可提交 `.env`、Token、私鑰、keystore 或簽章憑證。弱點請依 [SECURITY.md](SECURITY.md) 私下回報。
++## 開發與文件
+ 
+-正式產物與 SHA-256 位於 [GitHub Releases](https://github.com/Honguan/NexDrop/releases)。變更、升級及已知問題請見 [CHANGELOG.md](CHANGELOG.md) 與 [發布流程](docs/release-process.md)。
+-
+-## 文件
++```bash
++go test ./...
++cd web && npm ci && npm test && npm run build
++cd ../extension && npm ci && npm test && npm run build
++cd ../client && flutter analyze && flutter test
++```
+ 
+-[文件索引](docs/README.md)包含部署、API、安全、資料模型、協議與故障排除。參與開發前請閱讀 [CONTRIBUTING.md](CONTRIBUTING.md) 與 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
++完整設定見 [設定文件](docs/configuration.md)，升級與變更見 [CHANGELOG.md](CHANGELOG.md) 與 [2.0.0 發布說明](docs/release-notes-v2.0.0.md)。
+ 
+ 本專案採 [MIT License](LICENSE)。
+diff --git a/VERSION b/VERSION
+index af0b7dd..227cea2 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-1.0.6
++2.0.0
+diff --git a/client/lib/core/api_client.dart b/client/lib/core/api_client.dart
+index 55169e1..ea8b340 100644
+--- a/client/lib/core/api_client.dart
++++ b/client/lib/core/api_client.dart
+@@ -30,6 +30,7 @@ String apiExceptionMessage(ApiException error) {
+   return {
+         'INVALID_REQUEST': '請確認所有必填欄位與格式',
+         'INVALID_CREDENTIALS': '帳號或密碼不正確',
++        'INVALID_NODE_KEY': '節點密鑰不正確',
+         'PERMISSION_DENIED': '你沒有執行此操作的權限',
+         'INVALID_TOKEN': '登入已失效，請重新登入',
+         'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
+diff --git a/client/pubspec.lock b/client/pubspec.lock
+index 1bc3330..9cbf5fd 100644
+--- a/client/pubspec.lock
++++ b/client/pubspec.lock
+@@ -600,22 +600,6 @@ packages:
+       url: "https://pub.dev"
+     source: hosted
+     version: "2.2.0"
+-  qr:
+-    dependency: transitive
+-    description:
+-      name: qr
+-      sha256: "5a1d2586170e172b8a8c8470bbbffd5eb0cd38a66c0d77155ea138d3af3a4445"
+-      url: "https://pub.dev"
+-    source: hosted
+-    version: "3.0.2"
+-  qr_flutter:
+-    dependency: "direct main"
+-    description:
+-      name: qr_flutter
+-      sha256: "5095f0fc6e3f71d08adef8feccc8cea4f12eec18a2e31c2e8d82cb6019f4b097"
+-      url: "https://pub.dev"
+-    source: hosted
+-    version: "4.1.0"
+   record_use:
+     dependency: transitive
+     description:
+diff --git a/client/pubspec.yaml b/client/pubspec.yaml
+index 6f5003a..1512e74 100644
+--- a/client/pubspec.yaml
++++ b/client/pubspec.yaml
+@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+ # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+ # In Windows, build-name is used as the major, minor, and patch parts
+ # of the product and file versions while build-number is used as the build suffix.
+-version: 1.0.6+7
++version: 2.0.0+8
+ 
+ environment:
+   sdk: ^3.12.2
+@@ -52,7 +52,6 @@ dependencies:
+   crypto: ^3.0.7
+   basic_utils: ^5.8.2
+   bonsoir: ^7.1.4
+-  qr_flutter: ^4.1.0
+   desktop_drop: ^0.7.1
+ 
+ dev_dependencies:
+diff --git a/client/test/api_client_test.dart b/client/test/api_client_test.dart
+index cc6c2ea..b8283c6 100644
+--- a/client/test/api_client_test.dart
++++ b/client/test/api_client_test.dart
+@@ -36,6 +36,22 @@ void main() {
+       });
+     }
+ 
++    test('uses node key enrollment without administrator credentials', () async {
++      late http.Request captured;
++      final api = ApiClient(
++        client: MockClient((request) async {
++          captured = request;
++          if (request.url.path == '/api/node/enroll') {
++            return http.Response('{"accessToken":"a","refreshToken":"r"}', 200);
++          }
++          return http.Response('{"id":"u","username":"admin","email":"a@example.com","admin":true,"totpEnabled":true}', 200);
++        }),
++      );
++
++      await api.enroll('http://192.168.1.10', 'node-key-123456789012345678901234');
++      expect(captured.url.path, '/api/account');
++    });
++
+     test('preserves Retry-After and formats a rate limit message', () async {
+       final api = ApiClient(
+         client: MockClient(
+diff --git a/client/test/pairing_help_test.dart b/client/test/pairing_help_test.dart
+index 67ccfef..6c25e8e 100644
+--- a/client/test/pairing_help_test.dart
++++ b/client/test/pairing_help_test.dart
+@@ -3,19 +3,17 @@ import 'dart:io';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ void main() {
+-  test('待核准設備自行產生配對資料並由信任設備核准', () async {
+-    final source = await File('lib/main.dart').readAsString();
++  test('設備只使用節點連結與節點密鑰加入', () async {
++    final mainSource = await File('lib/main.dart').readAsString();
++    final apiSource = await File('lib/core/api_client.dart').readAsString();
+ 
+-    for (final text in const [
+-      '配對碼已由本機自動產生',
+-      '請在 10 分鐘內',
+-      '核准新設備',
+-      '輸入配對碼',
+-      'nexdrop://pair',
+-    ]) {
+-      expect(source, contains(text));
++    expect(mainSource, contains('節點密鑰'));
++    expect(mainSource, contains('貼上匯入'));
++    expect(mainSource, contains('節點聊天室'));
++    expect(apiSource, contains('/api/node/enroll'));
++    expect(apiSource, contains('exportNodeConfiguration'));
++    for (final removed in const ['nexdrop://pair', '配對碼已由本機自動產生', '核准新設備', '輸入配對碼']) {
++      expect(mainSource, isNot(contains(removed)));
+     }
+-    expect(source, isNot(contains('管理員登入 NexDrop Web')));
+-    expect(source, isNot(contains('已在網頁核准，重新整理')));
+   });
+ }
+diff --git a/client/windows/runner/Runner.rc b/client/windows/runner/Runner.rc
+index e71e600..244158d 100644
+--- a/client/windows/runner/Runner.rc
++++ b/client/windows/runner/Runner.rc
+@@ -63,13 +63,13 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
+ #if defined(FLUTTER_VERSION_MAJOR) && defined(FLUTTER_VERSION_MINOR) && defined(FLUTTER_VERSION_PATCH) && defined(FLUTTER_VERSION_BUILD)
+ #define VERSION_AS_NUMBER FLUTTER_VERSION_MAJOR,FLUTTER_VERSION_MINOR,FLUTTER_VERSION_PATCH,FLUTTER_VERSION_BUILD
+ #else
+-#define VERSION_AS_NUMBER 1,0,6,7
++#define VERSION_AS_NUMBER 2,0,0,8
+ #endif
+ 
+ #if defined(FLUTTER_VERSION)
+ #define VERSION_AS_STRING FLUTTER_VERSION
+ #else
+-#define VERSION_AS_STRING "1.0.6"
++#define VERSION_AS_STRING "2.0.0"
+ #endif
+ 
+ VS_VERSION_INFO VERSIONINFO
+diff --git a/cmd/nexdrop/main.go b/cmd/nexdrop/main.go
+index 2e606c5..c81faea 100644
+--- a/cmd/nexdrop/main.go
++++ b/cmd/nexdrop/main.go
+@@ -161,9 +161,16 @@ func allowedIPHandler(next http.Handler, configured string) http.Handler {
+ 		return next
+ 	}
+ 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+-		host := r.RemoteAddr
+-		if parsed, _, err := net.SplitHostPort(host); err == nil {
+-			host = parsed
++		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
++			next.ServeHTTP(w, r)
++			return
++		}
++		host := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
++		if host == "" {
++			host = r.RemoteAddr
++			if parsed, _, err := net.SplitHostPort(host); err == nil {
++				host = parsed
++			}
+ 		}
+ 		if _, ok := allowed[host]; !ok {
+ 			http.Error(w, "source IP is not allowed", http.StatusForbidden)
+@@ -186,6 +193,20 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
+ 		fmt.Println(version)
+ 		return true, nil
+ 	}
++	if arguments[0] == "totp-code" {
++		flags := flag.NewFlagSet("totp-code", flag.ContinueOnError)
++		flags.SetOutput(io.Discard)
++		secret := flags.String("secret", "", "base32 TOTP secret")
++		if err := flags.Parse(arguments[1:]); err != nil || strings.TrimSpace(*secret) == "" {
++			return true, errors.New("usage: nexdrop totp-code --secret BASE32_SECRET")
++		}
++		code, err := auth.CurrentTOTPCode(*secret, time.Now().UTC())
++		if err != nil {
++			return true, err
++		}
++		fmt.Println(code)
++		return true, nil
++	}
+ 	databaseURL := os.Getenv("NEXDROP_DATABASE_URL")
+ 	if databaseURL == "" {
+ 		return true, errors.New("NEXDROP_DATABASE_URL is required")
+diff --git a/compose.yaml b/compose.yaml
+index 32b374c..ba50e82 100644
+--- a/compose.yaml
++++ b/compose.yaml
+@@ -1,10 +1,10 @@
+ services:
+   nexdrop:
+-    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:1.0.5}"
++    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:2.0.0}"
+     build:
+       context: .
+       args:
+-        VERSION: "1.0.5"
++        VERSION: "2.0.0"

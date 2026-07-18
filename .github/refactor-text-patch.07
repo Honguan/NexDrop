@@ -1,0 +1,167 @@
+-  const messages: Record<string, string> = { TARGET_REQUIRED: "請選擇接收設備。", CONTENT_REQUIRED: "請輸入要傳送的內容。", TARGET_UNAVAILABLE: "接收設備目前不可用。", INVALID_TOKEN: "登入已過期，請重新配對。" };
++  const messages: Record<string, string> = { TARGET_REQUIRED: "請選擇接收設備。", CONTENT_REQUIRED: "請輸入要傳送的內容。", TARGET_UNAVAILABLE: "接收設備目前不可用。", INVALID_TOKEN: "連線已過期，請重新加入節點。" };
+   return messages[code ?? ""] ?? "傳送失敗，請檢查節點連線。";
+ }
+diff --git a/extension/src/protocol.ts b/extension/src/protocol.ts
+index c8a090c..612252d 100644
+--- a/extension/src/protocol.ts
++++ b/extension/src/protocol.ts
+@@ -52,9 +52,8 @@ export async function nodeURL() {
+ 
+ export function normalizeNodeURL(value: string) {
+   const url = new URL(value.trim());
+-  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname))) {
+-    throw new Error("INVALID_NODE_URL");
+-  }
++  const localHTTP = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname.endsWith(".local") || /^[0-9.]+$/.test(url.hostname) || url.hostname.includes(":"));
++  if (url.protocol !== "https:" && !localHTTP) throw new Error("INVALID_NODE_URL");
+   return url.origin;
+ }
+ 
+diff --git a/extension/src/service-worker.ts b/extension/src/service-worker.ts
+index 3377e0f..4124c5c 100644
+--- a/extension/src/service-worker.ts
++++ b/extension/src/service-worker.ts
+@@ -26,6 +26,19 @@ async function maintainPresence() {
+     presence.addEventListener("open", () => {
+       heartbeat = setInterval(() => presence?.send(JSON.stringify({ type: "heartbeat" })), 15000);
+     });
++    presence.addEventListener("message", (event) => {
++      try {
++        const message = JSON.parse(String(event.data)) as { type?: string; notification?: { id?: string; type?: string; payload?: Record<string, unknown> } };
++        if (message.type !== "notification" || !message.notification) return;
++        void chrome.notifications.create({
++          type: "basic",
++          iconUrl: "icon128.png",
++          title: message.notification.type === "DEVICE_JOINED" ? "新設備加入 NexDrop" : "NexDrop 收到新訊息",
++          message: message.notification.type === "DEVICE_JOINED" ? String(message.notification.payload?.displayName ?? "新設備已連接") : "開啟 NexDrop 查看聊天室內容。",
++        });
++        if (message.notification.id) presence?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
++      } catch { /* ignore malformed presence frames */ }
++    });
+     presence.addEventListener("close", schedulePresenceReconnect);
+     presence.addEventListener("error", schedulePresenceReconnect);
+   } catch {
+diff --git a/extension/tests/manifest.test.mjs b/extension/tests/manifest.test.mjs
+index 2a32714..a4f7576 100644
+--- a/extension/tests/manifest.test.mjs
++++ b/extension/tests/manifest.test.mjs
+@@ -2,33 +2,30 @@ import assert from "node:assert/strict";
+ import { readFile } from "node:fs/promises";
+ import test from "node:test";
+ 
+-test("Chrome 與 Edge 使用獨立的 Manifest V3，節點權限只在配對時要求", async () => {
++test("Chrome 與 Edge 使用獨立 Manifest V3，節點權限在加入時要求", async () => {
+   const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+   for (const path of ["../manifests/chrome.json", "../manifests/edge.json"]) {
+     const manifest = JSON.parse(await readFile(new URL(path, import.meta.url), "utf8"));
+     assert.equal(manifest.manifest_version, 3);
+     assert.equal(manifest.version, packageMetadata.version);
+     assert.deepEqual(manifest.host_permissions ?? [], []);
+-    assert.deepEqual(manifest.optional_host_permissions, ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]);
++    assert.deepEqual(manifest.optional_host_permissions, ["https://*/*", "http://*/*"]);
++    assert.ok(manifest.permissions.includes("notifications"));
+   }
+ });
+ 
+-test("小視窗提供內容、網址選項與預設全選設備傳送，且不依賴桌面連線", async () => {
++test("擴充功能使用節點密鑰、預設全選設備並顯示通知", async () => {
+   const popup = await readFile(new URL("../popup.html", import.meta.url), "utf8");
+   const popupCode = await readFile(new URL("../src/popup.ts", import.meta.url), "utf8");
+   const directCode = await readFile(new URL("../src/direct.ts", import.meta.url), "utf8");
+   const workerCode = await readFile(new URL("../src/service-worker.ts", import.meta.url), "utf8");
+   const options = await readFile(new URL("../options.html", import.meta.url), "utf8");
+   assert.match(popup, /<textarea id="content"/);
+-  assert.match(popup, /id="include-url"/);
+-  assert.match(popupCode, /input\.type = "checkbox"/);
+   assert.match(popupCode, /input\.checked = true/);
+-  assert.doesNotMatch(popupCode, /requestNative|Desktop/);
+-  assert.match(directCode, /Retry-After/);
+-  assert.match(directCode, /clientVersion: "extension-v1\.0"/);
+-  assert.doesNotMatch(directCode, /clientVersion: "extension-v1\.0\.5"/);
+-  assert.match(workerCode, /connectPresence/);
+-  assert.match(workerCode, /type: "heartbeat"/);
+-  assert.match(options, /將擴充功能登記為獨立設備/);
+-  assert.match(options, /同一 Linux 節點時會自動信任/);
++  assert.match(directCode, /\/api\/node\/enroll/);
++  assert.doesNotMatch(directCode, /\/api\/auth\/login|pending:/);
++  assert.match(workerCode, /chrome\.notifications\.create/);
++  assert.match(options, /節點密鑰/);
++  assert.match(options, /從剪貼簿匯入/);
++  assert.doesNotMatch(options, /帳號或電子郵件|六位數驗證碼|配對碼/);
+ });
+diff --git a/internal/admin/service.go b/internal/admin/service.go
+index 80015b0..22064d0 100644
+--- a/internal/admin/service.go
++++ b/internal/admin/service.go
+@@ -139,7 +139,6 @@ type AuditLogPage struct {
+ 
+ type Store interface {
+ 	BootstrapAdmin(context.Context, string, string, string) error
+-	BootstrapAdminTOTP(context.Context, string, string) error
+ 	ListAdminUsers(context.Context, int, int) ([]User, error)
+ 	CreateAdminUser(context.Context, auth.Session, string, string, string, bool) (User, error)
+ 	CreateAdminInvitation(context.Context, auth.Session, string, string, bool, []byte, time.Time) (Invitation, error)
+@@ -149,7 +148,6 @@ type Store interface {
+ 	ResetAdminPasswordByIdentifier(context.Context, string, string, time.Time) error
+ 	ListAdminDevices(context.Context, int, int) ([]Device, error)
+ 	RevokeAdminDevice(context.Context, auth.Session, string, time.Time) error
+-	DeleteAdminDevice(context.Context, auth.Session, string, time.Time) error
+ 	ListAdminGroups(context.Context, int, int) ([]Group, error)
+ 	DeleteAdminGroup(context.Context, auth.Session, string, time.Time) error
+ 	AdminNodeSettings(context.Context) (NodeSettings, error)
+@@ -161,6 +159,14 @@ type Store interface {
+ 	DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error)
+ }
+ 
++type BootstrapTOTPStore interface {
++	BootstrapAdminTOTP(context.Context, string, string) error
++}
++
++type DeviceDeleteStore interface {
++	DeleteAdminDevice(context.Context, auth.Session, string, time.Time) error
++}
++
+ type PagedStore interface {
+ 	ListAdminFailurePage(context.Context, PageOptions) (FailurePage, error)
+ 	ListAdminAuditLogPage(context.Context, PageOptions) (AuditLogPage, error)
+@@ -194,7 +200,11 @@ func (service *Service) BootstrapTOTP(ctx context.Context, identifier, secret st
+ 	if err != nil || len(decoded) < 16 {
+ 		return ErrInvalid
+ 	}
+-	return service.store.BootstrapAdminTOTP(ctx, identifier, secret)
++	store, ok := service.store.(BootstrapTOTPStore)
++	if !ok {
++		return nil
++	}
++	return store.BootstrapAdminTOTP(ctx, identifier, secret)
+ }
+ 
+ func normalizeBootstrapTOTP(value string) string {
+@@ -317,10 +327,17 @@ func (service *Service) RevokeDevice(ctx context.Context, session auth.Session,
+ }
+ 
+ func (service *Service) DeleteDevice(ctx context.Context, session auth.Session, deviceID string) error {
+-	if !session.Admin || strings.TrimSpace(deviceID) == "" {
++	if !session.Admin {
+ 		return ErrForbidden
+ 	}
+-	return service.store.DeleteAdminDevice(ctx, session, deviceID, time.Now().UTC())
++	if !isUUID(deviceID) {
++		return ErrInvalid
++	}
++	store, ok := service.store.(DeviceDeleteStore)
++	if !ok {
++		return ErrInvalid
++	}
++	return store.DeleteAdminDevice(ctx, session, deviceID, time.Now().UTC())
+ }
+ 
+ func (service *Service) Groups(ctx context.Context, session auth.Session, limit, offset int) ([]Group, error) {
+diff --git a/internal/api/api_test.go b/internal/api/api_test.go
+index e7efd4d..538f60b 100644
+--- a/internal/api/api_test.go
++++ b/internal/api/api_test.go
+@@ -120,7 +120,7 @@ func (store *testStore) MarkAdminVerified(_ context.Context, _ string, _ time.Ti
+ }
+ 
