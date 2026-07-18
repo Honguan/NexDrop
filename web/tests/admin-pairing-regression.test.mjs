@@ -12,6 +12,7 @@ test("管理後台可局部載入且輪詢不會超過預設限制", async () =>
 
 test("待核准設備自行產生配對碼並由信任設備核准", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /第一台信任設備/);
   assert.match(app, /此設備配對碼/);
   assert.match(app, /pairing-code/);
   assert.match(app, /核准新設備/);
