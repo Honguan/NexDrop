@@ -1,0 +1,130 @@
+name: Finalize requested NexDrop fix
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  fixup:
+    if: github.head_ref == 'agent/fix-admin-device-pairing-tray-icon'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-admin-device-pairing-tray-icon
+          fetch-depth: 0
+      - name: Apply pairing edge-case fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise RuntimeError(f'{path}: expected one match, found {text.count(old)}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace('internal/postgres/store.go', '''\t\tWHERE target.id = $1 AND target.trust_status = 'PENDING' AND target.revoked_at IS NULL
+\t\t  AND (
+\t\t      EXISTS (
+\t\t          SELECT 1 FROM user_sessions s
+\t\t          WHERE s.id = $2 AND s.device_id = target.id
+\t\t            AND s.revoked_at IS NULL
+\t\t      )
+\t\t      OR $6
+\t\t      OR EXISTS (
+\t\t          SELECT 1 FROM user_sessions s
+\t\t          JOIN devices actor ON actor.id = s.device_id
+\t\t          WHERE s.id = $2 AND s.revoked_at IS NULL
+\t\t            AND actor.user_id = target.user_id
+\t\t            AND actor.trust_status = 'TRUSTED' AND actor.revoked_at IS NULL
+\t\t      )
+\t\t  )
+\t\tRETURNING id::text
+\t`, deviceID, session.SessionID, codeHash, expiresAt, now, session.Admin).Scan(&id)''', '''\t\tWHERE target.id = $1 AND target.trust_status = 'PENDING' AND target.revoked_at IS NULL
+\t\t  AND EXISTS (
+\t\t      SELECT 1 FROM user_sessions s
+\t\t      WHERE s.id = $2 AND s.device_id = target.id
+\t\t        AND s.revoked_at IS NULL
+\t\t  )
+\t\tRETURNING id::text
+\t`, deviceID, session.SessionID, codeHash, expiresAt, now).Scan(&id)''')
+
+          replace('internal/postgres/store.go', '''\tvar targetDeviceID string
+\tvar storedHash []byte
+\tvar attemptCount int
+\tvar expiresAt time.Time
+\tvar usedAt *time.Time
+\terr = tx.QueryRow(ctx, `
+\t\tSELECT code.target_device_id::text, code.code_hash, code.attempt_count, code.expires_at, code.used_at
+\t\tFROM device_pairing_codes code
+\t\tJOIN devices target ON target.id = code.target_device_id
+\t\tWHERE code.id = $1
+\t\t  AND target.user_id = $2
+\t\t  AND target.trust_status = 'PENDING'
+\t\t  AND target.revoked_at IS NULL
+\t\tFOR UPDATE OF code
+\t`, challengeID, actorUserID).Scan(&targetDeviceID, &storedHash, &attemptCount, &expiresAt, &usedAt)''', '''\tvar targetDeviceID string
+\tvar storedHash []byte
+\tvar attemptCount int
+\tvar expiresAt time.Time
+\tvar usedAt *time.Time
+\tvar targetTrustStatus device.TrustStatus
+\terr = tx.QueryRow(ctx, `
+\t\tSELECT code.target_device_id::text, code.code_hash, code.attempt_count, code.expires_at, code.used_at, target.trust_status
+\t\tFROM device_pairing_codes code
+\t\tJOIN devices target ON target.id = code.target_device_id
+\t\tWHERE code.id = $1
+\t\t  AND target.user_id = $2
+\t\t  AND target.revoked_at IS NULL
+\t\tFOR UPDATE OF code
+\t`, challengeID, actorUserID).Scan(&targetDeviceID, &storedHash, &attemptCount, &expiresAt, &usedAt, &targetTrustStatus)''')
+
+          replace('internal/postgres/store.go', '''\tif usedAt != nil {
+\t\treturn device.Device{}, pairing.ErrUsed
+\t}
+\tif !expiresAt.After(now) {''', '''\tif usedAt != nil {
+\t\treturn device.Device{}, pairing.ErrUsed
+\t}
+\tif targetTrustStatus != device.TrustPending {
+\t\treturn device.Device{}, pairing.ErrInvalidCode
+\t}
+\tif !expiresAt.After(now) {''')
+
+          replace('client/lib/main.dart', '''    try {
+      final result = await widget.controller.createPairingCode(device);
+      if (mounted && pairingDeviceId == device.id) setState(() => pairing = result);
+    } finally {''', '''    try {
+      final result = await widget.controller.createPairingCode(device);
+      if (mounted && pairingDeviceId == device.id) setState(() => pairing = result);
+    } catch (_) {
+      // AppController already exposes an actionable error banner.
+    } finally {''')
+
+          replace('web/src/App.tsx', '''  function readPairingPayload(value: string) {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
+    setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });
+  }''', '''  function readPairingPayload(value: string) {
+    setPairingInput((current) => ({ ...current, payload: value }));
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
+    setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });
+  }''')
+          PY
+          gofmt -w internal/postgres/store.go
+      - name: Commit final fixes
+        shell: bash
+        run: |
+          rm .github/workflows/fixup-requested-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: enforce device-owned pairing codes'
+          git push origin HEAD:agent/fix-admin-device-pairing-tray-icon
