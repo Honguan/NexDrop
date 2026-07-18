@@ -146,7 +146,7 @@ replace_install_placeholders() {
             ;;
     esac
     case "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)" in
-        change-me|replace-with-a-random-admin-password)
+        change-me|change-this-password|replace-with-a-random-admin-password)
             set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(random_hex 24)"
             GENERATED_DEFAULTS=true
             ;;
