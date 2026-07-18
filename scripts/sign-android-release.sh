@@ -28,6 +28,7 @@ trap 'rm -f -- "$signed_apk" "$report"' EXIT
   --ks-key-alias "$key_alias" \
   --ks-pass "file:$store_password_file" \
   --key-pass "file:$key_password_file" \
+  --min-sdk-version 23 \
   --v1-signing-enabled true \
   --v2-signing-enabled true \
   --v3-signing-enabled false \
