@@ -28,7 +28,12 @@ jobs:
 
           workflow = Path('.github/workflows/apply-requested-fix.yml').read_text(encoding='utf-8')
           payload = re.search(r"echo '([^']+)' \| base64", workflow).group(1)
-          Path('/tmp/apply_requested_fix.py').write_bytes(gzip.decompress(base64.b64decode(payload)))
+          source = gzip.decompress(base64.b64decode(payload)).decode('utf-8')
+          source = source.replace(
+              'updated, count = re.subn(pattern, replacement, text, count=1, flags=re.DOTALL)',
+              'updated, count = re.subn(pattern, lambda _: replacement, text, count=1, flags=re.DOTALL)',
+          )
+          Path('/tmp/apply_requested_fix.py').write_text(source, encoding='utf-8')
           PY
           if ! python /tmp/apply_requested_fix.py > requested-fix.log 2>&1; then
             cat requested-fix.log
