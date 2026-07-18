@@ -1,0 +1,35 @@
+
+> nexdrop-extension@1.0.6 test
+> node --test tests/*.test.mjs
+
+✖ Chrome 與 Edge 使用獨立的 Manifest V3，節點權限只在配對時要求 (6.186489ms)
+✔ 小視窗提供內容、網址選項與預設全選設備傳送，且不依賴桌面連線 (4.262668ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 69.767155
+
+✖ failing tests:
+
+test at tests/manifest.test.mjs:5:1
+✖ Chrome 與 Edge 使用獨立的 Manifest V3，節點權限只在配對時要求 (6.186489ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  '1.0.6' !== '1.0.5'
+  
+      at TestContext.<anonymous> (file:///home/runner/work/NexDrop/NexDrop/extension/tests/manifest.test.mjs:9:12)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '1.0.6',
+    expected: '1.0.5',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+EXIT_STATUS=1
