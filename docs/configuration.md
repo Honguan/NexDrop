@@ -4,7 +4,7 @@
 |---|---:|---|---|
 | `POSTGRES_PASSWORD` | 是 | install 隨機產生 | 至少 16 字元且只含 URL-safe 字元的 Compose PostgreSQL 密碼 |
 | `NEXDROP_CURSOR_SECRET` | 是 | 無 | 至少 32 字元，用於簽署歷史分頁游標；升級後須保持不變 |
-| `NEXDROP_IMAGE` | 否 | `ghcr.io/honguan/nexdrop:1.0.0` | Node 映像完整標籤 |
+| `NEXDROP_IMAGE` | 否 | `ghcr.io/honguan/nexdrop:1.0.1` | Node 映像完整標籤 |
 | `NEXDROP_DOMAIN` | 是 | `localhost` | Caddy HTTPS 網域 |
 | `NEXDROP_DATABASE_URL` | 容器內是 | Compose 自動設定 | PostgreSQL URL |
 | `NEXDROP_STORAGE_PATH` | 否 | `/var/lib/nexdrop` | 加密分段與備份目錄 |

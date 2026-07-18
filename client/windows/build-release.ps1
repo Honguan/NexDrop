@@ -1,6 +1,6 @@
 param(
 	[string]$Flutter = 'flutter',
-	[string]$Version = '1.0.0',
+	[string]$Version = '1.0.1',
 	[string]$OutputDirectory = '',
 	[string]$InnoSetup = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
 	[string]$CertificatePath = '',
