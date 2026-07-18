@@ -37,7 +37,7 @@ trap 'rm -f -- "$signed_apk" "$report"' EXIT
   "$apk"
 mv -f -- "$signed_apk" "$apk"
 
-"$apksigner" verify --verbose --print-certs "$apk" | tee "$report"
+"$apksigner" verify --min-sdk-version 23 --verbose --print-certs "$apk" | tee "$report"
 ! grep -qi 'Android Debug' "$report"
 grep -q 'Verified using v1 scheme (JAR signing): true' "$report"
 grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' "$report"
