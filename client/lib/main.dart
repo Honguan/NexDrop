@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
@@ -904,7 +905,7 @@ Future<void> _showPairingCode(
               backgroundColor: Colors.white,
             ),
             const SizedBox(height: 12),
-            Text(
+            SelectableText(
               pairing['code'] as String,
               style: Theme.of(context).textTheme.headlineMedium,
             ),
@@ -914,7 +915,7 @@ Future<void> _showPairingCode(
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
-            const Text('請在 10 分鐘內由待核准設備掃描，或輸入配對資料。'),
+            const Text('請在 10 分鐘內，於待核准設備輸入上方的挑戰 ID 與 6 位數配對碼。'),
           ],
         ),
         actions: [
@@ -1047,54 +1048,95 @@ Future<void> _showPairDialog(
   final challenge = TextEditingController();
   final code = TextEditingController();
   final payload = TextEditingController();
+  String? validationError;
   await showDialog<void>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('配對此設備'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: payload,
-            decoration: const InputDecoration(labelText: 'QR 配對資料'),
-            onChanged: (value) {
-              final uri = Uri.tryParse(value.trim());
-              if (uri?.scheme == 'nexdrop' && uri?.host == 'pair') {
-                challenge.text = uri!.queryParameters['id'] ?? '';
-                code.text = uri.queryParameters['code'] ?? '';
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: const Text('配對此設備'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                '取得方式：\n'
+                '• 另一台已信任設備：開啟 NexDrop App →「設備」→ 找到這台待核准設備 →「配對碼」。\n'
+                '• 沒有其他已信任設備：以管理員登入 NexDrop Web →「設備」→ 找到這台設備 →「核准」。核准後不需輸入下方資料。',
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  unawaited(controller.reload().catchError((_) {}));
+                },
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('已在網頁核准，重新整理'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: payload,
+                decoration: const InputDecoration(
+                  labelText: '貼上 QR 配對資料（選填）',
+                  helperText: '此欄位用於貼上 nexdrop:// 配對資料，不會開啟相機。',
+                ),
+                onChanged: (value) {
+                  final uri = Uri.tryParse(value.trim());
+                  if (uri?.scheme == 'nexdrop' && uri?.host == 'pair') {
+                    challenge.text = uri!.queryParameters['id'] ?? '';
+                    code.text = uri.queryParameters['code'] ?? '';
+                    setDialogState(() => validationError = null);
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: challenge,
+                decoration: const InputDecoration(labelText: '挑戰 ID'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: code,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(labelText: '6 位數配對碼'),
+              ),
+              if (validationError != null)
+                Text(
+                  validationError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final challengeID = challenge.text.trim();
+              final pairingCode = code.text.trim();
+              if (challengeID.isEmpty ||
+                  !RegExp(r'^\d{6}$').hasMatch(pairingCode)) {
+                setDialogState(
+                  () => validationError = '請輸入挑戰 ID 與完整的 6 位數配對碼。',
+                );
+                return;
               }
+              Navigator.pop(context);
+              unawaited(
+                controller
+                    .redeemPairingCode(challengeID, pairingCode)
+                    .catchError((_) {}),
+              );
             },
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: challenge,
-            decoration: const InputDecoration(labelText: '挑戰 ID'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: code,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: '6 位數配對碼'),
+            child: const Text('配對'),
           ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
-            Navigator.pop(context);
-            unawaited(
-              controller
-                  .redeemPairingCode(challenge.text, code.text)
-                  .catchError((_) {}),
-            );
-          },
-          child: const Text('配對'),
-        ),
-      ],
     ),
   );
 }
