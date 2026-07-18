@@ -20,7 +20,7 @@ jobs:
           load: true
           push: false
           tags: nexdrop:test
-      - run: docker run --rm nexdrop:test version | grep '^1.0.0$'
+      - run: test "$(docker run --rm nexdrop:test version)" = "$(tr -d '\r\n' < VERSION)"
       - name: 啟動與健康檢查
         env:
           POSTGRES_PASSWORD: docker-test-only

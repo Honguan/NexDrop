@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-18
+
 ### Added
 
 - 互動式安裝精靈、安全隨機預設、`configure` 設定指令及可指定目標版本的備份式更新流程。
@@ -11,6 +13,11 @@
 ### Changed
 
 - Web 與 Flutter 用戶端會依 `Retry-After` 顯示明確的限流等待時間，並改善無效請求訊息。
+- Release 封裝流程會排除暫存簽章驗證檔案，並清楚標示未簽章平台產物的安裝警告。
+
+### Security
+
+- 限制 LAN 身分資料與傳輸配置的輸入大小，並以系統信任庫驗證 TLS 憑證，修正高風險 CodeQL 告警。
 
 ## [1.0.0] - 2026-07-16
 
@@ -33,3 +40,4 @@
 - 自簽或內部 CA 的 Node 憑證需先安裝到用戶端系統信任庫。
 
 [1.0.0]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.0
+[1.0.1]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.1
