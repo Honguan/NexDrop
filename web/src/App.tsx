@@ -378,7 +378,7 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
                 <DeviceGlyph type={item.type} /><span><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></span><i>{selected.includes(item.id) ? "✓" : "+"}</i>
               </button>
             ))}
-            {!trusted.length && <Empty text={user.admin ? "前往「設備」建立並核准這個瀏覽器" : "請由管理員核准這個瀏覽器設備"} />}
+            {!trusted.length && <Empty text="請前往「設備」查看此設備自動產生的配對碼" />}
           </div>
           <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || selected.length === 0}>{busy ? "正在加密與上傳…" : <>傳送給 {selected.length} 台設備 <span>↗</span></>}</button>
         </form>
@@ -485,8 +485,12 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
 
 function DevicesView({ user, devices, reload, notify }: { user: User; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
   const [busy, setBusy] = useState(false);
+  const [pairing, setPairing] = useState<{ id: string; code: string; qrPayload: string; expiresAt: string } | null>(null);
+  const [pairingInput, setPairingInput] = useState({ challengeId: "", code: "", payload: "" });
+  const pairingRequested = useRef(false);
   const localDevice = devices.find((item) => item.id === deviceID(user.id));
   const registered = Boolean(localDevice && localDevice.trustStatus !== "REVOKED");
+
   async function register() {
     setBusy(true);
     try {
@@ -497,20 +501,69 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
       });
       rememberDevice(user.id, created.id);
       await reload();
-      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已由同一節點自動信任" : "已建立此瀏覽器設備，請完成配對");
+      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已成為第一台信任設備" : "此瀏覽器已產生配對碼");
     } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
   }
-  async function approve(id: string) {
-    try { await api.send(`/api/devices/${id}/approve`, "POST"); await reload(); notify("設備已核准"); } catch (reason) { notify(messageFor(reason)); }
+
+  const createPairing = useCallback(async () => {
+    if (!localDevice || localDevice.trustStatus !== "PENDING") return;
+    setBusy(true);
+    try {
+      setPairing(await api.send<{ id: string; code: string; qrPayload: string; expiresAt: string }>(`/api/devices/${localDevice.id}/pairing-code`, "POST"));
+    } catch (reason) {
+      pairingRequested.current = false;
+      notify(messageFor(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [localDevice?.id, localDevice?.trustStatus, notify]);
+
+  useEffect(() => {
+    if (!localDevice || localDevice.trustStatus !== "PENDING" || pairingRequested.current) return;
+    pairingRequested.current = true;
+    void createPairing();
+  }, [createPairing, localDevice]);
+
+  function readPairingPayload(value: string) {
+    setPairingInput((current) => ({ ...current, payload: value }));
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
+    setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });
   }
+
+  async function pair(event: FormEvent) {
+    event.preventDefault();
+    if (!localDevice || localDevice.trustStatus !== "TRUSTED") return;
+    setBusy(true);
+    try {
+      await api.send(`/api/devices/${localDevice.id}/pair`, "POST", {
+        challengeId: pairingInput.challengeId.trim(),
+        code: pairingInput.code.trim(),
+      });
+      setPairingInput({ challengeId: "", code: "", payload: "" });
+      await reload();
+      notify("新設備已完成配對");
+    } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
+  }
+
   async function revoke(id: string) {
     try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); }
   }
+
   return (
     <section className="page">
-      <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="只有核准且持有私鑰的設備能解開傳輸內容。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
+      <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="待核准設備會自動產生配對碼，再由任一已信任設備完成核准。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
+      {localDevice?.trustStatus === "PENDING" && <div className="card settings-form">
+        <div className="list-title"><div><p className="eyebrow">PAIR THIS DEVICE</p><h3>此設備配對碼</h3></div><button className="secondary" disabled={busy} onClick={() => { pairingRequested.current = true; void createPairing(); }}>重新產生</button></div>
+        {pairing ? <><label>6 位數配對碼<input readOnly value={pairing.code} onFocus={(event) => event.currentTarget.select()} /></label><label>挑戰 ID<input readOnly value={pairing.id} onFocus={(event) => event.currentTarget.select()} /></label><label>完整配對資料<input readOnly value={pairing.qrPayload} onFocus={(event) => event.currentTarget.select()} /></label><small>請在 10 分鐘內，於另一台已信任設備的「核准新設備」輸入以上資料。</small></> : <PanelLoader />}
+      </div>}
+      {localDevice?.trustStatus === "TRUSTED" && <form className="card settings-form" onSubmit={pair}>
+        <div className="list-title"><div><p className="eyebrow">APPROVE DEVICE</p><h3>核准新設備</h3></div><button className="primary" disabled={busy}>完成配對</button></div>
+        <label>貼上新設備的完整配對資料<input value={pairingInput.payload} onChange={(event) => { try { readPairingPayload(event.target.value); } catch { setPairingInput({ ...pairingInput, payload: event.target.value }); } }} placeholder="nexdrop://pair?..." /></label>
+        <div className="settings-grid"><label>挑戰 ID<input value={pairingInput.challengeId} onChange={(event) => setPairingInput({ ...pairingInput, challengeId: event.target.value })} required /></label><label>6 位數配對碼<input inputMode="numeric" pattern="[0-9]{6}" value={pairingInput.code} onChange={(event) => setPairingInput({ ...pairingInput, code: event.target.value.replace(/\D/g, "").slice(0, 6) })} required /></label></div>
+      </form>}
       <div className="cards-grid devices-grid">
-        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions">{user.admin && item.trustStatus === "PENDING" && <button className="secondary" onClick={() => approve(item.id)}>核准</button>}{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
+        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
         {!devices.length && <Empty text="尚未登記任何設備" />}
       </div>
     </section>
@@ -571,23 +624,50 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [totpReady, setTOTPReady] = useState(user.totpEnabled);
   const [verification, setVerification] = useState({ password: "", code: "" });
   const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminLoadError, setAdminLoadError] = useState("");
   const settingsInitialized = useRef(false);
 
   const load = useCallback(async () => {
-    const [nextUsers, nextDevices, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
-      loadAdminPages<AdminUser>("/api/admin/users"), loadAdminPages<AdminDevice>("/api/admin/devices"),
-      api.get<StorageOverview>("/api/admin/storage"),
-      api.get<NodeSettings>("/api/admin/settings"), api.get<AuditLog[]>("/api/admin/audit-logs"),
-      api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(currentNodeStatisticsPath()),
-    ]);
-    setUsers(nextUsers); setAdminDevices(nextDevices); setStorage(nextStorage); if (!settingsInitialized.current) { settingsInitialized.current = true; setSettings(nextSettings); } setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
-  }, []);
+    setAdminLoading(true);
+    setAdminLoadError("");
+    const labels = ["使用者", "裝置", "儲存", "節點設定", "稽核紀錄", "失敗紀錄", "節點指標"];
+    try {
+      const results = await Promise.allSettled([
+        loadAdminPages<AdminUser>("/api/admin/users"),
+        loadAdminPages<AdminDevice>("/api/admin/devices"),
+        api.get<StorageOverview>("/api/admin/storage"),
+        api.get<NodeSettings>("/api/admin/settings"),
+        api.get<AuditLog[]>("/api/admin/audit-logs"),
+        api.get<AdminFailure[]>("/api/admin/failures"),
+        api.get<NodeMetric[]>(currentNodeStatisticsPath()),
+      ]);
+      if (results[0].status === "fulfilled") setUsers(results[0].value as AdminUser[]);
+      if (results[1].status === "fulfilled") setAdminDevices(results[1].value as AdminDevice[]);
+      if (results[2].status === "fulfilled") setStorage(results[2].value as StorageOverview);
+      if (results[3].status === "fulfilled" && !settingsInitialized.current) {
+        settingsInitialized.current = true;
+        setSettings(results[3].value as NodeSettings);
+      }
+      if (results[4].status === "fulfilled") setLogs(results[4].value as AuditLog[]);
+      if (results[5].status === "fulfilled") setFailures(results[5].value as AdminFailure[]);
+      if (results[6].status === "fulfilled") setNodeMetrics(results[6].value as NodeMetric[]);
+      const unavailable = results.flatMap((result, index) => result.status === "rejected" ? [labels[index]] : []);
+      if (unavailable.length) {
+        const message = `部分管理資料暫時無法載入：${unavailable.join("、")}`;
+        setAdminLoadError(message);
+        notify(message);
+      }
+    } finally {
+      setAdminLoading(false);
+    }
+  }, [notify]);
   useEffect(() => {
     if (!verified) return;
-    load().catch((reason) => notify(messageFor(reason)));
-    const refresh = window.setInterval(() => load().catch(() => undefined), 5000);
+    void load();
+    const refresh = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(refresh);
-  }, [load, notify, verified]);
+  }, [load, verified]);
   async function beginSetup(event: FormEvent) {
     event.preventDefault();
     try { setSetup(await api.send<{ secret: string; uri: string }>("/api/auth/totp/setup", "POST", { password: verification.password })); } catch (reason) { notify(messageFor(reason)); }
@@ -635,6 +715,8 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       {!totpReady && <form className="card create-user" onSubmit={setup ? enableTOTP : beginSetup}><h3>啟用雙因素驗證</h3><p className="muted">管理後台必須使用密碼與 TOTP 驗證。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label>{setup && <><label>TOTP 密鑰<input readOnly value={setup.secret} /></label><small>請將密鑰加入驗證器後輸入六位數驗證碼。</small><label>驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label></>}<button className="primary">{setup ? "確認並啟用" : "產生 TOTP 密鑰"}</button></form>}
       {totpReady && !verified && <form className="card create-user" onSubmit={verify}><h3>重新驗證管理員</h3><p className="muted">驗證效力為 15 分鐘。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label><label>六位數驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label><button className="primary">解鎖管理後台</button></form>}
       {verified && <>
+      {adminLoadError && <div className="notice" role="alert"><span>{adminLoadError}</span><button onClick={() => void load()}>重試</button></div>}
+      {adminLoading && !users.length && !adminDevices.length && !storage && <PanelLoader />}
       {nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="磁碟" value={formatBytes(nodeMetrics.at(-1)!.diskBytes)} note="檔案系統" /><Metric label="快取" value={formatBytes(nodeMetrics.at(-1)!.cacheBytes)} note="節點快取" /><Metric label="網路" value={formatBytes(nodeMetrics.at(-1)!.networkUploadBytes + nodeMetrics.at(-1)!.networkDownloadBytes)} note="上傳與下載" /><Metric label="在線／傳輸" value={`${nodeMetrics.at(-1)!.onlineDevices}／${nodeMetrics.at(-1)!.activeTransfers}`} note="即時工作" /></div>}
       <div className="card audit-list"><div className="list-title"><h3>傳輸失敗紀錄</h3><span>{failures.length} 筆</span></div>{failures.map((item) => <article key={`${item.transferId}:${item.targetDeviceId}`}><span className="audit-mark">!</span><p><strong>{item.errorCode || "TRANSFER_FAILED"}</strong><small>{item.transferId.slice(0, 8)} · {item.targetDeviceId.slice(0, 8)}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!failures.length && <Empty text="目前沒有傳輸失敗紀錄" />}</div>
       <div className="card settings-form"><div className="list-title"><div><p className="eyebrow">OPERATIONS</p><h3>節點維運</h3></div><span>主機管理指令</span></div><div className="settings-grid"><label>立即清理<code>deploy/nexdrop cleanup</code></label><label>建立備份<code>deploy/nexdrop backup --include-files</code></label><label>還原備份<code>deploy/nexdrop restore --file ... --confirm</code></label><label>安全更新<code>deploy/nexdrop update</code></label></div><small>備份、還原與更新須在節點主機執行，避免將 Docker 管理權限暴露給 Web 程序。</small></div>

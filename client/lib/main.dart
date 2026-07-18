@@ -6,6 +6,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:workmanager/workmanager.dart';
@@ -116,20 +117,20 @@ class NexDropApp extends StatelessWidget {
         fillColor: Colors.white,
       ),
     ),
-    home: AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        if (controller.loading) {
-          return const _LoadingView();
-        }
-        if (controller.account == null) {
-          return LoginView(controller: controller);
-        }
-        return DesktopLifecycle(
-          controller: controller,
-          child: Workspace(controller: controller),
-        );
-      },
+    home: DesktopLifecycle(
+      controller: controller,
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) {
+          if (controller.loading) {
+            return const _LoadingView();
+          }
+          if (controller.account == null) {
+            return LoginView(controller: controller);
+          }
+          return Workspace(controller: controller);
+        },
+      ),
     ),
   );
 }
@@ -158,7 +159,7 @@ class _DesktopLifecycleState extends State<DesktopLifecycle>
   Future<void> _initializeDesktop() async {
     windowManager.addListener(this);
     trayManager.addListener(this);
-    await trayManager.setIcon('windows/runner/resources/app_icon.ico');
+    await trayManager.setIcon(await _desktopTrayIconPath());
     await trayManager.setToolTip('NexDrop');
     await trayManager.setContextMenu(
       Menu(
@@ -175,7 +176,12 @@ class _DesktopLifecycleState extends State<DesktopLifecycle>
   void onWindowClose() => unawaited(windowManager.hide());
 
   @override
-  void onTrayIconMouseDown() => unawaited(windowManager.show());
+  void onWindowMinimize() => unawaited(windowManager.hide());
+
+  @override
+  void onTrayIconMouseDown() => unawaited(
+    windowManager.show().then((_) => windowManager.focus()),
+  );
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
@@ -825,93 +831,40 @@ class DevicesView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _Page(
     title: '設備',
-    subtitle: '同帳號連到此 Linux 節點會自動信任；待配對狀態才需要配對碼。',
+    subtitle: '待核准設備會自動產生配對碼，再由任一已信任設備完成核准。',
     child: Card(
       child: Column(
-        children: controller.devices
-            .map(
-              (device) => ListTile(
-                leading: Icon(
-                  device.type == 'ANDROID'
-                      ? Icons.phone_android_rounded
-                      : Icons.computer_rounded,
-                ),
-                title: Text(device.displayName),
-                subtitle: Text(
-                  '${device.type} · ${device.online ? '在線' : device.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(device.lastSeenAt!)}'}${device.lanCapable ? ' · LAN' : ''}',
-                ),
-                trailing: device.trustStatus == 'PENDING'
-                    ? Wrap(
-                        spacing: 8,
-                        children: [
-                          OutlinedButton(
-                            onPressed: () =>
-                                _showPairingCode(context, controller, device),
-                            child: const Text('配對碼'),
-                          ),
-                          if (controller.account?.admin == true)
-                            FilledButton.tonal(
-                              onPressed: () => unawaited(
-                                controller.approve(device).catchError((_) {}),
-                              ),
-                              child: const Text('核准'),
-                            ),
-                        ],
-                      )
-                    : const Icon(Icons.verified_user_rounded),
+        children: [
+          if (controller.currentDevice?.trusted == true)
+            ListTile(
+              leading: const Icon(Icons.qr_code_scanner_rounded),
+              title: const Text('核准新設備'),
+              subtitle: const Text('輸入新設備畫面上自動產生的挑戰 ID 與 6 位數配對碼。'),
+              trailing: FilledButton.tonal(
+                onPressed: () => _showPairDialog(context, controller),
+                child: const Text('輸入配對碼'),
               ),
-            )
-            .toList(),
-      ),
-    ),
-  );
-}
-
-Future<void> _showPairingCode(
-  BuildContext context,
-  AppController controller,
-  Device device,
-) async {
-  try {
-    final pairing = await controller.createPairingCode(device);
-    if (!context.mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('配對 ${device.displayName}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            QrImageView(
-              data: pairing['qrPayload'] as String,
-              size: 220,
-              backgroundColor: Colors.white,
             ),
-            const SizedBox(height: 12),
-            SelectableText(
-              pairing['code'] as String,
-              style: Theme.of(context).textTheme.headlineMedium,
+          ...controller.devices.map(
+            (device) => ListTile(
+              leading: Icon(
+                device.type == 'ANDROID'
+                    ? Icons.phone_android_rounded
+                    : Icons.computer_rounded,
+              ),
+              title: Text(device.displayName),
+              subtitle: Text(
+                '${device.type} · ${device.online ? '在線' : device.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(device.lastSeenAt!)}'}${device.lanCapable ? ' · LAN' : ''}',
+              ),
+              trailing: device.trustStatus == 'PENDING'
+                  ? const Chip(label: Text('待配對'))
+                  : const Icon(Icons.verified_user_rounded),
             ),
-            const SizedBox(height: 4),
-            SelectableText(
-              pairing['id'] as String,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 8),
-            const Text('請在 10 分鐘內，於待核准設備輸入上方的挑戰 ID 與 6 位數配對碼。'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('關閉'),
           ),
         ],
       ),
-    );
-  } catch (_) {
-    // AppController displays the actionable error banner.
-  }
+    ),
+  );
 }
 
 class StatisticsView extends StatelessWidget {
@@ -1019,20 +972,102 @@ class SettingsView extends StatelessWidget {
   );
 }
 
-class _PendingBanner extends StatelessWidget {
+class _PendingBanner extends StatefulWidget {
   const _PendingBanner({required this.controller});
   final AppController controller;
+
   @override
-  Widget build(BuildContext context) => MaterialBanner(
-    leading: const Icon(Icons.phonelink_lock_rounded),
-    content: const Text('此設備尚待核准；可由管理員核准，或輸入另一台信任設備產生的配對資料。'),
-    actions: [
-      TextButton(
-        onPressed: () => _showPairDialog(context, controller),
-        child: const Text('輸入配對碼'),
+  State<_PendingBanner> createState() => _PendingBannerState();
+}
+
+class _PendingBannerState extends State<_PendingBanner> {
+  Map<String, dynamic>? pairing;
+  bool loading = false;
+  String? pairingDeviceId;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+  }
+
+  @override
+  void didUpdateWidget(covariant _PendingBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextId = widget.controller.currentDevice?.id;
+    if (nextId != pairingDeviceId) {
+      pairing = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+    }
+  }
+
+  Future<void> _refresh() async {
+    final device = widget.controller.currentDevice;
+    if (device == null || device.trusted || loading) return;
+    setState(() {
+      loading = true;
+      pairingDeviceId = device.id;
+    });
+    try {
+      final result = await widget.controller.createPairingCode(device);
+      if (mounted && pairingDeviceId == device.id) setState(() => pairing = result);
+    } catch (_) {
+      // AppController already exposes an actionable error banner.
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final code = pairing?['code'] as String?;
+    final challengeId = pairing?['id'] as String?;
+    final qrPayload = pairing?['qrPayload'] as String?;
+    return MaterialBanner(
+      leading: const Icon(Icons.phonelink_lock_rounded),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('此設備尚待配對，配對碼已由本機自動產生。'),
+          if (loading) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
+          if (code != null && challengeId != null) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (qrPayload != null)
+                  QrImageView(data: qrPayload, size: 128, backgroundColor: Colors.white),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(code, style: Theme.of(context).textTheme.headlineMedium),
+                    SelectableText(challengeId, style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 4),
+                    const Text('請在 10 分鐘內，於另一台已信任設備輸入以上資料。'),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
-    ],
-  );
+      actions: [
+        TextButton(onPressed: loading ? null : _refresh, child: const Text('重新產生')),
+        if (qrPayload != null)
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: qrPayload));
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製配對資料')));
+              }
+            },
+            child: const Text('複製配對資料'),
+          ),
+      ],
+    );
+  }
 }
 
 Future<void> _showPairDialog(
@@ -1047,32 +1082,19 @@ Future<void> _showPairDialog(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
-        title: const Text('配對此設備'),
+        title: const Text('核准新設備'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                '取得方式：\n'
-                '• 另一台已信任設備：開啟 NexDrop App →「設備」→ 找到這台待核准設備 →「配對碼」。\n'
-                '• 沒有其他已信任設備：以管理員登入 NexDrop Web →「設備」→ 找到這台設備 →「核准」。核准後不需輸入下方資料。',
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  unawaited(controller.reload().catchError((_) {}));
-                },
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('已在網頁核准，重新整理'),
-              ),
+              const Text('請從待核准設備畫面取得自動產生的配對資料，再於這台已信任設備完成核准。'),
               const SizedBox(height: 12),
               TextField(
                 controller: payload,
                 decoration: const InputDecoration(
-                  labelText: '貼上 QR 配對資料（選填）',
-                  helperText: '此欄位用於貼上 nexdrop:// 配對資料，不會開啟相機。',
+                  labelText: '貼上完整配對資料（選填）',
+                  helperText: '可貼上 nexdrop://pair 配對資料，自動帶入下方欄位。',
                 ),
                 onChanged: (value) {
                   final uri = Uri.tryParse(value.trim());
@@ -1097,37 +1119,24 @@ Future<void> _showPairDialog(
                 decoration: const InputDecoration(labelText: '6 位數配對碼'),
               ),
               if (validationError != null)
-                Text(
-                  validationError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
+                Text(validationError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ],
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           FilledButton(
             onPressed: () {
               final challengeID = challenge.text.trim();
               final pairingCode = code.text.trim();
-              if (challengeID.isEmpty ||
-                  !RegExp(r'^\d{6}$').hasMatch(pairingCode)) {
-                setDialogState(
-                  () => validationError = '請輸入挑戰 ID 與完整的 6 位數配對碼。',
-                );
+              if (challengeID.isEmpty || !RegExp(r'^\d{6}$').hasMatch(pairingCode)) {
+                setDialogState(() => validationError = '請輸入挑戰 ID 與完整的 6 位數配對碼。');
                 return;
               }
               Navigator.pop(context);
-              unawaited(
-                controller
-                    .redeemPairingCode(challengeID, pairingCode)
-                    .catchError((_) {}),
-              );
+              unawaited(controller.redeemPairingCode(challengeID, pairingCode).catchError((_) {}));
             },
-            child: const Text('配對'),
+            child: const Text('核准設備'),
           ),
         ],
       ),
@@ -1202,6 +1211,17 @@ class _Brand extends StatelessWidget {
       ),
     ],
   );
+}
+
+Future<String> _desktopTrayIconPath() async {
+  final data = await rootBundle.load('windows/runner/resources/app_icon.ico');
+  final directory = await getApplicationSupportDirectory();
+  final file = File('${directory.path}${Platform.pathSeparator}nexdrop-tray.ico');
+  final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+  if (!await file.exists() || await file.length() != bytes.length) {
+    await file.writeAsBytes(bytes, flush: true);
+  }
+  return file.path;
 }
 
 class _LoadingView extends StatelessWidget {
