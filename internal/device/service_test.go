@@ -20,7 +20,7 @@ type fakeStore struct {
 
 func (store *fakeStore) CreateDevice(_ context.Context, _ auth.Session, name string, deviceType Type, publicKey []byte, algorithm string) (Device, error) {
 	store.created = true
-	return Device{ID: "device-1", DisplayName: name, Type: deviceType, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: TrustPending}, nil
+	return Device{ID: "device-1", DisplayName: name, Type: deviceType, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: TrustTrusted}, nil
 }
 
 func (*fakeStore) ListDevices(context.Context, string) ([]Device, error) {
@@ -68,7 +68,7 @@ func TestCreateValidatesDeviceIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !store.created || device.DisplayName != "Laptop" || device.TrustStatus != TrustPending {
+	if !store.created || device.DisplayName != "Laptop" || device.TrustStatus != TrustTrusted {
 		t.Fatalf("unexpected device: %+v", device)
 	}
 

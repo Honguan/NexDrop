@@ -2,16 +2,12 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AdminDevice,
   AdminFailure,
-  AdminGroup,
   AdminUser,
   APIError,
   AuditLog,
   DailyTransfer,
   Device,
   DeviceStatistic,
-  Group,
-  GroupDetails,
-  GroupStatistic,
   Invitation,
   NodeMetric,
   NodeSettings,
@@ -25,7 +21,7 @@ import {
 import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 import { rateLimitMessage } from "./errors";
 
-type View = "send" | "activity" | "devices" | "groups" | "analytics" | "admin";
+type View = "send" | "activity" | "devices" | "analytics" | "admin";
 type SharedContent = { content: string; groupId: string };
 const pausedTransfers = new Set<string>();
 const cancelledTransfers = new Set<string>();
@@ -39,7 +35,6 @@ const navItems: Array<{ id: View; label: string; glyph: string }> = [
   { id: "send", label: "傳送", glyph: "↗" },
   { id: "activity", label: "傳輸紀錄", glyph: "◷" },
   { id: "devices", label: "設備", glyph: "▣" },
-  { id: "groups", label: "群組", glyph: "◎" },
   { id: "analytics", label: "統計", glyph: "▥" },
 ];
 
@@ -181,7 +176,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
 function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [view, setView] = useState<View>("send");
   const [devices, setDevices] = useState<Device[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -189,13 +183,11 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [sharedContent, setSharedContent] = useState(readSharedContent);
 
   const reload = useCallback(async () => {
-	const [nextDevices, nextGroups, transferPage] = await Promise.all([
+	const [nextDevices, transferPage] = await Promise.all([
       api.get<Device[]>("/api/devices"),
-      api.get<Group[]>("/api/groups"),
 	  api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
     ]);
     setDevices(nextDevices);
-    setGroups(nextGroups);
 	setTransfers(transferPage.items);
   }, []);
 
@@ -213,6 +205,11 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [reload, user.id]);
 
   useEffect(() => {
+    const refresh = window.setInterval(() => reload().catch(() => undefined), 5000);
+    return () => window.clearInterval(refresh);
+  }, [reload]);
+
+  useEffect(() => {
     const localDeviceID = deviceID(user.id);
     if (!localDeviceID || !devices.some((item) => item.id === localDeviceID && item.trustStatus === "TRUSTED")) return;
     let socket: WebSocket | null = null;
@@ -226,7 +223,11 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       socket.onopen = () => setOnline(true);
       socket.onmessage = (event) => {
         const message = JSON.parse(event.data as string) as { type: string; notificationId?: string; notification?: { id: string } };
-        if (message.type === "connected") heartbeat = window.setInterval(() => socket?.send(JSON.stringify({ type: "heartbeat" })), 15000);
+        if (message.type === "connected") {
+          reload().catch(() => undefined);
+          heartbeat = window.setInterval(() => socket?.send(JSON.stringify({ type: "heartbeat" })), 5000);
+        }
+        if (message.type === "heartbeat_ack") reload().catch(() => undefined);
         if (message.type === "notification" && message.notification) {
           socket?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
           reload().catch(() => undefined);
@@ -255,10 +256,9 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} groups={groups} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
+      case "send": return <SendView user={user} devices={devices} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
       case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
-      case "groups": return <GroupsView groups={groups} devices={devices} reload={reload} notify={setNotice} />;
       case "analytics": return <AnalyticsView user={user} />;
       case "admin": return <AdminView user={user} notify={setNotice} />;
     }
@@ -293,49 +293,31 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
-function SendView({ user, devices, groups, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; groups: Group[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState(initialShare.groupId);
-  const [groupDetails, setGroupDetails] = useState<GroupDetails | null>(null);
+function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
+  const [selection, setSelection] = useState<string[] | null>(null);
   const [content, setContent] = useState(initialShare.content);
   const [files, setFiles] = useState<File[]>([]);
   const [notification, setNotification] = useState(false);
   const [busy, setBusy] = useState(false);
   const trusted = devices.filter((item) => item.trustStatus === "TRUSTED" && item.publicKey);
-
-  useEffect(() => {
-    if (!selectedGroup) {
-      setGroupDetails(null);
-      return;
-    }
-    api.get<GroupDetails>(`/api/groups/${selectedGroup}`).then(setGroupDetails).catch((reason) => notify(messageFor(reason)));
-  }, [notify, selectedGroup]);
+  const selected = selection ?? trusted.map((item) => item.id);
 
   function toggle(id: string) {
-    setSelectedGroup("");
-    setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
-  }
-
-  function chooseGroup(id: string) {
-    setSelected([]);
-    setSelectedGroup((current) => current === id ? "" : id);
+    setSelection(selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id]);
   }
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if ((!content.trim() && files.length === 0) || (!selectedGroup && selected.length === 0)) return;
+    if ((!content.trim() && files.length === 0) || selected.length === 0) return;
     setBusy(true);
     try {
-      const recipients = selectedGroup
-        ? (groupDetails?.devices ?? []).map((item) => ({ id: item.id, publicKey: item.publicKey }))
-        : trusted.filter((item) => selected.includes(item.id)).map((item) => ({ id: item.id, publicKey: item.publicKey! }));
-      if (!recipients.length) throw new Error("群組尚未加入可接收設備");
+      const recipients = trusted.filter((item) => selected.includes(item.id)).map((item) => ({ id: item.id, publicKey: item.publicKey! }));
+      if (!recipients.length) throw new Error("請至少選擇一台可接收設備");
       if (files.length) {
         const encrypted = await encryptFiles(files, recipients);
         const transfer = await api.send<Transfer>("/api/transfers", "POST", {
-          targetType: selectedGroup ? "GROUP_ALL_DEVICES" : selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
+          targetType: selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
           targetDeviceIds: selected,
-          groupId: selectedGroup || undefined,
           contentType: files.every((file) => file.type.startsWith("image/")) ? "IMAGE" : "FILE",
           routeMode: "AUTOMATIC",
           allowLargeFileViaNode: true,
@@ -357,9 +339,8 @@ function SendView({ user, devices, groups, initialShare, onTransferCreated, onSe
       } else {
         const encrypted = await encryptText(content.trim(), recipients);
         await api.send<Transfer>("/api/transfers", "POST", {
-        targetType: selectedGroup ? "GROUP_ALL_DEVICES" : selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
+        targetType: selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
         targetDeviceIds: selected,
-        groupId: selectedGroup || undefined,
         contentType: notification ? "NOTIFICATION" : content.trim().startsWith("http") ? "URL" : "TEXT",
         routeMode: "AUTOMATIC",
         content: encrypted.content,
@@ -369,8 +350,7 @@ function SendView({ user, devices, groups, initialShare, onTransferCreated, onSe
       setContent("");
       setNotification(false);
       setFiles([]);
-      setSelected([]);
-      setSelectedGroup("");
+      setSelection(null);
       await onSent();
       notify("已建立加密傳輸任務");
     } catch (reason) {
@@ -400,8 +380,7 @@ function SendView({ user, devices, groups, initialShare, onTransferCreated, onSe
             ))}
             {!trusted.length && <Empty text={user.admin ? "前往「設備」建立並核准這個瀏覽器" : "請由管理員核准這個瀏覽器設備"} />}
           </div>
-          {!!groups.length && <><div className="divider" /><div className="card-title"><span className="step">03</span><div><h3>或傳送至群組</h3><p>群組與設備目的地不可同時選擇</p></div></div><div className="device-picker">{groups.map((item) => <button type="button" key={item.id} className={selectedGroup === item.id ? "device-option selected" : "device-option"} onClick={() => chooseGroup(item.id)}><span className="group-mark">◎</span><span><strong>{item.name}</strong><small>所有群組設備</small></span><i>{selectedGroup === item.id ? "✓" : "+"}</i></button>)}</div></>}
-          <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || (!selectedGroup && selected.length === 0)}>{busy ? "正在加密與上傳…" : <>建立安全傳輸 <span>↗</span></>}</button>
+          <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || selected.length === 0}>{busy ? "正在加密與上傳…" : <>傳送給 {selected.length} 台設備 <span>↗</span></>}</button>
         </form>
         <aside className="route-card card">
           <p className="eyebrow">SMART ROUTING</p>
@@ -460,8 +439,14 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
   }
 
   async function hide(transferId: string) {
+    if (!confirm("要從你的傳輸紀錄刪除這則訊息嗎？接收設備已保存的副本不會被刪除。")) return;
     await api.send(`/api/transfers/${transferId}`, "DELETE");
     await reload();
+  }
+
+  async function copy(transferId: string) {
+    const text = decrypted[transferId];
+    if (text) await navigator.clipboard.writeText(text);
   }
 
   async function togglePause(transfer: Transfer) {
@@ -489,7 +474,7 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
             <span>{item.targets.map((target) => names[target.deviceId] ?? target.deviceId.slice(0, 8)).join("、")}</span>
             <span className="route-label">{item.targets[0]?.selectedRoute ?? "—"}</span>
             <Status value={item.status} />
-            <div><time>{formatDate(item.createdAt)}</time>{item.senderUserId === user.id && !["DELIVERED", "READ", "FAILED", "CANCELLED", "EXPIRED"].includes(item.status) && <><button className="text-button" onClick={() => togglePause(item)}>{item.status === "PAUSED" ? "繼續" : "暫停"}</button><button className="text-danger" onClick={() => cancel(item.id)}>取消</button></>}<button className="text-button" onClick={() => hide(item.id)}>隱藏</button></div>
+            <div><time>{formatDate(item.createdAt)}</time>{decrypted[item.id] && <button className="text-button" onClick={() => copy(item.id)}>快速複製</button>}{item.senderUserId === user.id && !["DELIVERED", "READ", "FAILED", "CANCELLED", "EXPIRED"].includes(item.status) && <><button className="text-button" onClick={() => togglePause(item)}>{item.status === "PAUSED" ? "繼續" : "暫停"}</button><button className="text-danger" onClick={() => cancel(item.id)}>取消</button></>}<button className="text-danger" onClick={() => hide(item.id)}>刪除</button></div>
           </article>
         ))}
         {!transfers.length && <Empty text="還沒有傳輸紀錄" />}
@@ -512,7 +497,7 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
       });
       rememberDevice(user.id, created.id);
       await reload();
-      notify("已建立此瀏覽器設備，等待信任核准");
+      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已由同一節點自動信任" : "已建立此瀏覽器設備，請完成配對");
     } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
   }
   async function approve(id: string) {
@@ -525,47 +510,9 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
     <section className="page">
       <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="只有核准且持有私鑰的設備能解開傳輸內容。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
       <div className="cards-grid devices-grid">
-        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.trustStatus} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {formatDate(item.createdAt)}</p><div className="device-actions">{user.admin && item.trustStatus === "PENDING" && <button className="secondary" onClick={() => approve(item.id)}>核准</button>}{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
+        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions">{user.admin && item.trustStatus === "PENDING" && <button className="secondary" onClick={() => approve(item.id)}>核准</button>}{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
         {!devices.length && <Empty text="尚未登記任何設備" />}
       </div>
-    </section>
-  );
-}
-
-function GroupsView({ groups, devices, reload, notify }: { groups: Group[]; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
-  const [name, setName] = useState("");
-  const [selected, setSelected] = useState("");
-  const [details, setDetails] = useState<GroupDetails | null>(null);
-  const [member, setMember] = useState({ userId: "", role: "MEMBER" });
-  const [deviceId, setDeviceId] = useState("");
-  const loadDetails = useCallback(async (id: string) => {
-    setSelected(id);
-    setDetails(await api.get<GroupDetails>(`/api/groups/${id}`));
-  }, []);
-  async function create(event: FormEvent) {
-    event.preventDefault();
-    try { await api.send("/api/groups", "POST", { name }); setName(""); await reload(); notify("群組已建立"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function addMember(event: FormEvent) {
-    event.preventDefault();
-    try { await api.send(`/api/groups/${selected}/members`, "POST", member); setMember({ userId: "", role: "MEMBER" }); await loadDetails(selected); notify("群組成員已更新"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function removeMember(userId: string) {
-    try { await api.send(`/api/groups/${selected}/members/${userId}`, "DELETE"); await loadDetails(selected); notify("群組成員已移除"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function addDevice(event: FormEvent) {
-    event.preventDefault();
-    try { await api.send(`/api/groups/${selected}/devices`, "POST", { deviceId }); setDeviceId(""); await loadDetails(selected); notify("群組設備已更新"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function removeDevice(id: string) {
-    try { await api.send(`/api/groups/${selected}/devices/${id}`, "DELETE"); await loadDetails(selected); notify("群組設備已移除"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  return (
-    <section className="page">
-      <PageHeading eyebrow="SHARED SPACES" title="群組" description="將成員與設備組成固定的傳輸目的地；本版本將計劃基線強化為完整端對端加密，主機管理員無法讀取內容。" />
-      <form className="inline-create card" onSubmit={create}><label><span>新群組名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：設計團隊" required maxLength={100} /></label><button className="primary">建立群組</button></form>
-      <div className="cards-grid group-grid">{groups.map((item) => <button type="button" className="group-card card" key={item.id} onClick={() => loadDetails(item.id).catch((reason) => notify(messageFor(reason)))}><span className="group-mark">◎</span><div><h3>{item.name}</h3><p>{item.role === "OWNER" ? "你是擁有者" : item.role}</p></div><time>{formatDate(item.createdAt)}</time></button>)}{!groups.length && <Empty text="建立第一個群組，讓固定協作更快" />}</div>
-      {details && <div className="admin-layout"><div className="card user-list"><div className="list-title"><h3>{details.name}成員</h3><span>{details.members.length} 人</span></div>{details.members.map((item) => <article key={item.userId}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.role}</small></p>{item.role !== "OWNER" && <button className="text-danger" onClick={() => removeMember(item.userId)}>移除</button>}</article>)}</div><form className="card create-user" onSubmit={addMember}><h3>邀請或調整成員</h3><label>使用者 ID<input value={member.userId} onChange={(event) => setMember({ ...member, userId: event.target.value })} required /></label><label>角色<select value={member.role} onChange={(event) => setMember({ ...member, role: event.target.value })}><option value="MEMBER">成員</option><option value="ADMIN">管理員</option></select></label><button className="primary">儲存成員</button></form><div className="card user-list"><div className="list-title"><h3>群組設備</h3><span>{details.devices.length} 台</span></div>{details.devices.map((item) => <article key={item.id}><DeviceGlyph type={item.type} /><p><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></p><button className="text-danger" onClick={() => removeDevice(item.id)}>移除</button></article>)}</div><form className="card create-user" onSubmit={addDevice}><h3>加入設備</h3><label>已信任設備<select value={deviceId} onChange={(event) => setDeviceId(event.target.value)} required><option value="">請選擇</option>{devices.filter((item) => item.trustStatus === "TRUSTED" && !details.devices.some((current) => current.id === item.id)).map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><button className="primary">加入設備</button></form></div>}
     </section>
   );
 }
@@ -574,7 +521,6 @@ function AnalyticsView({ user }: { user: User }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [deviceStats, setDeviceStats] = useState<DeviceStatistic[]>([]);
-  const [groupStats, setGroupStats] = useState<GroupStatistic[]>([]);
   const [nodeStats, setNodeStats] = useState<NodeMetric[]>([]);
   const [error, setError] = useState("");
   const [range, setRange] = useState({ preset: "7", from: "", to: "" });
@@ -584,25 +530,27 @@ function AnalyticsView({ user }: { user: User }) {
       ? `${endpoint}?${new URLSearchParams({ from: new Date(`${range.from}T00:00:00`).toISOString(), to: new Date(`${range.to}T23:59:59.999`).toISOString() })}`
       : statisticsPath(endpoint, Number(range.preset));
     try {
-      const [nextOverview, nextDaily, nextDevices, nextGroups, nextNode] = await Promise.all([
+      const [nextOverview, nextDaily, nextDevices, nextNode] = await Promise.all([
         api.get<Overview>(path("/api/statistics/overview")), api.get<DailyTransfer[]>(path("/api/statistics/transfers")),
-        api.get<DeviceStatistic[]>(path("/api/statistics/devices")), api.get<GroupStatistic[]>(path("/api/statistics/groups")),
-        user.admin ? api.get<NodeMetric[]>(path("/api/statistics/node")) : Promise.resolve([]),
+        api.get<DeviceStatistic[]>(path("/api/statistics/devices")),
+        user.admin ? api.get<NodeMetric[]>(currentNodeStatisticsPath()) : Promise.resolve([]),
       ]);
-      setOverview(nextOverview); setDaily(nextDaily); setDeviceStats(nextDevices); setGroupStats(nextGroups); setNodeStats(nextNode);
+      setOverview(nextOverview); setDaily(nextDaily); setDeviceStats(nextDevices); setNodeStats(nextNode);
     } catch (reason) { setError(messageFor(reason)); }
   }, [range, user.admin]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    const refresh = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(refresh);
+  }, [load]);
   const peak = Math.max(1, ...daily.map((item) => item.totalBytes));
   const latestNode = nodeStats.at(-1);
   return (
     <section className="page">
       <PageHeading eyebrow="TRANSFER ANALYTICS" title="傳輸統計" description="掌握流量、成功率與實際使用的傳輸路徑。" action={<div className="admin-tabs"><select value={range.preset} onChange={(event) => setRange({ ...range, preset: event.target.value })}><option value="1">24 小時</option><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="custom">自訂</option></select>{range.preset === "custom" && <><input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })} /><input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })} /></>}</div>} />
       {!!daily.length && <div className="card audit-list"><div className="list-title"><h3>每日傳輸明細</h3><span>{daily.length} 天</span></div>{daily.map((item) => <article key={item.date}><span className="audit-mark">▥</span><p><strong>{item.date} · {item.count} 次</strong><small>總計 {formatBytes(item.totalBytes)} · LAN {formatBytes(item.lanBytes)} · 節點 {formatBytes(item.nodeBytes)}</small></p><Status value={item.failed ? "FAILED" : "DELIVERED"} /></article>)}</div>}
-      {!!deviceStats.length && <div className="card audit-list"><div className="list-title"><h3>設備收發明細</h3><span>{deviceStats.length} 台</span></div>{deviceStats.map((item) => <article key={item.deviceId}><DeviceGlyph type="DEVICE" /><p><strong>{item.displayName}</strong><small>送出 {item.sentCount} 次／{formatBytes(item.sentBytes)} · 接收 {item.receivedCount} 次／{formatBytes(item.receivedBytes)}</small></p><span>{formatBytes(item.averageBytesPerSecond)}/s</span></article>)}</div>}
-      {!!groupStats.length && <div className="card audit-list"><div className="list-title"><h3>群組活躍明細</h3><span>{groupStats.length} 組</span></div>{groupStats.map((item) => <article key={item.groupId}><span className="group-mark">◎</span><p><strong>{item.name}</strong><small>訊息 {item.messageCount} · 檔案 {item.fileCount} · {formatBytes(item.transferBytes)}</small></p><span>{item.activeUsers} 人／{item.activeDevices} 台</span></article>)}</div>}
-      {!!nodeStats.length && <div className="card audit-list"><div className="list-title"><h3>節點歷史取樣</h3><span>{nodeStats.length} 筆</span></div>{nodeStats.map((item) => <article key={item.recordedAt}><span className="audit-mark">◆</span><p><strong>CPU {item.cpuPercent.toFixed(1)}% · 記憶體 {formatBytes(item.memoryBytes)}</strong><small>磁碟 {formatBytes(item.diskBytes)} · 快取 {formatBytes(item.cacheBytes)} · 網路 {formatBytes(item.networkUploadBytes + item.networkDownloadBytes)}</small></p><time>{formatDate(item.recordedAt)}</time></article>)}</div>}
-      {error ? <Empty text={error} /> : !overview ? <PanelLoader /> : <><div className="metric-grid"><Metric label="傳輸任務" value={overview.transferCount.toLocaleString()} note="選定期間" /><Metric label="傳輸容量" value={formatBytes(overview.totalBytes)} note="全部路徑" /><Metric label="成功交付" value={overview.succeeded.toLocaleString()} note={`${successRate(overview)}% 成功率`} /><Metric label="失敗" value={overview.failed.toLocaleString()} note="可於紀錄中追蹤" danger={overview.failed > 0} /></div><div className="admin-layout"><div className="card route-summary"><div><p className="eyebrow">DAILY TREND</p><h3>每日流量</h3></div>{daily.map((item) => <div className="route-bar" key={item.date}><span>{item.date.slice(5)}</span><i><b style={{ width: `${Math.max(2, item.totalBytes / peak * 100)}%` }} /></i><strong>{formatBytes(item.totalBytes)}</strong></div>)}{!daily.length && <Empty text="尚無每日資料" />}</div><div className="card route-summary"><div><p className="eyebrow">ROUTE MIX</p><h3>傳輸路徑分布</h3></div>{Object.entries(overview.routeCounts ?? {}).map(([route, count]) => <div className="route-bar" key={route}><span>{route}</span><i><b style={{ width: `${Math.max(4, (count / Math.max(overview.transferCount, 1)) * 100)}%` }} /></i><strong>{count}</strong></div>)}{!Object.keys(overview.routeCounts ?? {}).length && <Empty text="尚無足夠資料" />}</div><div className="card user-list"><div className="list-title"><h3>設備使用量</h3><span>{deviceStats.length} 台</span></div>{deviceStats.map((item) => <article key={item.deviceId}><DeviceGlyph type="DEVICE" /><p><strong>{item.displayName}</strong><small>傳送 {item.sentCount} · 接收 {item.receivedCount} · {formatBytes(item.sentBytes + item.receivedBytes)}</small></p><span>{formatBytes(item.averageBytesPerSecond)}/s</span></article>)}{!deviceStats.length && <Empty text="尚無設備統計" />}</div><div className="card user-list"><div className="list-title"><h3>群組使用量</h3><span>{groupStats.length} 組</span></div>{groupStats.map((item) => <article key={item.groupId}><span className="group-mark">◎</span><p><strong>{item.name}</strong><small>訊息 {item.messageCount} · 檔案 {item.fileCount} · {formatBytes(item.transferBytes)}</small></p><span>{item.activeUsers} 人</span></article>)}{!groupStats.length && <Empty text="尚無群組統計" />}</div></div>{latestNode && <div className="metric-grid"><Metric label="CPU" value={`${latestNode.cpuPercent.toFixed(1)}%`} note="節點資源" /><Metric label="記憶體" value={formatBytes(latestNode.memoryBytes)} note="系統使用量" /><Metric label="磁碟／快取" value={formatBytes(latestNode.diskBytes)} note={`快取 ${formatBytes(latestNode.cacheBytes)}`} /><Metric label="網路流量" value={formatBytes(latestNode.networkUploadBytes + latestNode.networkDownloadBytes)} note={`上傳 ${formatBytes(latestNode.networkUploadBytes)}`} /></div>}</>}
+      {!!deviceStats.length && <div className="card audit-list"><div className="list-title"><h3>每台設備狀態與傳輸用量</h3><span>{deviceStats.filter((item) => item.online).length}／{deviceStats.length} 台在線</span></div>{deviceStats.map((item) => <article key={item.deviceId}><DeviceGlyph type={item.deviceType} /><p><strong>{item.displayName}</strong><small>{labelDeviceType(item.deviceType)} · 傳送 {item.sentCount} 筆／{formatBytes(item.sentBytes)} · 接收 {item.receivedCount} 筆／{formatBytes(item.receivedBytes)} · {item.online ? "即時在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</small></p><Status value={item.online ? "ONLINE" : "OFFLINE"} /></article>)}</div>}
+      {error ? <Empty text={error} /> : !overview ? <PanelLoader /> : <><div className="metric-grid"><Metric label="傳輸任務" value={overview.transferCount.toLocaleString()} note="選定期間" /><Metric label="傳輸容量" value={formatBytes(overview.totalBytes)} note="全部設備" /><Metric label="成功交付" value={overview.succeeded.toLocaleString()} note={`${successRate(overview)}% 成功率`} /><Metric label="失敗" value={overview.failed.toLocaleString()} note="可於紀錄中追蹤" danger={overview.failed > 0} /></div><div className="admin-layout"><div className="card route-summary"><div><p className="eyebrow">DAILY TREND</p><h3>每日流量</h3></div>{daily.map((item) => <div className="route-bar" key={item.date}><span>{item.date.slice(5)}</span><i><b style={{ width: `${Math.max(2, item.totalBytes / peak * 100)}%` }} /></i><strong>{formatBytes(item.totalBytes)}</strong></div>)}{!daily.length && <Empty text="尚無每日資料" />}</div><div className="card route-summary"><div><p className="eyebrow">ROUTE MIX</p><h3>傳輸路徑分布</h3></div>{Object.entries(overview.routeCounts ?? {}).map(([route, count]) => <div className="route-bar" key={route}><span>{route}</span><i><b style={{ width: `${Math.max(4, (count / Math.max(overview.transferCount, 1)) * 100)}%` }} /></i><strong>{count}</strong></div>)}{!Object.keys(overview.routeCounts ?? {}).length && <Empty text="尚無足夠資料" />}</div></div>{latestNode && <div className="metric-grid"><Metric label="節點狀態" value="在線" note={`最後更新 ${formatDate(latestNode.recordedAt)}`} /><Metric label="在線設備" value={latestNode.onlineDevices.toLocaleString()} note={`${latestNode.activeTransfers} 筆進行中`} /><Metric label="節點儲存" value={formatBytes(latestNode.diskBytes)} note={`快取 ${formatBytes(latestNode.cacheBytes)}`} /><Metric label="節點流量" value={formatBytes(latestNode.networkUploadBytes + latestNode.networkDownloadBytes)} note={`上傳 ${formatBytes(latestNode.networkUploadBytes)}`} /></div>}</>}
     </section>
   );
 }
@@ -610,7 +558,6 @@ function AnalyticsView({ user }: { user: User }) {
 function AdminView({ user, notify }: { user: User; notify: (value: string) => void }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [adminDevices, setAdminDevices] = useState<AdminDevice[]>([]);
-  const [adminGroups, setAdminGroups] = useState<AdminGroup[]>([]);
   const [storage, setStorage] = useState<StorageOverview | null>(null);
   const [settings, setSettings] = useState<NodeSettings | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -624,18 +571,22 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [totpReady, setTOTPReady] = useState(user.totpEnabled);
   const [verification, setVerification] = useState({ password: "", code: "" });
   const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
-  const [groupTransferId, setGroupTransferId] = useState("");
 
   const load = useCallback(async () => {
-    const [nextUsers, nextDevices, nextGroups, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
+    const [nextUsers, nextDevices, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
       loadAdminPages<AdminUser>("/api/admin/users"), loadAdminPages<AdminDevice>("/api/admin/devices"),
-      loadAdminPages<AdminGroup>("/api/admin/groups"), api.get<StorageOverview>("/api/admin/storage"),
+      api.get<StorageOverview>("/api/admin/storage"),
       api.get<NodeSettings>("/api/admin/settings"), api.get<AuditLog[]>("/api/admin/audit-logs"),
-      api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(statisticsPath("/api/statistics/node")),
+      api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(currentNodeStatisticsPath()),
     ]);
-    setUsers(nextUsers); setAdminDevices(nextDevices); setAdminGroups(nextGroups); setStorage(nextStorage); setSettings(nextSettings); setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
+    setUsers(nextUsers); setAdminDevices(nextDevices); setStorage(nextStorage); setSettings(nextSettings); setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
   }, []);
-  useEffect(() => { if (verified) load().catch((reason) => notify(messageFor(reason))); }, [load, notify, verified]);
+  useEffect(() => {
+    if (!verified) return;
+    load().catch((reason) => notify(messageFor(reason)));
+    const refresh = window.setInterval(() => load().catch(() => undefined), 5000);
+    return () => window.clearInterval(refresh);
+  }, [load, notify, verified]);
   async function beginSetup(event: FormEvent) {
     event.preventDefault();
     try { setSetup(await api.send<{ secret: string; uri: string }>("/api/auth/totp/setup", "POST", { password: verification.password })); } catch (reason) { notify(messageFor(reason)); }
@@ -672,19 +623,10 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
     if (!confirm("確定要撤銷此裝置並登出其工作階段？")) return;
     try { await api.send(`/api/admin/devices/${id}/revoke`, "POST"); await load(); notify("裝置已撤銷"); } catch (reason) { notify(messageFor(reason)); }
   }
-  async function deleteGroup(id: string) {
-    if (!confirm("確定要刪除此群組？此操作無法復原。")) return;
-    try { await api.send(`/api/admin/groups/${id}`, "DELETE"); await load(); notify("群組已刪除"); } catch (reason) { notify(messageFor(reason)); }
-  }
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     if (!settings) return;
     try { setSettings(await api.send<NodeSettings>("/api/admin/settings", "PUT", settings)); notify("節點設定已更新"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function deleteGroupContent(event: FormEvent) {
-    event.preventDefault();
-    if (!confirm("確定要從群組內容流移除並刪除節點檔案？已下載的本機副本無法刪除。")) return;
-    try { await api.send(`/api/admin/group-transfers/${groupTransferId}`, "DELETE"); setGroupTransferId(""); await load(); notify("群組內容已從節點移除"); } catch (reason) { notify(messageFor(reason)); }
   }
   return (
     <section className="page admin-page">
@@ -696,11 +638,11 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       <div className="card audit-list"><div className="list-title"><h3>傳輸失敗紀錄</h3><span>{failures.length} 筆</span></div>{failures.map((item) => <article key={`${item.transferId}:${item.targetDeviceId}`}><span className="audit-mark">!</span><p><strong>{item.errorCode || "TRANSFER_FAILED"}</strong><small>{item.transferId.slice(0, 8)} · {item.targetDeviceId.slice(0, 8)}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!failures.length && <Empty text="目前沒有傳輸失敗紀錄" />}</div>
       <div className="card settings-form"><div className="list-title"><div><p className="eyebrow">OPERATIONS</p><h3>節點維運</h3></div><span>主機管理指令</span></div><div className="settings-grid"><label>立即清理<code>deploy/nexdrop cleanup</code></label><label>建立備份<code>deploy/nexdrop backup --include-files</code></label><label>還原備份<code>deploy/nexdrop restore --file ... --confirm</code></label><label>安全更新<code>deploy/nexdrop update</code></label></div><small>備份、還原與更新須在節點主機執行，避免將 Docker 管理權限暴露給 Web 程序。</small></div>
       {settings && <div className="card settings-form"><h3>帳號建立政策</h3><label className="check"><input type="checkbox" checked={settings.publicRegistrationEnabled} onChange={(event) => setSettings({ ...settings, publicRegistrationEnabled: event.target.checked })} /> 公開註冊開關（第一版預設關閉）</label><small>變更後請在「節點與儲存」按下儲存設定；關閉時僅允許管理員建立或邀請帳號。</small></div>}
-      <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>裝置與群組</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核與失敗（{failures.length}）</button></div>
+      <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>裝置</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核與失敗（{failures.length}）</button></div>
       {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>{inviteMode ? "邀請使用者" : "建立使用者"}</h3><label className="check"><input type="checkbox" checked={inviteMode} onChange={(event) => { setInviteMode(event.target.checked); setInvitationLink(""); }} /> 由受邀者自行設定密碼</label><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label>{!inviteMode && <label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label>}<label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">{inviteMode ? "建立邀請連結" : "建立帳號"}</button>{invitationLink && <label>一次性邀請連結<input readOnly value={invitationLink} onFocus={(event) => event.currentTarget.select()} /><small>連結七天內有效，接受後立即失效。</small></label>}</form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
-      {tab === "resources" && <div className="admin-layout"><div className="card user-list"><div className="list-title"><h3>所有裝置</h3><span>{adminDevices.length} 台</span></div>{adminDevices.map((item) => <article key={item.id}><span className="avatar small">{item.displayName[0]?.toUpperCase()}</span><p><strong>{item.displayName}</strong><small>{item.ownerUsername} · {item.type}</small></p><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revokeDevice(item.id)}>撤銷</button>}</article>)}{!adminDevices.length && <Empty text="尚無裝置" />}</div><div className="card user-list"><div className="list-title"><h3>所有群組</h3><span>{adminGroups.length} 個</span></div>{adminGroups.map((item) => <article key={item.id}><span className="avatar small">{item.name[0]?.toUpperCase()}</span><p><strong>{item.name}</strong><small>{item.ownerUsername} · {item.memberCount} 位成員 · {item.deviceCount} 台裝置</small></p><time>{formatDate(item.createdAt)}</time><button className="text-danger" onClick={() => deleteGroup(item.id)}>刪除</button></article>)}{!adminGroups.length && <Empty text="尚無群組" />}</div></div>}
+      {tab === "resources" && <div className="card user-list"><div className="list-title"><h3>所有裝置</h3><span>{adminDevices.length} 台</span></div>{adminDevices.map((item) => <article key={item.id}><span className="avatar small">{item.displayName[0]?.toUpperCase()}</span><p><strong>{item.displayName}</strong><small>{item.ownerUsername} · {item.type}</small></p><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revokeDevice(item.id)}>撤銷</button>}</article>)}{!adminDevices.length && <Empty text="尚無裝置" />}</div>}
       {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="在線設備" value={nodeMetrics.at(-1)!.onlineDevices.toLocaleString()} note="即時連線" /><Metric label="進行中傳輸" value={nodeMetrics.at(-1)!.activeTransfers.toLocaleString()} note="目前工作" /></div>}{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
-      {tab === "audit" && <><form className="card settings-form" onSubmit={deleteGroupContent}><div className="list-title"><div><p className="eyebrow">CONTENT CONTROL</p><h3>刪除群組內容</h3></div><button className="text-danger">從節點刪除</button></div><label>群組傳輸 ID<input value={groupTransferId} onChange={(event) => setGroupTransferId(event.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required /></label><small>內容會從群組內容流移除並刪除節點檔案；無法保證刪除設備已下載的副本。</small></form><div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div></>}
+      {tab === "audit" && <div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div>}
       </>}
     </section>
   );
@@ -718,8 +660,8 @@ async function loadAdminPages<T>(path: string) {
 
 const settingFields: Array<{ key: Exclude<keyof NodeSettings, "publicRegistrationEnabled">; label: string; percent?: boolean }> = [
   { key: "singleFileLimitBytes", label: "單檔上限" }, { key: "defaultUserQuotaBytes", label: "預設使用者配額" },
-  { key: "defaultGroupQuotaBytes", label: "預設群組配額" }, { key: "nodeCacheLimitBytes", label: "節點快取上限" },
-  { key: "defaultUserDailyBytes", label: "使用者每日流量" }, { key: "defaultGroupDailyBytes", label: "群組每日流量" },
+  { key: "nodeCacheLimitBytes", label: "節點快取上限" },
+  { key: "defaultUserDailyBytes", label: "使用者每日流量" },
   { key: "diskWarningPercent", label: "磁碟警告門檻", percent: true }, { key: "diskStopPercent", label: "磁碟停止門檻", percent: true },
 ];
 
@@ -735,9 +677,10 @@ function Metric({ label, value, note, danger }: { label: string; value: string; 
 
 function browserName() { return `${navigator.userAgent.includes("Edg/") ? "Edge" : "Chrome"} · ${navigator.platform || "Web"}`; }
 function labelDeviceType(value: string) { return ({ WINDOWS: "Windows", ANDROID: "Android", WEB_CHROME: "Chrome Web", WEB_EDGE: "Edge Web" } as Record<string, string>)[value] ?? value; }
-function statusLabel(value: string) { return ({ PENDING: "待核准", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
+function statusLabel(value: string) { return ({ ONLINE: "在線", OFFLINE: "離線", PENDING: "待核准", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
+function currentNodeStatisticsPath() { const now = Date.now(); return `/api/statistics/node?${new URLSearchParams({ from: new Date(now - 2 * 60 * 1000).toISOString(), to: new Date(now + 60 * 1000).toISOString() })}`; }
 function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
 function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }

@@ -63,13 +63,17 @@ type DailyTransfer struct {
 }
 
 type DeviceStatistic struct {
-	DeviceID      string  `json:"deviceId"`
-	DisplayName   string  `json:"displayName"`
-	SentCount     int64   `json:"sentCount"`
-	ReceivedCount int64   `json:"receivedCount"`
-	SentBytes     int64   `json:"sentBytes"`
-	ReceivedBytes int64   `json:"receivedBytes"`
-	AverageSpeed  float64 `json:"averageBytesPerSecond"`
+	DeviceID      string     `json:"deviceId"`
+	DisplayName   string     `json:"displayName"`
+	DeviceType    string     `json:"deviceType"`
+	TrustStatus   string     `json:"trustStatus"`
+	Online        bool       `json:"online"`
+	LastSeenAt    *time.Time `json:"lastSeenAt,omitempty"`
+	SentCount     int64      `json:"sentCount"`
+	ReceivedCount int64      `json:"receivedCount"`
+	SentBytes     int64      `json:"sentBytes"`
+	ReceivedBytes int64      `json:"receivedBytes"`
+	AverageSpeed  float64    `json:"averageBytesPerSecond"`
 }
 
 type GroupStatistic struct {

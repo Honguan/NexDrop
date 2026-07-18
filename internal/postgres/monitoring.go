@@ -33,7 +33,7 @@ func (store *Store) RecordSystemMetric(ctx context.Context, metric analytics.Nod
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM system_metrics WHERE recorded_at < $1::timestamptz - interval '366 days'`, metric.RecordedAt); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM system_metrics WHERE recorded_at < $1::timestamptz - interval '31 days'`, metric.RecordedAt); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

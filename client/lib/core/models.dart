@@ -29,6 +29,8 @@ class Device {
     this.lanShortId,
     this.lanCertificateFingerprint,
     this.lanCertificate,
+    this.online = false,
+    this.lastSeenAt,
   });
 
   factory Device.fromJson(Map<String, dynamic> json) => Device(
@@ -40,6 +42,10 @@ class Device {
     lanShortId: json['lanShortId'] as String?,
     lanCertificateFingerprint: json['lanCertificateFingerprint'] as String?,
     lanCertificate: json['lanCertificate'] as String?,
+    online: json['online'] as bool? ?? false,
+    lastSeenAt: json['lastSeenAt'] == null
+        ? null
+        : DateTime.parse(json['lastSeenAt'] as String).toLocal(),
   );
 
   final String id;
@@ -50,12 +56,52 @@ class Device {
   final String? lanShortId;
   final String? lanCertificateFingerprint;
   final String? lanCertificate;
+  final bool online;
+  final DateTime? lastSeenAt;
 
   bool get trusted => trustStatus == 'TRUSTED';
   bool get lanCapable =>
       lanShortId != null &&
       lanCertificateFingerprint != null &&
       lanCertificate != null;
+}
+
+class DeviceStatistic {
+  const DeviceStatistic({
+    required this.deviceId,
+    required this.displayName,
+    required this.deviceType,
+    required this.online,
+    required this.sentCount,
+    required this.receivedCount,
+    required this.sentBytes,
+    required this.receivedBytes,
+    this.lastSeenAt,
+  });
+
+  factory DeviceStatistic.fromJson(Map<String, dynamic> json) => DeviceStatistic(
+    deviceId: json['deviceId'] as String,
+    displayName: json['displayName'] as String,
+    deviceType: json['deviceType'] as String,
+    online: json['online'] as bool? ?? false,
+    sentCount: json['sentCount'] as int? ?? 0,
+    receivedCount: json['receivedCount'] as int? ?? 0,
+    sentBytes: json['sentBytes'] as int? ?? 0,
+    receivedBytes: json['receivedBytes'] as int? ?? 0,
+    lastSeenAt: json['lastSeenAt'] == null
+        ? null
+        : DateTime.parse(json['lastSeenAt'] as String).toLocal(),
+  );
+
+  final String deviceId;
+  final String displayName;
+  final String deviceType;
+  final bool online;
+  final DateTime? lastSeenAt;
+  final int sentCount;
+  final int receivedCount;
+  final int sentBytes;
+  final int receivedBytes;
 }
 
 class GroupSummary {

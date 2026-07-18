@@ -289,12 +289,12 @@ class Workspace extends StatefulWidget {
 
 class _WorkspaceState extends State<Workspace> {
   int selected = 0;
-  static const labels = ['傳送', '傳輸紀錄', '設備', '群組', '設定'];
+  static const labels = ['傳送', '傳輸紀錄', '設備', '統計', '設定'];
   static const icons = [
     Icons.send_rounded,
     Icons.history_rounded,
     Icons.devices_rounded,
-    Icons.group_work_rounded,
+    Icons.query_stats_rounded,
     Icons.settings_rounded,
   ];
 
@@ -305,7 +305,7 @@ class _WorkspaceState extends State<Workspace> {
       SendView(controller: widget.controller),
       ActivityView(controller: widget.controller),
       DevicesView(controller: widget.controller),
-      GroupsView(controller: widget.controller),
+      StatisticsView(controller: widget.controller),
       SettingsView(controller: widget.controller),
     ];
     final body = Column(
@@ -374,9 +374,7 @@ class SendView extends StatefulWidget {
 class _SendViewState extends State<SendView> {
   final content = TextEditingController();
   final selectedDevices = <String>{};
-  String? groupId;
-  bool groupAll = true;
-  List<Device> groupDevices = const [];
+  bool selectionInitialized = false;
   List<String> files = const [];
   String routeMode = 'AUTOMATIC';
   bool draggingFiles = false;
@@ -405,9 +403,13 @@ class _SendViewState extends State<SendView> {
 
   @override
   Widget build(BuildContext context) {
-    final trusted = (groupId == null ? widget.controller.devices : groupDevices)
+    final trusted = widget.controller.devices
         .where((device) => device.trusted && device.publicKey != null)
         .toList();
+    if (!selectionInitialized && trusted.isNotEmpty) {
+      selectionInitialized = true;
+      selectedDevices.addAll(trusted.map((device) => device.id));
+    }
     return _Page(
       title: '安全傳送',
       subtitle: '區網可用時直接傳輸，否則交由你的 Linux 節點接力。',
@@ -468,44 +470,15 @@ class _SendViewState extends State<SendView> {
                         (device) => FilterChip(
                           label: Text(device.displayName),
                           selected: selectedDevices.contains(device.id),
-                          onSelected: groupId == null || !groupAll
-                              ? (_) => setState(
-                                  () => selectedDevices.contains(device.id)
-                                      ? selectedDevices.remove(device.id)
-                                      : selectedDevices.add(device.id),
-                                )
-                              : null,
+                          onSelected: (_) => setState(
+                            () => selectedDevices.contains(device.id)
+                                ? selectedDevices.remove(device.id)
+                                : selectedDevices.add(device.id),
+                          ),
                         ),
                       )
                       .toList(),
                 ),
-                if (widget.controller.groups.isNotEmpty) ...[
-                  const SizedBox(height: 18),
-                  DropdownButtonFormField<String?>(
-                    initialValue: groupId,
-                    decoration: const InputDecoration(labelText: '或傳送至群組'),
-                    items: [
-                      const DropdownMenuItem(value: null, child: Text('不使用群組')),
-                      ...widget.controller.groups.map(
-                        (group) => DropdownMenuItem(
-                          value: group.id,
-                          child: Text(group.name),
-                        ),
-                      ),
-                    ],
-                    onChanged: _selectGroup,
-                  ),
-                  if (groupId != null)
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('傳送至群組全部設備'),
-                      value: groupAll,
-                      onChanged: (value) => setState(() {
-                        groupAll = value;
-                        if (value) selectedDevices.clear();
-                      }),
-                    ),
-                ],
                 const SizedBox(height: 18),
                 DropdownButtonFormField<String>(
                   initialValue: routeMode,
@@ -540,7 +513,7 @@ class _SendViewState extends State<SendView> {
 
   bool get _canSend =>
       (content.text.trim().isNotEmpty || files.isNotEmpty) &&
-      ((groupId != null && groupAll) || selectedDevices.isNotEmpty) &&
+      selectedDevices.isNotEmpty &&
       widget.controller.currentDevice?.trusted == true;
 
   Future<void> _pickFiles() async {
@@ -555,7 +528,7 @@ class _SendViewState extends State<SendView> {
 
   void _send() {
     final recipients =
-        (groupId == null ? widget.controller.devices : groupDevices)
+        widget.controller.devices
             .where((device) => selectedDevices.contains(device.id))
             .toList();
     unawaited(
@@ -563,8 +536,8 @@ class _SendViewState extends State<SendView> {
           .send(
             content: content.text,
             recipients: recipients,
-            groupId: groupId,
-            groupAll: groupAll,
+            groupId: null,
+            groupAll: false,
             files: files,
             routeMode: routeMode,
             notification: notification,
@@ -574,10 +547,13 @@ class _SendViewState extends State<SendView> {
             setState(() {
               content.clear();
               files = const [];
-              selectedDevices.clear();
-              groupId = null;
-              groupAll = true;
-              groupDevices = const [];
+              selectedDevices
+                ..clear()
+                ..addAll(
+                  widget.controller.devices
+                      .where((device) => device.trusted && device.publicKey != null)
+                      .map((device) => device.id),
+                );
               routeMode = 'AUTOMATIC';
               notification = false;
             });
@@ -589,23 +565,6 @@ class _SendViewState extends State<SendView> {
     );
   }
 
-  Future<void> _selectGroup(String? value) async {
-    setState(() {
-      groupId = value;
-      groupAll = true;
-      selectedDevices.clear();
-      groupDevices = const [];
-    });
-    if (value == null) return;
-    try {
-      final devices = await widget.controller.transfersService.groupDevices(
-        value,
-      );
-      if (mounted && groupId == value) setState(() => groupDevices = devices);
-    } catch (_) {
-      // AppController displays network errors during send/reload operations.
-    }
-  }
 }
 
 class ActivityView extends StatefulWidget {
@@ -709,7 +668,7 @@ class _ActivityViewState extends State<ActivityView> {
                       onPressed: () => _cancel(transfer),
                     ),
                   IconButton(
-                    tooltip: '從我的紀錄隱藏',
+                    tooltip: '刪除訊息紀錄',
                     icon: const Icon(Icons.delete_outline_rounded),
                     onPressed: () => _hide(transfer),
                   ),
@@ -776,6 +735,18 @@ class _ActivityViewState extends State<ActivityView> {
             title: Text(transfer.contentType == 'URL' ? '網址' : '文字'),
             content: SelectableText(text),
             actions: [
+              TextButton.icon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: text));
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('已複製訊息')),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.copy_rounded),
+                label: const Text('快速複製'),
+              ),
               TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('關閉'),
@@ -811,6 +782,18 @@ class _ActivityViewState extends State<ActivityView> {
 
   Future<void> _hide(TransferSummary transfer) async {
     if (busyId != null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('刪除訊息紀錄'),
+        content: const Text('只會從你的紀錄移除；其他設備已保存的副本不會被刪除。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
     setState(() => busyId = transfer.id);
     try {
       await widget.controller.hideTransfer(transfer);
@@ -842,7 +825,7 @@ class DevicesView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _Page(
     title: '設備',
-    subtitle: '只有核准設備能解密內容與建立傳輸。',
+    subtitle: '同帳號連到此 Linux 節點會自動信任；待配對狀態才需要配對碼。',
     child: Card(
       child: Column(
         children: controller.devices
@@ -855,7 +838,7 @@ class DevicesView extends StatelessWidget {
                 ),
                 title: Text(device.displayName),
                 subtitle: Text(
-                  '${device.type} · ${device.trustStatus}${device.lanCapable ? ' · LAN' : ''}',
+                  '${device.type} · ${device.online ? '在線' : device.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(device.lastSeenAt!)}'}${device.lanCapable ? ' · LAN' : ''}',
                 ),
                 trailing: device.trustStatus == 'PENDING'
                     ? Wrap(
@@ -931,32 +914,43 @@ Future<void> _showPairingCode(
   }
 }
 
-class GroupsView extends StatelessWidget {
-  const GroupsView({super.key, required this.controller});
+class StatisticsView extends StatelessWidget {
+  const StatisticsView({super.key, required this.controller});
   final AppController controller;
   @override
   Widget build(BuildContext context) => _Page(
-    title: '群組',
-    subtitle: '固定協作對象可一次傳送到所有群組設備。',
-    child: Wrap(
-      spacing: 12,
-      runSpacing: 12,
-      children: controller.groups
-          .map(
-            (group) => SizedBox(
-              width: 280,
-              child: Card(
-                child: ListTile(
-                  leading: const Icon(Icons.group_work_rounded),
-                  title: Text(group.name),
-                  subtitle: Text(group.role),
+    title: '設備與傳輸統計',
+    subtitle: controller.nodeOnline ? 'Linux 節點在線，狀態每 5 秒更新。' : 'Linux 節點目前離線。',
+    child: Card(
+      child: Column(
+        children: controller.deviceStatistics
+            .map(
+              (item) => ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: item.online ? Colors.green.shade100 : Colors.grey.shade200,
+                  child: Icon(item.online ? Icons.wifi_rounded : Icons.wifi_off_rounded),
                 ),
+                title: Text(item.displayName),
+                subtitle: Text(
+                  '傳送 ${item.sentCount} 筆／${_formatBytes(item.sentBytes)} · '
+                  '接收 ${item.receivedCount} 筆／${_formatBytes(item.receivedBytes)}\n'
+                  '${item.online ? '目前在線' : item.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(item.lastSeenAt!)}'}',
+                ),
+                isThreeLine: true,
+                trailing: Text(item.deviceType.replaceFirst('WEB_', '')),
               ),
-            ),
-          )
-          .toList(),
+            )
+            .toList(),
+      ),
     ),
   );
+}
+
+String _formatBytes(int value) {
+  if (value < 1024) return '$value B';
+  if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
+  if (value < 1024 * 1024 * 1024) return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
+  return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
 }
 
 class SettingsView extends StatelessWidget {
