@@ -1,3 +1,4 @@
+# Release preparation trigger
 name: Prepare NexDrop 1.0.6
 
 on:
