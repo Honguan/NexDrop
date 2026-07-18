@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("Chrome 與 Edge 使用獨立的 Manifest V3，節點權限只在配對時要求", async () => {
+  const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   for (const path of ["../manifests/chrome.json", "../manifests/edge.json"]) {
     const manifest = JSON.parse(await readFile(new URL(path, import.meta.url), "utf8"));
     assert.equal(manifest.manifest_version, 3);
-    assert.equal(manifest.version, "1.0.5");
+    assert.equal(manifest.version, packageMetadata.version);
     assert.deepEqual(manifest.host_permissions ?? [], []);
     assert.deepEqual(manifest.optional_host_permissions, ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]);
   }
