@@ -1,96 +1,86 @@
-import { SharePayload, NativeResponse, nodeURL, requestID, requestNative } from "./protocol.js";
+import { directStatus } from "./direct.js";
+import { SharePayload, nodeURL } from "./protocol.js";
 
 const statusElement = document.querySelector<HTMLElement>("#status")!;
 const targetsElement = document.querySelector<HTMLElement>("#targets")!;
+const contentInput = document.querySelector<HTMLTextAreaElement>("#content")!;
+const includeURL = document.querySelector<HTMLInputElement>("#include-url")!;
 const sendButton = document.querySelector<HTMLButtonElement>("#send")!;
 const openButton = document.querySelector<HTMLButtonElement>("#open-web")!;
-let status: NonNullable<NativeResponse["status"]> | null = null;
 
 void initialize();
 
 async function initialize() {
+  const preference = await chrome.storage.sync.get({ includeCurrentURL: true });
+  includeURL.checked = Boolean(preference.includeCurrentURL);
+  includeURL.addEventListener("change", () => chrome.storage.sync.set({ includeCurrentURL: includeURL.checked }));
   openButton.addEventListener("click", async () => chrome.tabs.create({ url: await nodeURL() }));
-  sendButton.addEventListener("click", sendCurrentPage);
+  sendButton.addEventListener("click", sendContent);
   try {
-    const response = await requestNative({ id: requestID(), type: "status" });
-    if (!response.ok || !response.status) throw new Error(response.error ?? "UNAVAILABLE");
-    status = response.status;
-    renderStatus();
+    const status = await directStatus();
+    if (!status) throw new Error("NOT_PAIRED");
+    statusElement.textContent = status.pending ? "等待核准" : status.connected ? "擴充功能已配對" : "節點離線";
+    statusElement.classList.toggle("offline", !status.connected);
+    renderTargets(status.devices.map((device) => ({ id: device.id, name: device.displayName })));
+    sendButton.disabled = !status.connected;
   } catch {
-    statusElement.textContent = "Desktop 未連線";
+    statusElement.textContent = "擴充功能未配對";
     statusElement.classList.add("offline");
-    targetsElement.innerHTML = '<p class="empty">傳送時將開啟 NexDrop Web</p>';
-    sendButton.textContent = "在 Web 中傳送";
-    sendButton.disabled = false;
+    targetsElement.innerHTML = '<p class="empty">請先開啟「配對設定」登入節點並核准此擴充功能。</p>';
   }
 }
 
-function renderStatus() {
-  statusElement.textContent = status?.connected ? "Desktop 已連線" : "節點離線";
-  statusElement.classList.toggle("offline", !status?.connected);
-  const targets = status?.devices ?? [];
-  const groups = status?.groups ?? [];
-  const deviceNodes = targets.map((device) => {
+function renderTargets(devices: Array<{ id: string; name: string }>) {
+  const nodes = devices.map((device) => {
     const label = document.createElement("label");
     label.className = "target";
     const input = document.createElement("input");
-    input.type = "checkbox";
-    input.value = device.id;
-    input.disabled = !device.online;
-    input.addEventListener("change", () => {
-      const selectedGroup = document.querySelector<HTMLInputElement>('#targets input[name="group"]:checked');
-      if (input.checked && selectedGroup) selectedGroup.checked = false;
-    });
-    const text = document.createElement("span");
-    text.innerHTML = `<strong>${escapeHTML(device.name)}</strong><small>${device.online ? "在線" : "離線"}</small>`;
-    label.append(input, text);
-    return label;
-  });
-  const groupNodes = groups.map((group) => {
-    const label = document.createElement("label");
-    label.className = "target group";
-    const input = document.createElement("input");
     input.type = "radio";
-    input.name = "group";
-    input.value = group.id;
-    input.addEventListener("change", () => {
-      if (input.checked) document.querySelectorAll<HTMLInputElement>('#targets input[type="checkbox"]:checked').forEach((item) => { item.checked = false; });
-    });
+    input.name = "target";
+    input.value = device.id;
     const text = document.createElement("span");
-    text.innerHTML = `<strong>${escapeHTML(group.name)}</strong><small>群組全部設備</small>`;
+    const name = document.createElement("strong");
+    name.textContent = device.name;
+    const detail = document.createElement("small");
+    detail.textContent = "信任設備";
+    text.append(name, detail);
     label.append(input, text);
     return label;
   });
-  const nodes: Node[] = [];
-  if (deviceNodes.length) nodes.push(sectionLabel("設備"), ...deviceNodes);
-  if (groupNodes.length) nodes.push(sectionLabel("群組"), ...groupNodes);
   targetsElement.replaceChildren(...nodes);
-  if (!nodes.length) targetsElement.innerHTML = '<p class="empty">尚無可用設備或群組</p>';
-  sendButton.disabled = false;
+  if (!nodes.length) targetsElement.innerHTML = '<p class="empty">尚無其他已核准設備</p>';
 }
 
-async function sendCurrentPage() {
-  sendButton.disabled = true;
+async function sendContent() {
+  const target = document.querySelector<HTMLInputElement>('#targets input[name="target"]:checked')?.value;
+  if (!target) {
+    showResult("請選擇接收設備", false);
+    return;
+  }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const payload: SharePayload = {
-    kind: "PAGE",
-    title: tab?.title,
-    url: tab?.url,
-    targetDeviceIds: [...document.querySelectorAll<HTMLInputElement>('#targets input[type="checkbox"]:checked')].map((item) => item.value),
-    groupId: document.querySelector<HTMLInputElement>('#targets input[name="group"]:checked')?.value,
-  };
+  const parts = [contentInput.value.trim()];
+  if (includeURL.checked && tab?.url) parts.push(tab.url);
+  const text = parts.filter(Boolean).join("\n\n");
+  if (!text) {
+    showResult("請輸入內容或勾選目前網址", false);
+    return;
+  }
+  sendButton.disabled = true;
+  const payload: SharePayload = { kind: includeURL.checked ? "PAGE" : "SELECTION", title: tab?.title, url: includeURL.checked ? tab?.url : undefined, text, targetDeviceIds: [target] };
   const response = await chrome.runtime.sendMessage({ type: "share", payload });
-  sendButton.textContent = response?.fallback ? "已開啟 Web" : response?.ok ? "已送出" : "傳送失敗";
-  window.setTimeout(() => window.close(), 700);
+  showResult(response?.ok ? "已安全送出" : messageFor(response?.error, response?.retryAfterSeconds), Boolean(response?.ok));
+  if (response?.ok) window.setTimeout(() => window.close(), 800);
+  else sendButton.disabled = false;
 }
 
-function sectionLabel(value: string) {
-  const label = document.createElement("p");
-  label.className = "section-label";
-  label.textContent = value;
-  return label;
+function showResult(message: string, success: boolean) {
+  const result = document.querySelector<HTMLElement>("#send-result")!;
+  result.textContent = message;
+  result.className = success ? "success" : "error";
 }
 
-function escapeHTML(value: string) {
-  return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]!);
+function messageFor(code?: string, retryAfterSeconds?: number) {
+  if (code === "RATE_LIMITED") return retryAfterSeconds ? `操作太頻繁，請在 ${retryAfterSeconds} 秒後再試。` : "操作太頻繁，請稍後再試。";
+  const messages: Record<string, string> = { TARGET_REQUIRED: "請選擇接收設備。", CONTENT_REQUIRED: "請輸入要傳送的內容。", TARGET_UNAVAILABLE: "接收設備目前不可用。", INVALID_TOKEN: "登入已過期，請重新配對。" };
+  return messages[code ?? ""] ?? "傳送失敗，請檢查節點連線。";
 }

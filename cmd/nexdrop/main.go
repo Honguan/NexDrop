@@ -65,7 +65,7 @@ func main() {
 	if len(cursorSecret) < 32 {
 		fatal("configuration failed", errors.New("NEXDROP_CURSOR_SECRET must contain at least 32 characters"))
 	}
-	store, err := postgres.Open(context.Background(), databaseURL)
+	store, err := postgres.OpenWithPassword(context.Background(), databaseURL, os.Getenv("NEXDROP_DATABASE_PASSWORD"))
 	if err != nil {
 		fatal("connect to PostgreSQL", err)
 	}
@@ -162,16 +162,21 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 	if databaseURL == "" {
 		return true, errors.New("NEXDROP_DATABASE_URL is required")
 	}
+	databasePassword := os.Getenv("NEXDROP_DATABASE_PASSWORD")
+	databaseCommandURL, err := postgres.DatabaseURLWithPassword(databaseURL, databasePassword)
+	if err != nil {
+		return true, fmt.Errorf("configure PostgreSQL credentials: %w", err)
+	}
 	storagePath := os.Getenv("NEXDROP_STORAGE_PATH")
 	if storagePath == "" {
 		storagePath = "/var/lib/nexdrop"
 	}
 	service := backup.NewService(func(ctx context.Context, databaseURL string) (backup.SecurityStore, error) {
-		return postgres.Open(ctx, databaseURL)
+		return postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
 	})
 	switch arguments[0] {
 	case "status":
-		store, err := postgres.Open(ctx, databaseURL)
+		store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
 		if err != nil {
 			return true, err
 		}
@@ -181,7 +186,7 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		}
 		return true, json.NewEncoder(os.Stdout).Encode(healthResponse{Status: "ok", Version: version})
 	case "doctor":
-		store, err := postgres.Open(ctx, databaseURL)
+		store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
 		if err != nil {
 			return true, err
 		}
@@ -200,7 +205,7 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return true, err
 		}
-		store, err := postgres.Open(ctx, databaseURL)
+		store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
 		if err != nil {
 			return true, err
 		}
@@ -227,7 +232,7 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		if len(password) > 4096 {
 			return true, errors.New("password input is too long")
 		}
-		store, err := postgres.Open(ctx, databaseURL)
+		store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
 		if err != nil {
 			return true, err
 		}
@@ -243,7 +248,7 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		if *output == "" {
 			*output = filepath.Join(storagePath, "backups", "nexdrop-"+time.Now().UTC().Format("20060102T150405Z")+".tar.gz")
 		}
-		if err := service.Create(ctx, databaseURL, storagePath, *output, *includeFiles); err != nil {
+		if err := service.Create(ctx, databaseCommandURL, storagePath, *output, *includeFiles); err != nil {
 			return true, err
 		}
 		fmt.Println(*output)
@@ -258,7 +263,7 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		if *archive == "" || !*confirmed {
 			return true, errors.New("restore requires --file and --confirm")
 		}
-		return true, service.Restore(ctx, databaseURL, storagePath, *archive)
+		return true, service.Restore(ctx, databaseCommandURL, storagePath, *archive)
 	default:
 		return true, fmt.Errorf("unknown command %q", arguments[0])
 	}

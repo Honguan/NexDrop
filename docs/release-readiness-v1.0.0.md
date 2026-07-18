@@ -31,7 +31,7 @@
 Android keystore 與 Windows PFX 不再是發布阻塞條件：
 
 - 已設定六項 Secrets：建立並驗證簽章版本。
-- 未設定 Secrets：建立未簽章 APK、EXE 與 ZIP；Release Notes 必須標示可能出現 Android 安裝警告或 Windows SmartScreen 警告。
+- 未設定 Secrets：Android 建立具 v1/v2 臨時簽章的可安裝 APK，Windows 建立未簽章 EXE 與 ZIP；Release Notes 必須標示 Android 後續更新可能需先移除舊版，或 Windows 可能出現 SmartScreen 警告。
 - GHCR 映像仍以 GitHub OIDC、Cosign、Artifact Attestation、SBOM 與 SHA-256 驗證。
 
 因此，個人維護者不需要外部審查者，也可以建立 `v1.0.0` Tag 並完成發布。平台程式碼簽章可在日後取得憑證時補上，並以新的 PATCH 版本重新發布。

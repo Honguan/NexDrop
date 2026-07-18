@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -34,7 +35,20 @@ type querier interface {
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	return OpenWithPassword(ctx, databaseURL, "")
+}
+
+// OpenWithPassword keeps the password separate from the connection URL so
+// characters such as @, :, / and # cannot change how the URL is parsed.
+func OpenWithPassword(ctx context.Context, databaseURL, password string) (*Store, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if password != "" {
+		config.ConnConfig.Password = password
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}
@@ -43,6 +57,22 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{pool: pool}, nil
+}
+
+func DatabaseURLWithPassword(databaseURL, password string) (string, error) {
+	if password == "" {
+		return databaseURL, nil
+	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return "", err
+	}
+	username := ""
+	if parsed.User != nil {
+		username = parsed.User.Username()
+	}
+	parsed.User = url.UserPassword(username, password)
+	return parsed.String(), nil
 }
 
 func (store *Store) Close() {

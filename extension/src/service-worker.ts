@@ -1,4 +1,5 @@
-import { SharePayload, openWebShare, requestID, requestNative } from "./protocol.js";
+import { DirectError, sendDirect } from "./direct.js";
+import { SharePayload, openWebShare } from "./protocol.js";
 
 const menuItems: Array<chrome.contextMenus.CreateProperties> = [
   { id: "nexdrop-page", title: "傳送目前頁面到 NexDrop", contexts: ["page"] },
@@ -13,22 +14,12 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   const payload = payloadFromMenu(info, tab);
-  if (!payload) return;
-  requestNative({ id: requestID(), type: "share", payload })
-    .then((response) => {
-      if (!response.ok) return openWebShare(payload);
-    })
-    .catch(() => openWebShare(payload));
+  if (payload) void openWebShare(payload);
 });
 
 chrome.runtime.onMessage.addListener((message: { type?: string; payload?: SharePayload }, _sender, respond) => {
   if (message.type !== "share" || !message.payload) return false;
-  requestNative({ id: requestID(), type: "share", payload: message.payload })
-    .then((response) => respond(response))
-    .catch(async () => {
-      await openWebShare(message.payload!);
-      respond({ ok: true, fallback: true });
-    });
+  sendDirect(message.payload).then(() => respond({ ok: true })).catch((error: unknown) => respond({ ok: false, error: error instanceof Error ? error.message : "SEND_FAILED", retryAfterSeconds: error instanceof DirectError ? error.retryAfterSeconds : undefined }));
   return true;
 });
 
