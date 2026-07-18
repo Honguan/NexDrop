@@ -91,7 +91,7 @@ export async function connectPresence() {
   const url = new URL(origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/ws";
-  url.search = new URLSearchParams({ access_token: tokens.accessToken, protocolVersion: "1.1", clientVersion: "extension-v1.0.5" }).toString();
+  url.search = new URLSearchParams({ access_token: tokens.accessToken, protocolVersion: "1.1", clientVersion: "extension-v1.0" }).toString();
   return new WebSocket(url, "nexdrop.v1");
 }
 

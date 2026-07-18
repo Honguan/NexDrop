@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AdminDevice,
   AdminFailure,
@@ -571,6 +571,7 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
   const [totpReady, setTOTPReady] = useState(user.totpEnabled);
   const [verification, setVerification] = useState({ password: "", code: "" });
   const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
+  const settingsInitialized = useRef(false);
 
   const load = useCallback(async () => {
     const [nextUsers, nextDevices, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
@@ -579,7 +580,7 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       api.get<NodeSettings>("/api/admin/settings"), api.get<AuditLog[]>("/api/admin/audit-logs"),
       api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(currentNodeStatisticsPath()),
     ]);
-    setUsers(nextUsers); setAdminDevices(nextDevices); setStorage(nextStorage); setSettings(nextSettings); setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
+    setUsers(nextUsers); setAdminDevices(nextDevices); setStorage(nextStorage); if (!settingsInitialized.current) { settingsInitialized.current = true; setSettings(nextSettings); } setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
   }, []);
   useEffect(() => {
     if (!verified) return;

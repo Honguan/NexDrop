@@ -15,4 +15,5 @@ test("Web 會定期刷新設備、傳輸與即時節點狀態", async () => {
   assert.match(app, /window\.setInterval\(.*reload/s);
   assert.match(app, /item\.online/);
   assert.match(app, /最後更新/);
+  assert.match(app, /settingsInitialized\.current/);
 });
