@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-07-18
+
+### Changed
+
+- 帳號第一台有效設備作為信任起點；後續新增設備會進入待配對狀態，並由該設備自動產生挑戰 ID、六位數配對碼及 QR 配對資料。
+- 已信任設備可在設備頁輸入配對資料核准同帳號的新設備，配對操作不再放在管理後台。
+
+### Fixed
+
+- 修正管理後台高頻同時載入多個 API，觸發速率限制後整頁沒有資料的問題；現在改為較低頻率刷新、局部容錯及手動重試。
+- 修正 Windows EXE 登入前沒有系統匣圖示，以及最小化後圖示或視窗無法正確恢復的問題。
+
+### Security
+
+- 配對碼只能由待配對設備自己的有效工作階段產生，並只能由同帳號的已信任設備兌換。
+
 ## [1.0.5] - 2026-07-18
 
 ### Added
@@ -92,3 +108,4 @@
 [1.0.3]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.3
 [1.0.4]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.4
 [1.0.5]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.5
+[1.0.6]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.6
