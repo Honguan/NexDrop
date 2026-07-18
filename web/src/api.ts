@@ -15,6 +15,8 @@ export type Device = {
   publicKey?: string;
   keyAlgorithm?: string;
   trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
+  online: boolean;
+  lastSeenAt?: string;
   createdAt: string;
 };
 
@@ -88,6 +90,10 @@ export type DailyTransfer = {
 export type DeviceStatistic = {
   deviceId: string;
   displayName: string;
+  deviceType: string;
+  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
+  online: boolean;
+  lastSeenAt?: string;
   sentCount: number;
   receivedCount: number;
   sentBytes: number;

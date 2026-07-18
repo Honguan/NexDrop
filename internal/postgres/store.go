@@ -213,8 +213,8 @@ func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name
 
 	var result device.Device
 	err = tx.QueryRow(ctx, `
-		INSERT INTO devices (user_id, display_name, device_type)
-		VALUES ($1, $2, $3)
+		INSERT INTO devices (user_id, display_name, device_type, trust_status)
+		VALUES ($1, $2, $3, 'TRUSTED')
 		RETURNING id::text, display_name, device_type, trust_status, revoked_at, created_at
 	`, session.ID, name, deviceType).Scan(
 		&result.ID, &result.DisplayName, &result.Type, &result.TrustStatus, &result.RevokedAt, &result.CreatedAt,
@@ -251,10 +251,13 @@ func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.De
 	rows, err := store.pool.Query(ctx, `
 		SELECT d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
 		       COALESCE(l.short_device_id, ''), COALESCE(l.certificate_fingerprint, ''), COALESCE(l.certificate_pem, ''),
-		       d.trust_status, d.revoked_at, d.created_at
+		       d.trust_status,
+		       COALESCE(connection.disconnected_at IS NULL AND connection.last_seen_at >= now() - interval '45 seconds', false),
+		       connection.last_seen_at, d.revoked_at, d.created_at
 		FROM devices d
 		JOIN device_keys k ON k.device_id = d.id
 		LEFT JOIN device_lan_identities l ON l.device_id = d.id
+		LEFT JOIN device_connections connection ON connection.device_id = d.id
 		WHERE d.user_id = $1
 		ORDER BY d.created_at
 	`, userID)
@@ -266,7 +269,7 @@ func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.De
 	devices := make([]device.Device, 0)
 	for rows.Next() {
 		var item device.Device
-		if err := rows.Scan(&item.ID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.LANShortID, &item.LANFingerprint, &item.LANCertificate, &item.TrustStatus, &item.RevokedAt, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.DisplayName, &item.Type, &item.PublicKey, &item.Algorithm, &item.LANShortID, &item.LANFingerprint, &item.LANCertificate, &item.TrustStatus, &item.Online, &item.LastSeenAt, &item.RevokedAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		devices = append(devices, item)
@@ -2078,17 +2081,22 @@ func (store *Store) DailyTransfers(ctx context.Context, session auth.Session, ti
 
 func (store *Store) DeviceStatistics(ctx context.Context, session auth.Session, timeRange analytics.TimeRange) ([]analytics.DeviceStatistic, error) {
 	rows, err := store.pool.Query(ctx, `
-		SELECT d.id::text, d.display_name,
+		SELECT d.id::text, d.display_name, d.device_type, d.trust_status,
+		       COALESCE(connection.disconnected_at IS NULL AND connection.last_seen_at >= now() - interval '45 seconds', false),
+		       connection.last_seen_at,
 		       COUNT(m.event_id) FILTER (WHERE m.sender_device_id = d.id),
 		       COUNT(m.event_id) FILTER (WHERE m.receiver_device_id = d.id),
 		       COALESCE(SUM(m.file_size) FILTER (WHERE m.sender_device_id = d.id), 0),
 		       COALESCE(SUM(m.file_size) FILTER (WHERE m.receiver_device_id = d.id), 0),
 		       COALESCE(AVG(m.average_bytes_per_second) FILTER (WHERE m.sender_device_id = d.id), 0)
 		FROM devices d
+		LEFT JOIN device_connections connection ON connection.device_id = d.id
 		LEFT JOIN transfer_metrics m ON (m.sender_device_id = d.id OR m.receiver_device_id = d.id)
 		  AND m.started_at >= $2 AND m.started_at < $3
 		WHERE d.user_id = $1
-		GROUP BY d.id, d.display_name ORDER BY d.display_name
+		GROUP BY d.id, d.display_name, d.device_type, d.trust_status,
+		         connection.disconnected_at, connection.last_seen_at
+		ORDER BY d.display_name
 	`, session.ID, timeRange.From, timeRange.To)
 	if err != nil {
 		return nil, err
@@ -2097,7 +2105,7 @@ func (store *Store) DeviceStatistics(ctx context.Context, session auth.Session, 
 	result := make([]analytics.DeviceStatistic, 0)
 	for rows.Next() {
 		var item analytics.DeviceStatistic
-		if err := rows.Scan(&item.DeviceID, &item.DisplayName, &item.SentCount, &item.ReceivedCount, &item.SentBytes, &item.ReceivedBytes, &item.AverageSpeed); err != nil {
+		if err := rows.Scan(&item.DeviceID, &item.DisplayName, &item.DeviceType, &item.TrustStatus, &item.Online, &item.LastSeenAt, &item.SentCount, &item.ReceivedCount, &item.SentBytes, &item.ReceivedBytes, &item.AverageSpeed); err != nil {
 			return nil, err
 		}
 		result = append(result, item)

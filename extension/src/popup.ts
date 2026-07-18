@@ -21,7 +21,7 @@ async function initialize() {
     if (!status) throw new Error("NOT_PAIRED");
     statusElement.textContent = status.pending ? "等待核准" : status.connected ? "擴充功能已配對" : "節點離線";
     statusElement.classList.toggle("offline", !status.connected);
-    renderTargets(status.devices.map((device) => ({ id: device.id, name: device.displayName })));
+    renderTargets(status.devices.map((device) => ({ id: device.id, name: device.displayName, online: Boolean(device.online) })));
     sendButton.disabled = !status.connected;
   } catch {
     statusElement.textContent = "擴充功能未配對";
@@ -30,19 +30,20 @@ async function initialize() {
   }
 }
 
-function renderTargets(devices: Array<{ id: string; name: string }>) {
+function renderTargets(devices: Array<{ id: string; name: string; online: boolean }>) {
   const nodes = devices.map((device) => {
     const label = document.createElement("label");
     label.className = "target";
     const input = document.createElement("input");
-    input.type = "radio";
+    input.type = "checkbox";
     input.name = "target";
     input.value = device.id;
+    input.checked = true;
     const text = document.createElement("span");
     const name = document.createElement("strong");
     name.textContent = device.name;
     const detail = document.createElement("small");
-    detail.textContent = "信任設備";
+    detail.textContent = device.online ? "在線" : "離線，可排隊傳送";
     text.append(name, detail);
     label.append(input, text);
     return label;
@@ -52,8 +53,8 @@ function renderTargets(devices: Array<{ id: string; name: string }>) {
 }
 
 async function sendContent() {
-  const target = document.querySelector<HTMLInputElement>('#targets input[name="target"]:checked')?.value;
-  if (!target) {
+  const targets = Array.from(document.querySelectorAll<HTMLInputElement>('#targets input[name="target"]:checked')).map((input) => input.value);
+  if (!targets.length) {
     showResult("請選擇接收設備", false);
     return;
   }
@@ -66,7 +67,7 @@ async function sendContent() {
     return;
   }
   sendButton.disabled = true;
-  const payload: SharePayload = { kind: includeURL.checked ? "PAGE" : "SELECTION", title: tab?.title, url: includeURL.checked ? tab?.url : undefined, text, targetDeviceIds: [target] };
+  const payload: SharePayload = { kind: includeURL.checked ? "PAGE" : "SELECTION", title: tab?.title, url: includeURL.checked ? tab?.url : undefined, text, targetDeviceIds: targets };
   const response = await chrome.runtime.sendMessage({ type: "share", payload });
   showResult(response?.ok ? "已安全送出" : messageFor(response?.error, response?.retryAfterSeconds), Boolean(response?.ok));
   if (response?.ok) window.setTimeout(() => window.close(), 800);

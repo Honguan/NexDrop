@@ -66,9 +66,15 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if created.TrustStatus != device.TrustTrusted {
+		t.Fatalf("CreateDevice() trust status = %s, want TRUSTED", created.TrustStatus)
+	}
 	listed, err := store.ListDevices(ctx, userID)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("ListDevices() = %+v, %v", listed, err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE devices SET trust_status = 'PENDING' WHERE id = $1`, created.ID); err != nil {
+		t.Fatal(err)
 	}
 	codeHash := sha256.Sum256([]byte("123456"))
 	challengeID, err := store.CreatePairingCode(ctx, session, created.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())

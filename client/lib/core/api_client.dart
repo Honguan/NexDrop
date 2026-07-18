@@ -107,6 +107,11 @@ class ApiClient {
           .map((value) => Device.fromJson(value as Map<String, dynamic>))
           .toList();
 
+  Future<List<DeviceStatistic>> deviceStatistics() async =>
+      ((await getJson('/api/statistics/devices')) as List<dynamic>)
+          .map((value) => DeviceStatistic.fromJson(value as Map<String, dynamic>))
+          .toList();
+
   Future<List<GroupSummary>> groups() async =>
       ((await getJson('/api/groups')) as List<dynamic>)
           .map((value) => GroupSummary.fromJson(value as Map<String, dynamic>))

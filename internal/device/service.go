@@ -50,6 +50,8 @@ type Device struct {
 	LANFingerprint string      `json:"lanCertificateFingerprint,omitempty"`
 	LANCertificate string      `json:"lanCertificate,omitempty"`
 	TrustStatus    TrustStatus `json:"trustStatus"`
+	Online         bool        `json:"online"`
+	LastSeenAt     *time.Time  `json:"lastSeenAt,omitempty"`
 	RevokedAt      *time.Time  `json:"revokedAt,omitempty"`
 	CreatedAt      time.Time   `json:"createdAt"`
 }

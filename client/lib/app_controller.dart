@@ -52,7 +52,7 @@ class AppController extends ChangeNotifier {
   UserAccount? account;
   Device? currentDevice;
   List<Device> devices = const [];
-  List<GroupSummary> groups = const [];
+  List<DeviceStatistic> deviceStatistics = const [];
   List<TransferSummary> transfers = const [];
   List<WaitingLanTask> waitingLanTasks = const [];
   bool loading = true;
@@ -122,7 +122,7 @@ class AppController extends ChangeNotifier {
     account = null;
     currentDevice = null;
     devices = const [];
-    groups = const [];
+    deviceStatistics = const [];
     transfers = const [];
     waitingLanTasks = const [];
     await _updateDesktopStatus();
@@ -133,12 +133,12 @@ class AppController extends ChangeNotifier {
     if (account == null) return;
     final values = await Future.wait([
       api.devices(),
-      api.groups(),
       api.transfers(),
+      api.deviceStatistics(),
     ]);
     devices = values[0] as List<Device>;
-    groups = values[1] as List<GroupSummary>;
-    final remoteTransfers = values[2] as List<TransferSummary>;
+    final remoteTransfers = values[1] as List<TransferSummary>;
+    deviceStatistics = values[2] as List<DeviceStatistic>;
     final remoteIds = remoteTransfers.map((transfer) => transfer.id).toSet();
     final localTransfers = await database.localTransfers();
     transfers = [
@@ -413,9 +413,11 @@ class AppController extends ChangeNotifier {
             unawaited(_flushMetrics());
             unawaited(_updateDesktopStatus());
             _heartbeat = Timer.periodic(
-              const Duration(seconds: 15),
+              const Duration(seconds: 5),
               (_) => _socket?.sink.add(jsonEncode({'type': 'heartbeat'})),
             );
+          } else if (message['type'] == 'heartbeat_ack') {
+            unawaited(reload());
           } else if (message['type'] == 'notification') {
             final notification =
                 message['notification'] as Map<String, dynamic>?;

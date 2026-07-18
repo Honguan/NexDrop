@@ -107,7 +107,7 @@ func main() {
 	collector := monitoring.NewCollector(store, monitoring.NewSystemSampler(), storagePath)
 	go func() {
 		_ = collector.RunOnce(context.Background())
-		collector.Start(context.Background(), time.Minute)
+		collector.Start(context.Background(), 5*time.Second)
 	}()
 	applicationAPI := api.NewWithCursorKey([]byte(cursorSecret), authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
 	presenceHub := presence.NewHub(authService, store)

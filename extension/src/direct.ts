@@ -1,7 +1,7 @@
 import { normalizeNodeURL, nodeURL, SharePayload } from "./protocol.js";
 
 type TokenPair = { accessToken: string; refreshToken: string };
-export type DirectDevice = { id: string; displayName: string; publicKey?: string; trustStatus: "PENDING" | "TRUSTED" | "REVOKED" };
+export type DirectDevice = { id: string; displayName: string; publicKey?: string; trustStatus: "PENDING" | "TRUSTED" | "REVOKED"; online?: boolean; lastSeenAt?: string };
 export type DirectStatus = { connected: boolean; pending: boolean; nodeURL: string; devices: DirectDevice[] };
 
 const mediaType = "application/vnd.nexdrop.v1+json";
@@ -79,6 +79,20 @@ export async function sendDirect(payload: SharePayload) {
       wrappedContentKeys: encrypted.wrappedContentKeys,
     }),
   });
+}
+
+export async function connectPresence() {
+  const status = await directStatus();
+  if (!status?.connected) throw new Error("NOT_PAIRED");
+  const origin = await nodeURL();
+  const stored = await chrome.storage.local.get(tokenKey);
+  const tokens = stored[tokenKey] as TokenPair | undefined;
+  if (!tokens) throw new Error("NOT_PAIRED");
+  const url = new URL(origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/ws";
+  url.search = new URLSearchParams({ access_token: tokens.accessToken, protocolVersion: "1.1", clientVersion: "extension-v1.0" }).toString();
+  return new WebSocket(url, "nexdrop.v1");
 }
 
 async function attachSession(id: string) {

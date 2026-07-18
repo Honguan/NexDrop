@@ -156,7 +156,7 @@ input:focus, textarea:focus { border-color: #5bcfae; box-shadow: 0 0 0 3px rgba(
 .route-label { color: #536074; font: 650 9px ui-monospace, monospace; }
 .status { width: max-content; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 5px 8px; background: #edf1f5; color: #596477; font-size: 9px; font-weight: 800; white-space: nowrap; }
 .status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.status-trusted, .status-delivered, .status-read, .status-active { background: #e9f9f3; color: #148166; }
+.status-trusted, .status-delivered, .status-read, .status-active, .status-online { background: #e9f9f3; color: #148166; }
 .status-pending, .status-queued, .status-created { background: #fff6df; color: #a97112; }
 .status-revoked, .status-failed, .status-disabled, .status-cancelled { background: #fff0f0; color: #bd4545; }
 .status-admin { background: #eef1ff; color: #515ab0; }

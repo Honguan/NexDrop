@@ -12,12 +12,12 @@ async function initialize() {
   try {
     const paired = await directStatus();
     if (paired) {
-      status.textContent = paired.pending ? "已登記，請由管理員在 NexDrop Web 核准此擴充功能。" : "此擴充功能已獨立配對。";
+      status.textContent = paired.pending ? "此設備屬於既有待配對流程，請由管理員在 NexDrop Web 核准。" : "此擴充功能已由同一節點自動信任。";
       status.className = paired.pending ? "error" : "success";
       disconnect.hidden = false;
     }
   } catch {
-    status.textContent = "既有登入已失效，請重新配對。";
+    status.textContent = "既有登入已失效，請重新登入並登記。";
     status.className = "error";
   }
 }
@@ -35,9 +35,10 @@ form.addEventListener("submit", async (event) => {
       document.querySelector<HTMLInputElement>("#totp")!.value,
       document.querySelector<HTMLInputElement>("#device-name")!.value,
     );
-    status.textContent = paired.pending ? "登記完成。請到 NexDrop Web 的「設備」頁核准此擴充功能，再回來重新開啟小視窗。" : "配對完成。";
+    status.textContent = paired.pending ? "此設備進入相容配對流程，請到 NexDrop Web 的「設備」頁核准。" : "登記完成，已由同一節點自動信任。";
     status.className = paired.pending ? "error" : "success";
     disconnect.hidden = false;
+    await chrome.runtime.sendMessage({ type: "presence_reconnect" });
   } catch (error) {
     status.textContent = messageFor(error instanceof Error ? error.message : "PAIR_FAILED", error instanceof DirectError ? error.retryAfterSeconds : undefined);
     status.className = "error";
@@ -47,8 +48,9 @@ form.addEventListener("submit", async (event) => {
 });
 
 disconnect.addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "presence_disconnect" });
   await disconnectExtension();
-  status.textContent = "已中斷本機配對；節點上的設備紀錄可由 NexDrop Web 撤銷。";
+  status.textContent = "已中斷本機連線；節點上的設備紀錄可由 NexDrop Web 撤銷。";
   status.className = "success";
   disconnect.hidden = true;
 });

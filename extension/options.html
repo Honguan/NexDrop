@@ -4,17 +4,17 @@
   <body class="options">
     <main>
       <div class="brand"><span>N</span><strong>NexDrop</strong></div>
-      <p class="eyebrow">PAIR EXTENSION</p><h1>將擴充功能配對為獨立設備</h1>
-      <p class="hint">擴充功能與桌面程式是兩台不同設備，必須各自登記並由管理員核准。</p>
+      <p class="eyebrow">REGISTER EXTENSION</p><h1>將擴充功能登記為獨立設備</h1>
+      <p class="hint">擴充功能與桌面程式是不同設備；同帳號連到同一 Linux 節點時會自動信任，不需輸入配對碼。</p>
       <form>
         <label for="node-url">NexDrop 節點網址</label><input id="node-url" type="url" placeholder="https://drop.example.com" required />
         <label for="device-name">設備名稱</label><input id="device-name" value="瀏覽器擴充功能" minlength="3" maxlength="100" required />
         <label for="identifier">帳號或電子郵件</label><input id="identifier" autocomplete="username" required />
         <label for="password">密碼</label><input id="password" type="password" autocomplete="current-password" required />
         <label for="totp">六位數驗證碼（未啟用可留空）</label><input id="totp" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" />
-        <p class="hint">正式環境必須使用 HTTPS；配對時會要求此節點的網站存取權限。</p>
+        <p class="hint">正式環境必須使用 HTTPS；登記時會要求此節點的網站存取權限。只有既有待配對或跨節點情境才需人工核准。</p>
         <button type="submit" class="primary">登入並登記此擴充功能</button>
-        <button id="disconnect" type="button" class="secondary" hidden>中斷本機配對</button>
+        <button id="disconnect" type="button" class="secondary" hidden>中斷本機連線</button>
         <p id="save-status" role="status"></p>
       </form>
     </main>
