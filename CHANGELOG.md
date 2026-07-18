@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-18
+
+### Fixed
+
+- Android Release APK 明確啟用 v1 與 v2 簽章，修正 Samsung J6 與 Android 6 相容性，並符合發布簽章驗證。
+
 ## [1.0.2] - 2026-07-18
 
 ### Added
@@ -64,3 +70,4 @@
 [1.0.0]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.0
 [1.0.1]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.1
 [1.0.2]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.2
+[1.0.3]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.3
