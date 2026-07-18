@@ -1,0 +1,85 @@
+name: Verify NexDrop 1.0.6 release
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify:
+    if: github.head_ref == 'agent/verify-release-v1.0.6'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Watch release and report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -u
+          run_id=''
+          for attempt in $(seq 1 120); do
+            run_id=$(gh run list --workflow release.yml --branch v1.0.6 --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if test -n "$run_id"; then
+              break
+            fi
+            sleep 5
+          done
+
+          if test -z "$run_id"; then
+            printf '## NexDrop 1.0.6 發佈驗證\n\n找不到 `release.yml` 的 `v1.0.6` 執行紀錄。\n' > /tmp/release-report.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/release-report.md
+            exit 0
+          fi
+
+          gh run watch "$run_id" --exit-status || true
+          gh run view "$run_id" --json status,conclusion,url,displayTitle,event,headBranch,headSha,jobs > /tmp/run.json
+          gh release view v1.0.6 --json url,name,tagName,isDraft,isPrerelease,publishedAt,assets > /tmp/release.json 2>/tmp/release-error.txt || true
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          run = json.loads(Path('/tmp/run.json').read_text())
+          release_path = Path('/tmp/release.json')
+          release = json.loads(release_path.read_text()) if release_path.exists() and release_path.stat().st_size else None
+          lines = [
+              '## NexDrop 1.0.6 發佈驗證',
+              '',
+              f"- Workflow：{run.get('displayTitle')}",
+              f"- 狀態：{run.get('status')}",
+              f"- 結果：{run.get('conclusion')}",
+              f"- 執行網址：{run.get('url')}",
+          ]
+          jobs = run.get('jobs') or []
+          if jobs:
+              lines += ['', '### 工作項目']
+              for job in jobs:
+                  lines.append(f"- {job.get('name')}：{job.get('conclusion') or job.get('status')}")
+          if release:
+              lines += [
+                  '',
+                  '### GitHub Release',
+                  f"- 名稱：{release.get('name')}",
+                  f"- 標籤：{release.get('tagName')}",
+                  f"- 草稿：{release.get('isDraft')}",
+                  f"- 預發佈：{release.get('isPrerelease')}",
+                  f"- 發佈時間：{release.get('publishedAt')}",
+                  f"- 網址：{release.get('url')}",
+                  '',
+                  '### 附件',
+              ]
+              for asset in release.get('assets') or []:
+                  lines.append(f"- {asset.get('name')}（{asset.get('size')} bytes）")
+          else:
+              error = Path('/tmp/release-error.txt').read_text().strip()
+              lines += ['', '### GitHub Release', f'- 尚未讀取到公開 Release：`{error}`']
+          Path('/tmp/release-report.md').write_text('\n'.join(lines) + '\n')
+          PY
+
+          gh pr comment "$PR_NUMBER" --body-file /tmp/release-report.md
