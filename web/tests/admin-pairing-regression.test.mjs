@@ -16,4 +16,5 @@ test("待核准設備自行產生配對碼並由信任設備核准", async () =>
   assert.match(app, /pairing-code/);
   assert.match(app, /核准新設備/);
   assert.doesNotMatch(app, /請由管理員核准這個瀏覽器設備/);
+  assert.doesNotMatch(app, /設備已核准/);
 });
