@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-07-18
+
+### Fixed
+
+- 發布流程使用 `apksigner` 最終重簽並驗證 Android APK 的 v1／v2 簽章，且一般 Flutter CI 也會在建立 Tag 前執行相同檢查。
+
 ## [1.0.3] - 2026-07-18
 
 ### Fixed
@@ -71,3 +77,4 @@
 [1.0.1]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.1
 [1.0.2]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.2
 [1.0.3]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.3
+[1.0.4]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.4
