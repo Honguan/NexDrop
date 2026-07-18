@@ -19,7 +19,7 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             echo "client=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- client; then
+          elif git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- client scripts/sign-android-release.sh .github/workflows/flutter-ci.yml; then
             echo "client=false" >> "$GITHUB_OUTPUT"
           else
             echo "client=true" >> "$GITHUB_OUTPUT"
@@ -46,7 +46,30 @@ jobs:
         run: flutter analyze
       - if: ${{ needs.changes.outputs.client == 'true' }}
         run: flutter test
+      - name: 準備 Android CI 簽章
+        if: ${{ needs.changes.outputs.client == 'true' && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          password=$(openssl rand -hex 24)
+          keytool -genkeypair -noprompt -keystore android/app/ci-release.jks -storepass "$password" -keypass "$password" -alias nexdrop-ci -keyalg RSA -keysize 3072 -validity 1 -dname 'CN=NexDrop CI,O=NexDrop'
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=nexdrop-ci\nstoreFile=ci-release.jks\n' "$password" "$password" > android/key.properties
+          printf '%s' "$password" > "$RUNNER_TEMP/nexdrop-android-store-pass"
+          printf '%s' "$password" > "$RUNNER_TEMP/nexdrop-android-key-pass"
       - if: ${{ needs.changes.outputs.client == 'true' && runner.os == 'Linux' }}
-        run: flutter build apk --debug
+        run: flutter build apk --release
+      - name: 驗證 Android Release v1/v2 簽章
+        if: ${{ needs.changes.outputs.client == 'true' && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          bash ../scripts/sign-android-release.sh \
+            build/app/outputs/flutter-apk/app-release.apk \
+            android/app/ci-release.jks \
+            nexdrop-ci \
+            "$RUNNER_TEMP/nexdrop-android-store-pass" \
+            "$RUNNER_TEMP/nexdrop-android-key-pass"
+      - name: 清除 Android CI 簽章
+        if: ${{ always() && needs.changes.outputs.client == 'true' && runner.os == 'Linux' }}
+        shell: bash
+        run: rm -f -- android/app/ci-release.jks android/key.properties "$RUNNER_TEMP/nexdrop-android-store-pass" "$RUNNER_TEMP/nexdrop-android-key-pass"
       - if: ${{ needs.changes.outputs.client == 'true' && runner.os == 'Windows' }}
         run: flutter build windows --release

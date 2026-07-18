@@ -84,27 +84,33 @@ jobs:
           if test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"; then
             echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
             printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
+            printf '%s' "$STORE_PASSWORD" > "$RUNNER_TEMP/nexdrop-android-store-pass"
+            printf '%s' "$KEY_PASSWORD" > "$RUNNER_TEMP/nexdrop-android-key-pass"
+            echo "alias=$KEY_ALIAS" >> "$GITHUB_OUTPUT"
             echo 'formal=true' >> "$GITHUB_OUTPUT"
           else
             password=$(openssl rand -hex 24)
             keytool -genkeypair -noprompt -keystore client/android/app/release.jks -storepass "$password" -keypass "$password" -alias nexdrop-temporary -keyalg RSA -keysize 3072 -validity 30 -dname 'CN=NexDrop Temporary Release,O=NexDrop'
             printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=nexdrop-temporary\nstoreFile=release.jks\n' "$password" "$password" > client/android/key.properties
+            printf '%s' "$password" > "$RUNNER_TEMP/nexdrop-android-store-pass"
+            printf '%s' "$password" > "$RUNNER_TEMP/nexdrop-android-key-pass"
+            echo 'alias=nexdrop-temporary' >> "$GITHUB_OUTPUT"
             echo 'formal=false' >> "$GITHUB_OUTPUT"
             echo '未設定 Android 簽章 Secrets，將建立可安裝的臨時簽章 APK；下個版本可能需要先移除舊版。'
           fi
       - run: flutter pub get && flutter test && flutter build apk --release
         working-directory: client
-      - name: 驗證 Android APK 可安裝簽章
+      - name: 套用並驗證 Android v1/v2 簽章
         run: |
-          apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
-          test -x "$apksigner"
-          "$apksigner" verify --verbose --print-certs client/build/app/outputs/flutter-apk/app-release.apk | tee apk-signature.txt
-          ! grep -qi 'Android Debug' apk-signature.txt
-          grep -q 'Verified using v1 scheme (JAR signing): true' apk-signature.txt
-          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' apk-signature.txt
+          bash scripts/sign-android-release.sh \
+            client/build/app/outputs/flutter-apk/app-release.apk \
+            client/android/app/release.jks \
+            '${{ steps.signing.outputs.alias }}' \
+            "$RUNNER_TEMP/nexdrop-android-store-pass" \
+            "$RUNNER_TEMP/nexdrop-android-key-pass"
       - run: cp client/build/app/outputs/flutter-apk/app-release.apk 'NexDrop-Android_${{ needs.validate.outputs.version }}.apk'
       - if: always()
-        run: rm -f -- client/android/app/release.jks client/android/key.properties apk-signature.txt
+        run: rm -f -- client/android/app/release.jks client/android/key.properties "$RUNNER_TEMP/nexdrop-android-store-pass" "$RUNNER_TEMP/nexdrop-android-key-pass"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: android-release, path: 'NexDrop-Android_*.apk', if-no-files-found: error}
 
