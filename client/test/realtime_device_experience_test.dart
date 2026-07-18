@@ -11,6 +11,15 @@ void main() {
     expect(mainSource, contains('刪除'));
   });
 
+  test('Windows 最小化使用已封裝的系統匣圖示', () {
+    final mainSource = File('lib/main.dart').readAsStringSync();
+    final pubspec = File('pubspec.yaml').readAsStringSync();
+    expect(mainSource, contains('onWindowMinimize'));
+    expect(mainSource, contains('getApplicationSupportDirectory'));
+    expect(mainSource, contains('await _desktopTrayIconPath()'));
+    expect(pubspec, contains('windows/runner/resources/app_icon.ico'));
+  });
+
   test('裝置與節點狀態透過心跳即時刷新', () {
     final controller = File('lib/app_controller.dart').readAsStringSync();
     final models = File('lib/core/models.dart').readAsStringSync();

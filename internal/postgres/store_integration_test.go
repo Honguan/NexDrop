@@ -73,11 +73,29 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("ListDevices() = %+v, %v", listed, err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE devices SET trust_status = 'PENDING' WHERE id = $1`, created.ID); err != nil {
+	var pairingSessionID string
+	err = store.pool.QueryRow(ctx, `
+		INSERT INTO user_sessions (
+			user_id, access_token_hash, access_expires_at, refresh_token_hash, expires_at
+		) VALUES ($1, $2, now() + interval '1 hour', $3, now() + interval '1 day')
+		RETURNING id::text
+	`, userID, []byte("pairing-access-hash"), []byte("pairing-refresh-hash")).Scan(&pairingSessionID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	pairingSession := auth.Session{User: session.User, SessionID: pairingSessionID}
+	pendingDevice, err := store.CreateDevice(ctx, pairingSession, "Pending phone", device.TypeAndroid, bytes.Repeat([]byte{2}, 32), "X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE devices SET trust_status = 'PENDING' WHERE id = $1`, pendingDevice.ID); err != nil {
+		t.Fatal(err)
+	}
+	pairingSession.DeviceID = &pendingDevice.ID
+	session.DeviceID = &created.ID
+
 	codeHash := sha256.Sum256([]byte("123456"))
-	challengeID, err := store.CreatePairingCode(ctx, session, created.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
+	challengeID, err := store.CreatePairingCode(ctx, pairingSession, pendingDevice.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +114,12 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatalf("locked pairing code error = %v, want ErrLocked", err)
 	}
 
-	challengeID, err = store.CreatePairingCode(ctx, session, created.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
+	challengeID, err = store.CreatePairingCode(ctx, pairingSession, pendingDevice.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	approved, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts)
-	if err != nil || approved.TrustStatus != device.TrustTrusted {
+	if err != nil || approved.TrustStatus != device.TrustTrusted || approved.ID != pendingDevice.ID {
 		t.Fatalf("RedeemPairingCode() = %+v, %v", approved, err)
 	}
 	if _, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts); !errors.Is(err, pairing.ErrUsed) {
