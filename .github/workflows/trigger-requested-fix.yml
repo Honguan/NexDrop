@@ -30,10 +30,19 @@ jobs:
           payload = re.search(r"echo '([^']+)' \| base64", workflow).group(1)
           Path('/tmp/apply_requested_fix.py').write_bytes(gzip.decompress(base64.b64decode(payload)))
           PY
-          python /tmp/apply_requested_fix.py
+          if ! python /tmp/apply_requested_fix.py > requested-fix.log 2>&1; then
+            cat requested-fix.log
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add requested-fix.log
+            git commit -m 'chore: capture requested fix failure'
+            git push origin HEAD:agent/fix-admin-device-pairing-tray-icon
+            exit 1
+          fi
       - name: Commit fixes
         shell: bash
         run: |
+          rm -f requested-fix.log
           rm .github/workflows/apply-requested-fix.yml
           rm .github/workflows/trigger-requested-fix.yml
           git config user.name 'github-actions[bot]'
