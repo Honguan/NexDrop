@@ -6,6 +6,8 @@
 
 Windows 桌面版會在登入前初始化系統匣圖示。按下最小化會隱藏到系統匣，點擊圖示即可顯示並聚焦視窗；圖示也改由封裝資產載入，避免安裝後因相對路徑失效而不顯示。
 
+本次正式產物包含 Linux Node、Windows 桌面版、Android APK、Chrome／Edge 擴充套件，以及多架構容器映像與完整 SHA-256 校驗檔。
+
 VPS 可執行 `./deploy/nexdrop update` 取得最新正式版本，或執行 `./deploy/nexdrop update 1.0.6` 鎖定此版本。更新會保留 `.env`、資料卷及既有秘密。
 
 若 Android APK 使用臨時簽章，而裝置已安裝不同簽章的舊版，Android 可能要求先解除安裝舊版。要直接覆蓋更新，請設定固定的 Android 正式簽章 Secrets。未提供 Windows 憑證時，安裝程式可能顯示 SmartScreen 警告。
