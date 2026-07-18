@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Archive source
-        run: tar --exclude=.git --exclude=node_modules --exclude=build --exclude=dist -czf nexdrop-refactor-source.tar.gz .
+        run: tar --exclude=.git --exclude=node_modules --exclude=build --exclude=dist -czf "$RUNNER_TEMP/nexdrop-refactor-source.tar.gz" .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: nexdrop-refactor-source
-          path: nexdrop-refactor-source.tar.gz
+          path: ${{ runner.temp }}/nexdrop-refactor-source.tar.gz
           if-no-files-found: error
