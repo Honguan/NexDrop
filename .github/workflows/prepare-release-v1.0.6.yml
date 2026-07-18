@@ -1,18 +1,16 @@
-# Release preparation trigger
 name: Prepare NexDrop 1.0.6
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/fix-admin-device-pairing-tray-icon
-    paths:
-      - .github/workflows/prepare-release-v1.0.6.yml
+      - master
 
 permissions:
   contents: write
 
 jobs:
   prepare:
+    if: github.head_ref == 'agent/fix-admin-device-pairing-tray-icon'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -25,9 +23,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          OLD = "1.0.5"
-          NEW = "1.0.6"
-
           def replace(path: str, old: str, new: str, expected: int = 1) -> None:
               file = Path(path)
               text = file.read_text(encoding="utf-8")
@@ -36,7 +31,7 @@ jobs:
                   raise RuntimeError(f"{path}: expected {expected} matches for {old!r}, found {count}")
               file.write_text(text.replace(old, new), encoding="utf-8")
 
-          Path("VERSION").write_text(NEW + "\n", encoding="utf-8")
+          Path("VERSION").write_text("1.0.6\n", encoding="utf-8")
           replace("web/package.json", '"version": "1.0.5"', '"version": "1.0.6"')
           replace("web/package-lock.json", '"version": "1.0.5"', '"version": "1.0.6"', expected=2)
           replace("extension/package.json", '"version": "1.0.5"', '"version": "1.0.6"')
