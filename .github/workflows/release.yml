@@ -67,6 +67,8 @@ jobs:
   android:
     needs: validate
     runs-on: ubuntu-latest
+    outputs:
+      formal_signing: ${{ steps.signing.outputs.formal }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
@@ -82,20 +84,24 @@ jobs:
           if test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"; then
             echo "$KEYSTORE_BASE64" | base64 --decode > client/android/app/release.jks
             printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > client/android/key.properties
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            echo 'formal=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo '未設定 Android 簽章 Secrets，將建立未簽章 APK。'
+            password=$(openssl rand -hex 24)
+            keytool -genkeypair -noprompt -keystore client/android/app/release.jks -storepass "$password" -keypass "$password" -alias nexdrop-temporary -keyalg RSA -keysize 3072 -validity 30 -dname 'CN=NexDrop Temporary Release,O=NexDrop'
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=nexdrop-temporary\nstoreFile=release.jks\n' "$password" "$password" > client/android/key.properties
+            echo 'formal=false' >> "$GITHUB_OUTPUT"
+            echo '未設定 Android 簽章 Secrets，將建立可安裝的臨時簽章 APK；下個版本可能需要先移除舊版。'
           fi
       - run: flutter pub get && flutter test && flutter build apk --release
         working-directory: client
-      - if: steps.signing.outputs.enabled == 'true'
-        name: 驗證 Android 正式簽章
+      - name: 驗證 Android APK 可安裝簽章
         run: |
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           test -x "$apksigner"
           "$apksigner" verify --verbose --print-certs client/build/app/outputs/flutter-apk/app-release.apk | tee apk-signature.txt
           ! grep -qi 'Android Debug' apk-signature.txt
+          grep -q 'Verified using v1 scheme (JAR signing): true' apk-signature.txt
+          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' apk-signature.txt
       - run: cp client/build/app/outputs/flutter-apk/app-release.apk 'NexDrop-Android_${{ needs.validate.outputs.version }}.apk'
       - if: always()
         run: rm -f -- client/android/app/release.jks client/android/key.properties apk-signature.txt
@@ -186,5 +192,11 @@ jobs:
           sha256sum --check checksums-sha256.txt
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: {subject-path: 'release-assets/*'}
+      - name: 建立實際發布說明
+        run: |
+          cp 'docs/release-notes-v${{ needs.validate.outputs.version }}.md' release-notes.md
+          if test '${{ needs.android.outputs.formal_signing }}' != true; then
+            printf '\n## Android 安裝與更新提醒\n\n此 APK 使用臨時簽章，可在 Samsung J6 等 Android 8 裝置安裝。由於後續版本的臨時簽章可能不同，更新時可能需要先移除舊版；要直接覆蓋更新，維護者應設定固定的 Android 正式簽章 Secrets。\n' >> release-notes.md
+          fi
       - env: {GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}
-        run: gh release create '${{ github.ref_name }}' release-assets/* --draft --verify-tag --title 'NexDrop ${{ needs.validate.outputs.version }}' --notes-file 'docs/release-notes-v${{ needs.validate.outputs.version }}.md'
+        run: gh release create '${{ github.ref_name }}' release-assets/* --draft --verify-tag --title 'NexDrop ${{ needs.validate.outputs.version }}' --notes-file release-notes.md

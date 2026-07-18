@@ -6,7 +6,7 @@ NexDrop 是可自行架設的混合式多裝置傳輸平台。它會優先在區
 
 ## 架構
 
-Go 模組化單體提供 API、WebSocket、任務與管理服務；PostgreSQL 保存狀態；Flutter 共用 Windows/Android 用戶端；React 提供 Web UI；Manifest V3 擴充功能透過 Native Messaging 與桌面服務整合。詳見 [架構文件](docs/architecture.md)。
+Go 模組化單體提供 API、WebSocket、任務與管理服務；PostgreSQL 保存狀態；Flutter 共用 Windows/Android 用戶端；React 提供 Web UI；Manifest V3 擴充功能可獨立配對為一台設備。詳見 [架構文件](docs/architecture.md)。
 
 ## 快速部署 Linux Node
 
@@ -19,7 +19,7 @@ cd NexDrop
 docker compose ps
 ```
 
-安裝精靈會先說明網域、密碼與管理員條件，自動建立權限為 `600` 的 `.env`，並產生 PostgreSQL 密碼、游標秘密及管理員密碼。可直接接受、修改公開／管理員設定，或重新產生全部秘密。自動化環境可使用 `./deploy/nexdrop install --non-interactive`。
+安裝精靈會自動取得 Docker 所需的管理員權限，說明網域與密碼條件，並產生 PostgreSQL 密碼、游標秘密及管理員密碼。畫面會顯示全部預設值，讓你接受、逐項修改或重新隨機產生；`.env` 會維持為原執行使用者可讀的 `600` 權限。自動化環境可使用 `./deploy/nexdrop install --non-interactive`。
 
 預設由 Caddy 開放 `80/tcp`、`443/tcp`、`443/udp`；Node 僅在 Compose 網路使用 `8080/tcp`。本機原始碼映像可用 `docker compose build --pull nexdrop` 建置。
 
@@ -45,12 +45,15 @@ cd ../client && flutter analyze && flutter test
 
 ```bash
 ./deploy/nexdrop status
+./deploy/nexdrop credentials
 ./deploy/nexdrop configure
+./deploy/nexdrop configure-secrets
 ./deploy/nexdrop logs nexdrop
 ./deploy/nexdrop doctor
 ./deploy/nexdrop backup --output /var/lib/nexdrop/backups/manual.tar.gz
 ./deploy/nexdrop cleanup --limit 100
-./deploy/nexdrop update 1.0.1
+./deploy/nexdrop update
+# 或鎖定版本：./deploy/nexdrop update 1.0.1
 ```
 
 ## 安全與發布

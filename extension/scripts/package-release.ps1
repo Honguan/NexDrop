@@ -19,17 +19,17 @@ function Get-OutputChild([string]$Base, [string]$Name) {
 }
 
 function Test-ExtensionPackage([string]$Root, [string]$Browser, [string]$ExpectedVersion) {
-    $expectedPermissions = @('activeTab', 'contextMenus', 'nativeMessaging', 'notifications', 'storage') | Sort-Object
+    $expectedPermissions = @('activeTab', 'contextMenus', 'storage') | Sort-Object
+    $expectedOptionalHosts = @('https://*/*', 'http://localhost/*', 'http://127.0.0.1/*') | Sort-Object
     $manifestPath = Join-Path $Root 'manifest.json'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($manifest.manifest_version -ne 3) { throw "$Browser package must use Manifest V3" }
     if ($manifest.version -cne $ExpectedVersion) { throw "$Browser package version does not match $ExpectedVersion" }
     $permissions = @($manifest.permissions | Sort-Object)
     if (($permissions -join "`n") -cne ($expectedPermissions -join "`n")) { throw "$Browser package permissions are not approved" }
-    foreach ($field in @('host_permissions', 'optional_host_permissions')) {
-        $value = $manifest.$field
-        if ($null -ne $value -and @($value).Count -ne 0) { throw "$Browser package must not request $field" }
-    }
+    if ($null -ne $manifest.host_permissions -and @($manifest.host_permissions).Count -ne 0) { throw "$Browser package must not request permanent host permissions" }
+    $optionalHosts = @($manifest.optional_host_permissions | Sort-Object)
+    if (($optionalHosts -join "`n") -cne ($expectedOptionalHosts -join "`n")) { throw "$Browser package optional host permissions are not approved" }
     foreach ($field in @('key', 'oauth2', 'update_url')) {
         if ($manifest.PSObject.Properties.Name -contains $field) { throw "$Browser package manifest contains forbidden field: $field" }
     }

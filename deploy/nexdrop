@@ -9,6 +9,38 @@ if [ -n "$command" ]; then
     shift
 fi
 
+ensure_administrator_access() {
+    case "$command" in
+        credentials)
+            [ -r .env ] && return
+            if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+                echo "需要管理員權限以讀取既有 .env，現在將透過 sudo 顯示設定。"
+                exec sudo -- "$ROOT/deploy/nexdrop" credentials "$@"
+            fi
+            echo "無法讀取 .env；請確認檔案權限或以 sudo 執行此命令。" >&2
+            exit 1
+            ;;
+        install|configure|configure-secrets|update|status|logs|backup|restore|doctor|cleanup|reset-password|uninstall) ;;
+        *) return ;;
+    esac
+    if docker info >/dev/null 2>&1; then
+        return
+    fi
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+        echo "需要管理員權限以操作 Docker，現在將透過 sudo 繼續。"
+        exec sudo -- "$ROOT/deploy/nexdrop" "$command" "$@"
+    fi
+    echo "無法連線至 Docker。請確認 Docker 已啟動，或以 sudo 執行此命令。" >&2
+    exit 1
+}
+
+preserve_env_owner() {
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        chown "$SUDO_USER${SUDO_GID:+:$SUDO_GID}" .env
+    fi
+    chmod 600 .env
+}
+
 env_value() {
     sed -n "s/^$1=//p" .env | tail -n 1
 }
@@ -32,6 +64,7 @@ set_env_value() {
     fi
     chmod 600 "$temporary"
     mv "$temporary" .env
+    preserve_env_owner
 }
 
 random_hex() {
@@ -48,20 +81,21 @@ regenerate_install_secrets() {
 explain_configuration() {
     cat <<'EOF'
 NexDrop 安裝條件：
-  - PostgreSQL 密碼至少 16 字元，且只使用英數、點、底線、波浪號或連字號。
+  - PostgreSQL 密碼至少 16 字元；可使用英數及 . _ ~ ! @ % + , : / - 特殊字元。
   - 分頁游標秘密至少 32 字元；安裝後與版本更新時不可任意更換。
-  - 管理員名稱為 3–64 字元、電子郵件須含 @、密碼至少 12 字元。
+  - 管理員名稱為 3–64 字元、電子郵件須含 @、密碼至少 12 字元；Bootstrap 密碼可使用與 PostgreSQL 相同的特殊字元。
   - NEXDROP_DOMAIN 只填網域或 IP，不包含 https://。
-  - update 會保留 .env 與所有秘密；指定版本時會先備份再切換映像。
+  - update 會保留 .env 與所有秘密，並先備份再切換映像。
+  - 安裝後可執行 ./deploy/nexdrop credentials 再次查看登入資料。
 EOF
 }
 
-valid_url_safe_secret() {
+valid_env_password() {
     value=$1
     minimum=$2
     [ "${#value}" -ge "$minimum" ] || return 1
     case "$value" in
-        *[!A-Za-z0-9._~-]*) return 1 ;;
+        *[!A-Za-z0-9._~!@%+,:/-]*) return 1 ;;
     esac
 }
 
@@ -73,8 +107,8 @@ validate_env() {
     postgres_password=$(env_value POSTGRES_PASSWORD)
     cursor_secret=$(env_value NEXDROP_CURSOR_SECRET)
 
-    if ! valid_url_safe_secret "$postgres_password" 16; then
-        echo "POSTGRES_PASSWORD 必須至少 16 字元，且只能使用英數、點、底線、波浪號或連字號；請修正 .env。若資料庫已初始化，還須同步變更 PostgreSQL nexdrop 帳號密碼。" >&2
+    if ! valid_env_password "$postgres_password" 16; then
+        echo "POSTGRES_PASSWORD 必須至少 16 字元；可使用英數及 . _ ~ ! @ % + , : / -。若資料庫已初始化，還須同步變更 PostgreSQL nexdrop 帳號密碼。" >&2
         return 1
     fi
     if ! valid_minimum_length "$cursor_secret" 32; then
@@ -108,8 +142,8 @@ validate_public_configuration() {
         *@*) ;;
         *) echo "NEXDROP_BOOTSTRAP_ADMIN_EMAIL 必須是含 @ 的電子郵件" >&2; return 1 ;;
     esac
-    if ! valid_minimum_length "$admin_password" 12; then
-        echo "NEXDROP_BOOTSTRAP_ADMIN_PASSWORD 必須至少 12 字元" >&2
+    if ! valid_env_password "$admin_password" 12; then
+        echo "NEXDROP_BOOTSTRAP_ADMIN_PASSWORD 必須至少 12 字元；可使用英數及 . _ ~ ! @ % + , : / -" >&2
         return 1
     fi
 }
@@ -117,6 +151,7 @@ validate_public_configuration() {
 create_default_env() {
     umask 077
     cp .env.example .env
+    preserve_env_owner
     regenerate_install_secrets
 }
 
@@ -180,17 +215,19 @@ prompt_secret() (
     printf '%s\n' "${answer:-$current}"
 )
 
-edit_public_configuration() {
+edit_all_install_configuration() {
     set_env_value NEXDROP_DOMAIN "$(prompt_value '節點網域' "$(env_value NEXDROP_DOMAIN)")"
     set_env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME "$(prompt_value '管理員帳號' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")"
     set_env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL "$(prompt_value '管理員電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)")"
     set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(prompt_secret '管理員密碼' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)")"
+    set_env_value POSTGRES_PASSWORD "$(prompt_secret 'PostgreSQL 密碼' "$(env_value POSTGRES_PASSWORD)")"
+    set_env_value NEXDROP_CURSOR_SECRET "$(prompt_secret '分頁游標秘密' "$(env_value NEXDROP_CURSOR_SECRET)")"
 }
 
-edit_configuration_until_valid() {
+edit_install_configuration_until_valid() {
     while :; do
-        edit_public_configuration
-        if validate_public_configuration; then
+        edit_all_install_configuration
+        if validate_env; then
             return
         fi
         echo "設定不符合上方條件，請重新輸入。" >&2
@@ -206,13 +243,14 @@ configure_install() {
   管理員帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
   管理員電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
   管理員密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
-  PostgreSQL 與游標秘密已隨機產生但不顯示。
+  PostgreSQL 密碼：$(env_value POSTGRES_PASSWORD)
+  分頁游標秘密：$(env_value NEXDROP_CURSOR_SECRET)
 EOF
-        printf '接受預設 [a]、更新公開／管理員設定 [e]、重新隨機所有秘密 [r]（預設 a）: '
+        printf '接受預設 [a]、逐項更新全部設定 [e]、重新隨機全部秘密 [r]（預設 a）: '
         IFS= read -r choice || choice=a
         case "${choice:-a}" in
             a|A) break ;;
-            e|E) edit_configuration_until_valid; break ;;
+            e|E) edit_install_configuration_until_valid; break ;;
             r|R)
                 regenerate_install_secrets
                 ;;
@@ -225,19 +263,48 @@ confirm_existing_configuration() {
     while :; do
         cat <<EOF
 
-偵測到既有設定（秘密將保持不變）：
+偵測到既有設定：
   節點網域：$(env_value NEXDROP_DOMAIN)
   管理員帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
   管理員電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
+  Bootstrap 初始密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)（若已重設則失效）
 EOF
-        printf '沿用設定 [a] 或先更新公開／bootstrap 設定 [e]（預設 a）: '
+        printf '沿用設定 [a]、查看全部秘密 [s]，或更新網域／管理員資料 [e]（預設 a）: '
         IFS= read -r choice || choice=a
         case "${choice:-a}" in
             a|A) return ;;
-            e|E) edit_configuration_until_valid; return ;;
-            *) echo "請輸入 a 或 e。" >&2 ;;
+            s|S) show_credentials --show-secrets; return ;;
+            e|E)
+                set_env_value NEXDROP_DOMAIN "$(prompt_value '節點網域' "$(env_value NEXDROP_DOMAIN)")"
+                set_env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME "$(prompt_value '管理員帳號' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")"
+                set_env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL "$(prompt_value '管理員電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)")"
+                set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(prompt_secret 'Bootstrap 管理員密碼' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)")"
+                validate_public_configuration
+                return
+                ;;
+            *) echo "請輸入 a、s 或 e。" >&2 ;;
         esac
     done
+}
+
+show_credentials() {
+    ensure_env
+    cat <<EOF
+NexDrop 管理員初始登入資料（請勿貼到公開位置）：
+  節點網址：https://$(env_value NEXDROP_DOMAIN)
+  管理員帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)
+  管理員電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)
+  Bootstrap 初始密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
+  注意：若已透過 Web 或 reset-password 變更密碼，上述初始密碼已失效，系統無法還原目前密碼。
+EOF
+    if [ "${1:-}" != "--show-secrets" ]; then
+        echo "如需查看 PostgreSQL 密碼與游標秘密，請明確執行 ./deploy/nexdrop credentials --show-secrets。"
+        return
+    fi
+    cat <<EOF
+  PostgreSQL 密碼：$(env_value POSTGRES_PASSWORD)
+  分頁游標秘密：$(env_value NEXDROP_CURSOR_SECRET)
+EOF
 }
 
 verify_database_credentials() {
@@ -280,7 +347,7 @@ run_install() {
         echo "  帳號：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)"
         echo "  電子郵件：$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)"
         echo "  密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)"
-        echo "設定已保存於權限為 600 的 .env。首次登入後請變更管理員密碼。"
+        echo "設定已保存於 .env。之後可執行 ./deploy/nexdrop credentials 再次查看。"
     fi
 }
 
@@ -292,7 +359,19 @@ run_update() {
         echo "usage: nexdrop update [VERSION]" >&2
         exit 2
     fi
-    if [ -n "$version" ] && ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    if [ -z "$version" ]; then
+        if ! command -v curl >/dev/null 2>&1; then
+            echo "自動查詢最新版需要 curl；請安裝 curl，或執行 ./deploy/nexdrop update X.Y.Z。" >&2
+            exit 1
+        fi
+        version=$(curl -fsSL https://api.github.com/repos/Honguan/NexDrop/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([0-9][0-9.]*\)".*/\1/p' | head -n 1)
+        if [ -z "$version" ]; then
+            echo "無法取得 NexDrop 最新正式版本；請稍後再試，或執行 ./deploy/nexdrop update X.Y.Z。" >&2
+            exit 1
+        fi
+        echo "偵測到最新正式版本：$version"
+    fi
+    if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
         echo "VERSION 必須使用 X.Y.Z 格式" >&2
         exit 2
     fi
@@ -300,9 +379,7 @@ run_update() {
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     docker compose run --rm nexdrop backup --output "/var/lib/nexdrop/backups/pre-update-$stamp.tar.gz"
     old_image=$(env_value NEXDROP_IMAGE)
-    if [ -n "$version" ]; then
-        set_env_value NEXDROP_IMAGE "ghcr.io/honguan/nexdrop:$version"
-    fi
+    set_env_value NEXDROP_IMAGE "ghcr.io/honguan/nexdrop:$version"
     if ! docker compose config >/dev/null || ! docker compose pull nexdrop postgres caddy || ! docker compose up -d --wait --wait-timeout 120; then
         docker compose stop nexdrop || true
         set_env_value NEXDROP_IMAGE "$old_image"
@@ -312,6 +389,72 @@ run_update() {
     echo "更新完成；.env、PostgreSQL 密碼與 NEXDROP_CURSOR_SECRET 均保持不變。"
 }
 
+prompt_yes_no() {
+    printf '%s [y/N]: ' "$1"
+    IFS= read -r answer || answer=n
+    case "$answer" in y|Y) return 0 ;; *) return 1 ;; esac
+}
+
+prompt_new_secret() {
+    label=$1
+    bytes=$2
+    current=$3
+    value=$(prompt_secret "$label（輸入 r 可重新隨機產生）" "$current")
+    if [ "$value" = r ] || [ "$value" = R ]; then
+        random_hex "$bytes"
+    else
+        printf '%s\n' "$value"
+    fi
+}
+
+run_configure_secrets() {
+    if [ "$#" -ne 0 ]; then
+        echo "usage: nexdrop configure-secrets" >&2
+        exit 2
+    fi
+    ensure_env
+    validate_env
+    verify_database_credentials
+
+    if prompt_yes_no "要更新目前管理員登入密碼嗎？"; then
+        identifier=$(prompt_value '管理員帳號或電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")
+        password=$(prompt_new_secret '新管理員密碼' 24 '')
+        if ! valid_minimum_length "$password" 12; then
+            echo "管理員密碼必須至少 12 字元。" >&2
+            exit 1
+        fi
+        printf '%s\n' "$password" | docker compose run --rm -T nexdrop reset-password --identifier "$identifier"
+        echo "管理員密碼已更新；系統不會把目前密碼寫回 .env，請立即安全保存。"
+    fi
+
+    if prompt_yes_no "要更新 PostgreSQL 密碼嗎？"; then
+        new_database_password=$(prompt_new_secret '新 PostgreSQL 密碼' 32 "$(env_value POSTGRES_PASSWORD)")
+        if ! valid_env_password "$new_database_password" 16; then
+            echo "PostgreSQL 密碼必須至少 16 字元，且只能使用安裝條件列出的字元。" >&2
+            exit 1
+        fi
+        if [ "$new_database_password" != "$(env_value POSTGRES_PASSWORD)" ]; then
+            printf "ALTER ROLE nexdrop PASSWORD :'new_password';\n" | docker compose exec -T -e "NEXDROP_NEW_PASSWORD=$new_database_password" postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U nexdrop -d nexdrop -v new_password="$NEXDROP_NEW_PASSWORD"'
+            set_env_value POSTGRES_PASSWORD "$new_database_password"
+            docker compose up -d --wait --wait-timeout 120 postgres nexdrop caddy
+            echo "PostgreSQL 密碼已同步更新至資料庫與 .env。"
+        fi
+    fi
+
+    if prompt_yes_no "要更新分頁游標秘密嗎？（既有游標會立即失效）"; then
+        new_cursor_secret=$(prompt_new_secret '新分頁游標秘密' 32 "$(env_value NEXDROP_CURSOR_SECRET)")
+        if ! valid_minimum_length "$new_cursor_secret" 32; then
+            echo "分頁游標秘密必須至少 32 字元。" >&2
+            exit 1
+        fi
+        set_env_value NEXDROP_CURSOR_SECRET "$new_cursor_secret"
+        docker compose up -d --wait --wait-timeout 120 nexdrop caddy
+        echo "分頁游標秘密已更新；所有先前游標均已失效。"
+    fi
+}
+
+ensure_administrator_access "$@"
+
 case "$command" in
     install) run_install "$@" ;;
     configure)
@@ -319,12 +462,25 @@ case "$command" in
         GENERATED_DEFAULTS=false
         ensure_env
         explain_configuration
-        edit_configuration_until_valid
+        echo "此命令只更新網域與 Bootstrap 管理員資料；既有管理員密碼請使用 reset-password。"
+        set_env_value NEXDROP_DOMAIN "$(prompt_value '節點網域' "$(env_value NEXDROP_DOMAIN)")"
+        set_env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME "$(prompt_value 'Bootstrap 管理員帳號' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME)")"
+        set_env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL "$(prompt_value 'Bootstrap 管理員電子郵件' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)")"
+        set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(prompt_secret 'Bootstrap 管理員密碼' "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)")"
+        validate_public_configuration
         docker compose config >/dev/null
         docker compose up -d --wait --wait-timeout 120
         echo "設定已更新並套用。既有管理員帳號不會改名；修改既有密碼請使用 reset-password。"
         ;;
     update) run_update "$@" ;;
+    configure-secrets) run_configure_secrets "$@" ;;
+    credentials)
+        if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != "--show-secrets" ]; }; then
+            echo "usage: nexdrop credentials [--show-secrets]" >&2
+            exit 2
+        fi
+        show_credentials "${1:-}"
+        ;;
     status) docker compose ps ;;
     logs) docker compose logs "$@" ;;
     backup) docker compose run --rm nexdrop backup "$@" ;;
@@ -349,7 +505,7 @@ case "$command" in
         fi
         ;;
     *)
-        echo "usage: nexdrop {install|configure|update [VERSION]|status|logs|backup|restore|cleanup|doctor|reset-password|uninstall}" >&2
+        echo "usage: nexdrop {install|configure|configure-secrets|credentials [--show-secrets]|update [VERSION]|status|logs|backup|restore|cleanup|doctor|reset-password|uninstall}" >&2
         exit 2
         ;;
 esac

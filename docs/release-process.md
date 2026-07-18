@@ -13,8 +13,8 @@
 Android 與 Windows 的程式碼簽章為可選設定，不再阻止建立 Tag 或 Release：
 
 - 六項簽章 Secrets 全部設定時，Workflow 會建立並驗證正式簽章產物。
-- 未設定簽章 Secrets 時，仍會建立未簽章 APK、EXE 與 ZIP，並正常產生草稿 Release。
-- 未簽章產物可能出現 Android 手動安裝警告或 Windows SmartScreen 警告，發布說明應明確標示。
+- 未設定 Android 簽章 Secrets 時，Workflow 會建立具 v1/v2 臨時簽章、可在 Android 6.0 以上安裝的 APK；未設定 Windows 憑證時仍建立未簽章 EXE 與 ZIP。
+- 臨時 Android 簽章每次發布可能不同，因此後續更新可能需要先移除舊版；要直接覆蓋更新，必須安全保存固定 keystore 並設定四項 Android Secrets。Windows 未簽章產物則可能顯示 SmartScreen 警告。
 - GHCR 映像仍使用 GitHub OIDC、Cosign、Artifact Attestation、SBOM 與 SHA-256 驗證，不需要長期簽章私鑰。
 
 需要正式平台簽章時，可在 Repository Settings → Environments 建立 `release` Environment，並選擇性加入：

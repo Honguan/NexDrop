@@ -35,4 +35,4 @@ flutter build windows --release
 flutter build apk --release
 ```
 
-Windows 完整封裝使用 `windows/build-release.ps1`，輸出至根目錄 `dist/`。Android 建置需要接受 SDK 授權；Release 必須在 `android/key.properties` 指向未提交的正式 keystore，未設定時不會使用 debug key。Client 依賴可連線的 HTTPS Node，區網發現亦受作業系統防火牆與網路隔離限制。
+Windows 完整封裝使用 `windows/build-release.ps1`，輸出至根目錄 `dist/`。Android 建置需要接受 SDK 授權；Release 不會使用 debug key，正式發布建議在 `android/key.properties` 指向固定且未提交的 keystore，以便後續版本直接覆蓋更新。Client 依賴可連線的 HTTPS Node，區網發現亦受作業系統防火牆與網路隔離限制。

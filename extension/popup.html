@@ -4,14 +4,18 @@
   <body>
     <header><div class="brand"><span>N</span><strong>NexDrop</strong></div><i id="status">正在連線…</i></header>
     <main>
-      <p class="eyebrow">SEND CURRENT PAGE</p>
-      <h1>傳送目前分頁</h1>
-      <p class="hint">選擇設備，或交由 NexDrop Web 繼續。</p>
+      <p class="eyebrow">SEND CONTENT</p>
+      <h1>傳送內容</h1>
+      <p class="hint">輸入內容並選擇一台特定接收設備。</p>
+      <label class="content-label" for="content">傳送內容</label>
+      <textarea id="content" rows="4" placeholder="輸入文字、備註或連結"></textarea>
+      <label class="url-option"><input id="include-url" type="checkbox" /> 同時附上目前分頁網址</label>
       <section id="targets" aria-label="目的設備"><p class="empty">正在讀取設備…</p></section>
       <button id="send" class="primary" disabled>安全傳送 <span>↗</span></button>
+      <p id="send-result" role="status"></p>
       <button id="open-web" class="secondary">開啟 NexDrop Web</button>
     </main>
-    <footer><a href="options.html" target="_blank">節點設定</a><span>Manifest V3</span></footer>
+    <footer><a href="options.html" target="_blank">配對設定</a><span>獨立設備</span></footer>
     <script type="module" src="popup.js"></script>
   </body>
 </html>
