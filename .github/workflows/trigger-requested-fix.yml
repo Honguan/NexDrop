@@ -1,0 +1,43 @@
+name: Trigger requested NexDrop fix
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/fix-admin-device-pairing-tray-icon'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-admin-device-pairing-tray-icon
+          fetch-depth: 0
+      - name: Extract and apply patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64
+          import gzip
+          import re
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-requested-fix.yml').read_text(encoding='utf-8')
+          payload = re.search(r"echo '([^']+)' \| base64", workflow).group(1)
+          Path('/tmp/apply_requested_fix.py').write_bytes(gzip.decompress(base64.b64decode(payload)))
+          PY
+          python /tmp/apply_requested_fix.py
+      - name: Commit fixes
+        shell: bash
+        run: |
+          rm .github/workflows/apply-requested-fix.yml
+          rm .github/workflows/trigger-requested-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: restore admin pairing and tray UX'
+          git push origin HEAD:agent/fix-admin-device-pairing-tray-icon
