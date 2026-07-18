@@ -1071,8 +1071,11 @@ func writeError(w http.ResponseWriter, status int, code string) {
 }
 
 func errorMessage(code string) string {
-	if code == "INTERNAL_ERROR" {
+	switch code {
+	case "INTERNAL_ERROR":
 		return "The server could not complete the request."
+	case "RATE_LIMITED":
+		return "Too many requests. Wait for the Retry-After interval before retrying."
 	}
 	return "The request could not be completed (" + code + ")."
 }

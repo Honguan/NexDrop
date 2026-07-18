@@ -546,14 +546,7 @@ class AppController extends ChangeNotifier {
 
   String _message(Object reason) {
     if (reason is ApiException) {
-      return {
-            'INVALID_CREDENTIALS': '帳號或密碼不正確',
-            'PERMISSION_DENIED': '你沒有執行此操作的權限',
-            'INVALID_TOKEN': '登入已失效，請重新登入',
-            'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
-            'QUOTA_EXCEEDED': '已超過可用配額',
-          }[reason.code] ??
-          '操作失敗：${reason.code}';
+      return apiExceptionMessage(reason);
     }
     return reason.toString();
   }
