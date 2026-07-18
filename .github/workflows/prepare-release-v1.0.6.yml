@@ -1,0 +1,161 @@
+name: Prepare NexDrop 1.0.6
+
+on:
+  push:
+    branches:
+      - agent/fix-admin-device-pairing-tray-icon
+    paths:
+      - .github/workflows/prepare-release-v1.0.6.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/fix-admin-device-pairing-tray-icon
+          fetch-depth: 0
+      - name: Prepare release metadata and automation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          OLD = "1.0.5"
+          NEW = "1.0.6"
+
+          def replace(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise RuntimeError(f"{path}: expected {expected} matches for {old!r}, found {count}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          Path("VERSION").write_text(NEW + "\n", encoding="utf-8")
+          replace("web/package.json", '"version": "1.0.5"', '"version": "1.0.6"')
+          replace("web/package-lock.json", '"version": "1.0.5"', '"version": "1.0.6"', expected=2)
+          replace("extension/package.json", '"version": "1.0.5"', '"version": "1.0.6"')
+          replace("extension/package-lock.json", '"version": "1.0.5"', '"version": "1.0.6"', expected=2)
+          replace("client/pubspec.yaml", "version: 1.0.5+6", "version: 1.0.6+7")
+          replace("client/windows/runner/Runner.rc", "1,0,5,6", "1,0,6,7")
+          replace("client/windows/runner/Runner.rc", '"1.0.5"', '"1.0.6"')
+
+          changelog = Path("CHANGELOG.md")
+          text = changelog.read_text(encoding="utf-8")
+          marker = "## [Unreleased]\n\n"
+          entry = """## [Unreleased]
+
+## [1.0.6] - 2026-07-18
+
+### Changed
+
+- 帳號第一台有效設備作為信任起點；後續新增設備會進入待配對狀態，並由該設備自動產生挑戰 ID、六位數配對碼及 QR 配對資料。
+- 已信任設備可在設備頁輸入配對資料核准同帳號的新設備，配對操作不再放在管理後台。
+
+### Fixed
+
+- 修正管理後台高頻同時載入多個 API，觸發速率限制後整頁沒有資料的問題；現在改為較低頻率刷新、局部容錯及手動重試。
+- 修正 Windows EXE 登入前沒有系統匣圖示，以及最小化後圖示或視窗無法正確恢復的問題。
+
+### Security
+
+- 配對碼只能由待配對設備自己的有效工作階段產生，並只能由同帳號的已信任設備兌換。
+
+"""
+          if text.count(marker) != 1:
+              raise RuntimeError("CHANGELOG.md: Unreleased marker mismatch")
+          text = text.replace(marker, entry, 1)
+          link = "[1.0.5]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.5"
+          if text.count(link) != 1:
+              raise RuntimeError("CHANGELOG.md: 1.0.5 link mismatch")
+          text = text.replace(link, link + "\n[1.0.6]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.6", 1)
+          changelog.write_text(text, encoding="utf-8")
+
+          Path("docs/release-notes-v1.0.6.md").write_text("""# NexDrop 1.0.6
+
+此版本修正管理後台登入後沒有資料的問題。管理資料不再以每 5 秒同時呼叫多個受限 API，而是改為每 30 秒刷新；單一資料來源暫時失敗時，其餘區塊仍會正常顯示，畫面也會提供錯誤提示與重試按鈕。
+
+設備配對流程已移出管理後台。帳號第一台有效設備會作為信任起點，後續新增的 Windows、Android、Web 或瀏覽器設備會自行產生挑戰 ID、六位數配對碼與 QR 配對資料，再由同帳號的任一已信任設備完成核准。配對碼仍具有十分鐘有效期限、錯誤次數限制及單次使用限制。
+
+Windows 桌面版會在登入前初始化系統匣圖示。按下最小化會隱藏到系統匣，點擊圖示即可顯示並聚焦視窗；圖示也改由封裝資產載入，避免安裝後因相對路徑失效而不顯示。
+
+VPS 可執行 `./deploy/nexdrop update` 取得最新正式版本，或執行 `./deploy/nexdrop update 1.0.6` 鎖定此版本。更新會保留 `.env`、資料卷及既有秘密。
+
+若 Android APK 使用臨時簽章，而裝置已安裝不同簽章的舊版，Android 可能要求先解除安裝舊版。要直接覆蓋更新，請設定固定的 Android 正式簽章 Secrets。未提供 Windows 憑證時，安裝程式可能顯示 SmartScreen 警告。
+""", encoding="utf-8")
+
+          release = Path(".github/workflows/release.yml")
+          text = release.read_text(encoding="utf-8")
+          old_trigger = "on:\n  push:\n    tags: ['v*']\n"
+          new_trigger = "on:\n  push:\n    tags: ['v*']\n  workflow_dispatch:\n"
+          if text.count(old_trigger) != 1:
+              raise RuntimeError("release.yml: trigger mismatch")
+          text = text.replace(old_trigger, new_trigger, 1)
+          old_command = "gh release create '${{ github.ref_name }}' release-assets/* --draft --verify-tag --title 'NexDrop ${{ needs.validate.outputs.version }}' --notes-file release-notes.md"
+          new_command = "gh release create '${{ github.ref_name }}' release-assets/* --verify-tag --title 'NexDrop ${{ needs.validate.outputs.version }}' --notes-file release-notes.md"
+          if text.count(old_command) != 1:
+              raise RuntimeError("release.yml: release command mismatch")
+          release.write_text(text.replace(old_command, new_command, 1), encoding="utf-8")
+
+          Path(".github/workflows/publish-on-version.yml").write_text("""name: publish-on-version
+
+on:
+  push:
+    branches: [master]
+    paths: [VERSION]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Validate version metadata
+        id: version
+        shell: bash
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          test -n "$version"
+          grep -q '"version": "'"$version"'"' web/package.json
+          grep -q '"version": "'"$version"'"' extension/package.json
+          grep -q '^version: '"$version"'+' client/pubspec.yaml
+          grep -q "## \[$version\]" CHANGELOG.md
+          test -f "docs/release-notes-v${version}.md"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Create release tag and start release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          tag="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "${tag} already exists; skipping."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "NexDrop ${VERSION}"
+          git push origin "$tag"
+          gh workflow run release.yml --ref "$tag"
+""", encoding="utf-8")
+
+          Path(".github/workflows/prepare-release-v1.0.6.yml").unlink()
+          PY
+      - name: Commit release preparation
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'release: prepare NexDrop 1.0.6'
+          git push origin HEAD:agent/fix-admin-device-pairing-tray-icon
