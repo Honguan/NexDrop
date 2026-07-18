@@ -1011,6 +1011,8 @@ class _PendingBannerState extends State<_PendingBanner> {
     try {
       final result = await widget.controller.createPairingCode(device);
       if (mounted && pairingDeviceId == device.id) setState(() => pairing = result);
+    } catch (_) {
+      // AppController already exposes an actionable error banner.
     } finally {
       if (mounted) setState(() => loading = false);
     }

@@ -525,6 +525,7 @@ function DevicesView({ user, devices, reload, notify }: { user: User; devices: D
   }, [createPairing, localDevice]);
 
   function readPairingPayload(value: string) {
+    setPairingInput((current) => ({ ...current, payload: value }));
     const parsed = new URL(value.trim());
     if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
     setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });

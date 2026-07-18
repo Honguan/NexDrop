@@ -378,23 +378,13 @@ func (store *Store) CreatePairingCode(ctx context.Context, session auth.Session,
 		SELECT target.id, $2, $3, $4, $5
 		FROM devices target
 		WHERE target.id = $1 AND target.trust_status = 'PENDING' AND target.revoked_at IS NULL
-		  AND (
-		      EXISTS (
-		          SELECT 1 FROM user_sessions s
-		          WHERE s.id = $2 AND s.device_id = target.id
-		            AND s.revoked_at IS NULL
-		      )
-		      OR $6
-		      OR EXISTS (
-		          SELECT 1 FROM user_sessions s
-		          JOIN devices actor ON actor.id = s.device_id
-		          WHERE s.id = $2 AND s.revoked_at IS NULL
-		            AND actor.user_id = target.user_id
-		            AND actor.trust_status = 'TRUSTED' AND actor.revoked_at IS NULL
-		      )
+		  AND EXISTS (
+		      SELECT 1 FROM user_sessions s
+		      WHERE s.id = $2 AND s.device_id = target.id
+		        AND s.revoked_at IS NULL
 		  )
 		RETURNING id::text
-	`, deviceID, session.SessionID, codeHash, expiresAt, now, session.Admin).Scan(&id)
+	`, deviceID, session.SessionID, codeHash, expiresAt, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", device.ErrForbidden
 	}
@@ -438,16 +428,16 @@ func (store *Store) RedeemPairingCode(
 	var attemptCount int
 	var expiresAt time.Time
 	var usedAt *time.Time
+	var targetTrustStatus device.TrustStatus
 	err = tx.QueryRow(ctx, `
-		SELECT code.target_device_id::text, code.code_hash, code.attempt_count, code.expires_at, code.used_at
+		SELECT code.target_device_id::text, code.code_hash, code.attempt_count, code.expires_at, code.used_at, target.trust_status
 		FROM device_pairing_codes code
 		JOIN devices target ON target.id = code.target_device_id
 		WHERE code.id = $1
 		  AND target.user_id = $2
-		  AND target.trust_status = 'PENDING'
 		  AND target.revoked_at IS NULL
 		FOR UPDATE OF code
-	`, challengeID, actorUserID).Scan(&targetDeviceID, &storedHash, &attemptCount, &expiresAt, &usedAt)
+	`, challengeID, actorUserID).Scan(&targetDeviceID, &storedHash, &attemptCount, &expiresAt, &usedAt, &targetTrustStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return device.Device{}, pairing.ErrInvalidCode
 	}
@@ -456,6 +446,9 @@ func (store *Store) RedeemPairingCode(
 	}
 	if usedAt != nil {
 		return device.Device{}, pairing.ErrUsed
+	}
+	if targetTrustStatus != device.TrustPending {
+		return device.Device{}, pairing.ErrInvalidCode
 	}
 	if !expiresAt.After(now) {
 		return device.Device{}, pairing.ErrExpired
