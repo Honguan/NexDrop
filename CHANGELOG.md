@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-18
+
+### Added
+
+- 瀏覽器擴充功能可獨立配對為設備，在小視窗輸入內容、指定接收設備，並選擇是否附上目前網址。
+- 新增 `credentials`、`configure-secrets` 與免填版本的安全更新流程，可逐項查看、輪替或重新隨機產生部署秘密。
+
+### Changed
+
+- 安裝器會自動取得 Docker 所需管理員權限、保留 `.env` 的原使用者擁有權，並顯示可修改的安全隨機預設。
+- PostgreSQL 密碼與連線 URL 分離傳入，支援文件列出的特殊字元且保留舊版 URL 相容性。
+- Android 未提供正式 keystore 時，發布流程改為建立具 v1/v2 臨時簽章的可安裝 APK，並驗證簽章後才交付。
+
+### Fixed
+
+- 修正 Samsung J6 因 APK 未簽章而顯示「應用程式套件無效」的問題。
+- 修正擴充功能錯誤依賴桌面橋接，以及限流提示未顯示實際等待秒數的問題。
+
+### Security
+
+- 擴充功能改用按節點要求的選用網站權限，移除未使用的 Native Messaging 與通知權限，並在中斷配對時刪除本機裝置私鑰。
+
 ## [1.0.1] - 2026-07-18
 
 ### Added
@@ -41,3 +63,4 @@
 
 [1.0.0]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.0
 [1.0.1]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.1
+[1.0.2]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.2
