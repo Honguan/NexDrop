@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-07-18
+
 ### Added
 
 - 裝置列表與統計新增即時在線、最後上線、裝置類型及逐設備傳送／接收用量。
@@ -89,3 +91,4 @@
 [1.0.2]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.2
 [1.0.3]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.3
 [1.0.4]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.4
+[1.0.5]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.5
