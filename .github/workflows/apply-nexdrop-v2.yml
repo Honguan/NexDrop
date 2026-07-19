@@ -42,3 +42,9 @@ jobs:
           git push origin HEAD:agent/refactor-node-chat-enrollment
           echo "push_status=$?"
           exit 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: nexdrop-v2-apply-diagnostic
+          path: ${{ runner.temp }}/nexdrop-v2-apply.log
+          if-no-files-found: error
