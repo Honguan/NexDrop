@@ -1,42 +1,58 @@
-name: Agent inspect Android entrypoint
+name: Agent apply NexDrop fixes
 
 on:
   push:
     branches:
       - agent/fix-windows-exit-device-join
     paths:
-      - .github/workflows/agent-inspect-android.yml
-  pull_request:
-    branches:
-      - master
-    types: [opened, synchronize, reopened]
+      - tools/nexdrop-fix.patch.xz
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  apply:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Collect source snapshot
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/fix-windows-exit-device-join
+          fetch-depth: 0
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          cache: true
+      - name: Apply reviewed patch
         shell: bash
         run: |
-          set -eu
-          {
-            find client/android/app/src/main -maxdepth 12 -type f -print | sort
-            echo '--- MAIN ACTIVITY ---'
-            find client/android/app/src/main -type f \( -name 'MainActivity.kt' -o -name 'MainActivity.java' \) -print -exec sed -n '1,320p' {} \;
-          } > android-entrypoint.txt
-          tar --exclude=.git -czf /tmp/source-snapshot.tar.gz .
-          mv /tmp/source-snapshot.tar.gz source-snapshot.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-entrypoint
-          path: android-entrypoint.txt
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: source-snapshot
-          path: source-snapshot.tar.gz
-          if-no-files-found: error
+          set -euo pipefail
+          xz -dc tools/nexdrop-fix.patch.xz | git apply --whitespace=error
+          rm -f tools/nexdrop-fix.patch.xz
+          gofmt -w \
+            cmd/nexdrop/main.go \
+            cmd/nexdrop-desktop-service/main.go \
+            cmd/nexdrop-desktop-service/parent_windows.go \
+            cmd/nexdrop-desktop-service/parent_other.go \
+            internal/api/api.go \
+            internal/api/api_test.go \
+            internal/device/service.go \
+            internal/device/service_test.go \
+            internal/postgres/store.go
+          dart format \
+            client/lib/app_controller.dart \
+            client/lib/core/api_client.dart \
+            client/lib/core/node_join.dart \
+            client/lib/core/platform_share.dart \
+            client/lib/main.dart \
+            client/test/api_client_test.dart \
+            client/test/node_join_test.dart
+          git diff --check
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenAI Codex"
+          git config user.email "codex@openai.com"
+          git add -A
+          git commit -m "fix: repair app lifecycle and device onboarding"
+          git push origin HEAD:agent/fix-windows-exit-device-join
