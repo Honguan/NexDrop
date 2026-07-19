@@ -1,0 +1,34 @@
+name: Apply NexDrop 2.0 corrections
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/refactor-node-chat-enrollment'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/refactor-node-chat-enrollment
+          fetch-depth: 0
+      - name: Apply verified correction patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/v2-correction-patch.* > "$RUNNER_TEMP/nexdrop-v2-correction.patch"
+          echo '9097de31618f99082d687c79ebc7c3337ceb55e13c859eeea903847c865518f9  '"$RUNNER_TEMP/nexdrop-v2-correction.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/nexdrop-v2-correction.patch"
+          git apply --whitespace=nowarn "$RUNNER_TEMP/nexdrop-v2-correction.patch"
+          rm -f .github/v2-correction-patch.*
+          git checkout HEAD -- .github/workflows/apply-v2-correction.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'refactor: complete NexDrop 2.0 implementation'
+          git push origin HEAD:agent/refactor-node-chat-enrollment
