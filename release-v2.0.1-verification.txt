@@ -1,0 +1,34 @@
+TAG=v2.0.1
+TAG_COMMIT=3bb4c2c7847c2fe5227c66bbc78a367640af7340
+RUN_ID=29676985105
+RUN_STATUS=completed
+RUN_CONCLUSION=success
+
+JOBS
+integration / integration-test	completed	success
+validate	completed	success
+windows	completed	success
+node	completed	success
+android	completed	success
+extension	completed	success
+container	completed	success
+draft	completed	success
+
+RELEASE
+NAME=NexDrop 2.0.1
+DRAFT=false
+PRERELEASE=false
+PUBLISHED_AT=2026-07-19T07:01:24Z
+HTML_URL=https://github.com/Honguan/NexDrop/releases/tag/v2.0.1
+ASSET_COUNT=10
+ASSETS
+checksums-sha256.txt
+load-verification-report.json
+NexDrop-Android_2.0.1.apk
+NexDrop-Desktop_2.0.1_windows_x64.exe
+NexDrop-Desktop_2.0.1_windows_x64.zip
+NexDrop-Extension-Chrome_2.0.1.zip
+NexDrop-Extension-Edge_2.0.1.zip
+nexdrop-node.spdx.json
+nexdrop-node_2.0.1_linux_amd64.tar.gz
+nexdrop-node_2.0.1_linux_arm64.tar.gz
