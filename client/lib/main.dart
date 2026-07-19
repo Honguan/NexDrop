@@ -1015,8 +1015,9 @@ class StatisticsView extends StatelessWidget {
 String _formatBytes(int value) {
   if (value < 1024) return '$value B';
   if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
-  if (value < 1024 * 1024 * 1024)
+  if (value < 1024 * 1024 * 1024) {
     return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
   return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
 }
 

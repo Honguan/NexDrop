@@ -213,10 +213,6 @@ func validateScenario(devices, online, transfers int) error {
 }
 
 func (client *apiClient) setupScenario(ctx context.Context, config configuration) (scenarioState, error) {
-	admin, err := client.login(ctx, config.username, config.password)
-	if err != nil {
-		return scenarioState{}, err
-	}
 	devices := make([]loadDevice, 0, config.devices)
 	for index := 0; index < config.devices; index++ {
 		pair, err := client.login(ctx, config.username, config.password)
@@ -234,12 +230,6 @@ func (client *apiClient) setupScenario(ctx context.Context, config configuration
 		}
 		devices = append(devices, loadDevice{id: created.ID, token: pair.AccessToken})
 	}
-	for index, device := range devices {
-		if err := client.request(ctx, http.MethodPost, "/api/devices/"+device.id+"/approve", admin.AccessToken, nil, http.StatusOK, nil); err != nil {
-			return scenarioState{}, fmt.Errorf("approve device %d: %w", index+1, err)
-		}
-	}
-
 	connections := make([]*presenceConnection, 0, config.online)
 	tokens := make([]string, 0, config.online)
 	for index := 0; index < config.online; index++ {
