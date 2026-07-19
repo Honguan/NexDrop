@@ -108,9 +108,9 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> login(String node, String identifier, String password) async {
+  Future<void> login(String node, String nodeSecret, String identifier, String password, String totp) async {
     await _run(() async {
-      account = await api.login(node, identifier, password);
+      account = await api.login(node, nodeSecret, identifier, password, totp);
       await _synchronize();
     });
   }

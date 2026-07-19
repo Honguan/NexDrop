@@ -65,7 +65,7 @@ sender="$(api "$admin_token" -H 'Content-Type: application/json' \
   --data "$(jq -nc --arg key "$(openssl rand 32 | base64 -w0)" \
   '{displayName:"Integration sender",type:"WINDOWS",publicKey:$key,keyAlgorithm:"X25519"}')" "$base_url/api/devices")"
 sender_id="$(jq -er '.id' <<<"$sender")"
-api "$admin_token" -X POST "$base_url/api/devices/$sender_id/approve" | jq -e '.trustStatus == "TRUSTED"' >/dev/null
+jq -e '.trustStatus == "TRUSTED"' <<<"$sender" >/dev/null
 
 target_login="$(curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
   --data "$(jq -nc --arg identifier "$admin_username" --arg password "$admin_password" '{identifier:$identifier,password:$password}')" \
@@ -75,7 +75,7 @@ target="$(api "$target_token" -H 'Content-Type: application/json' \
   --data "$(jq -nc --arg key "$(openssl rand 32 | base64 -w0)" \
   '{displayName:"Integration target",type:"ANDROID",publicKey:$key,keyAlgorithm:"X25519"}')" "$base_url/api/devices")"
 target_id="$(jq -er '.id' <<<"$target")"
-api "$admin_token" -X POST "$base_url/api/devices/$target_id/approve" | jq -e '.trustStatus == "TRUSTED"' >/dev/null
+jq -e '.trustStatus == "TRUSTED"' <<<"$target" >/dev/null
 
 wrapped_key="$(openssl rand 32 | base64 -w0)"
 text_key="$(uuid)"

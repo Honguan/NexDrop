@@ -20,7 +20,6 @@ import (
 	"nexdrop/internal/group"
 	"nexdrop/internal/lan"
 	"nexdrop/internal/maintenance"
-	"nexdrop/internal/pairing"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
 )
@@ -73,58 +72,26 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("ListDevices() = %+v, %v", listed, err)
 	}
-	var pairingSessionID string
+	var secondarySessionID string
 	err = store.pool.QueryRow(ctx, `
 		INSERT INTO user_sessions (
 			user_id, access_token_hash, access_expires_at, refresh_token_hash, expires_at
 		) VALUES ($1, $2, now() + interval '1 hour', $3, now() + interval '1 day')
 		RETURNING id::text
-	`, userID, []byte("pairing-access-hash"), []byte("pairing-refresh-hash")).Scan(&pairingSessionID)
+	`, userID, []byte("secondary-access-hash"), []byte("secondary-refresh-hash")).Scan(&secondarySessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pairingSession := auth.Session{User: session.User, SessionID: pairingSessionID}
-	pendingDevice, err := store.CreateDevice(ctx, pairingSession, "Pending phone", device.TypeAndroid, bytes.Repeat([]byte{2}, 32), "X25519")
+	secondarySession := auth.Session{User: session.User, SessionID: secondarySessionID}
+	secondaryDevice, err := store.CreateDevice(ctx, secondarySession, "Secondary phone", device.TypeAndroid, bytes.Repeat([]byte{2}, 32), "X25519")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pendingDevice.TrustStatus != device.TrustPending {
-		t.Fatalf("second CreateDevice() trust status = %s, want PENDING", pendingDevice.TrustStatus)
+	if secondaryDevice.TrustStatus != device.TrustTrusted {
+		t.Fatalf("second CreateDevice() trust status = %s, want TRUSTED", secondaryDevice.TrustStatus)
 	}
-	pairingSession.DeviceID = &pendingDevice.ID
+	secondarySession.DeviceID = &secondaryDevice.ID
 	session.DeviceID = &created.ID
-
-	codeHash := sha256.Sum256([]byte("123456"))
-	challengeID, err := store.CreatePairingCode(ctx, pairingSession, pendingDevice.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrongHash := sha256.Sum256([]byte("654321"))
-	for attempt := 1; attempt <= pairing.MaximumCodeAttempts; attempt++ {
-		_, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, wrongHash[:], time.Now(), pairing.MaximumCodeAttempts)
-		want := pairing.ErrInvalidCode
-		if attempt == pairing.MaximumCodeAttempts {
-			want = pairing.ErrLocked
-		}
-		if !errors.Is(err, want) {
-			t.Fatalf("pairing attempt %d error = %v, want %v", attempt, err, want)
-		}
-	}
-	if _, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts); !errors.Is(err, pairing.ErrLocked) {
-		t.Fatalf("locked pairing code error = %v, want ErrLocked", err)
-	}
-
-	challengeID, err = store.CreatePairingCode(ctx, pairingSession, pendingDevice.ID, codeHash[:], time.Now().Add(10*time.Minute), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	approved, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts)
-	if err != nil || approved.TrustStatus != device.TrustTrusted || approved.ID != pendingDevice.ID {
-		t.Fatalf("RedeemPairingCode() = %+v, %v", approved, err)
-	}
-	if _, err := store.RedeemPairingCode(ctx, session, created.ID, challengeID, codeHash[:], time.Now(), pairing.MaximumCodeAttempts); !errors.Is(err, pairing.ErrUsed) {
-		t.Fatalf("reused pairing code error = %v, want ErrUsed", err)
-	}
 
 	memberIdentifier := identifier + "-member"
 	var memberUserID string
@@ -206,9 +173,6 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	targetSession := auth.Session{User: session.User, SessionID: targetSessionID}
 	targetDevice, err := store.CreateDevice(ctx, targetSession, "Phone", device.TypeAndroid, bytes.Repeat([]byte{1}, 32), "X25519")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.ApproveDevice(ctx, session, targetDevice.ID); err != nil {
 		t.Fatal(err)
 	}
 	targetSession.DeviceID = &targetDevice.ID

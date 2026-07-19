@@ -209,11 +209,16 @@ export class APIError extends Error {
 }
 
 const tokenKey = "nexdrop.tokens.v1";
+const nodeKeyStorage = "nexdrop.node_key.v2";
 const versionMediaType = "application/vnd.nexdrop.v1+json";
 
 class APIClient {
   private tokens: TokenPair | null = this.readTokens();
   private refreshing: Promise<boolean> | null = null;
+
+  nodeKey() { return localStorage.getItem(nodeKeyStorage) ?? ""; }
+
+  setNodeKey(value: string) { localStorage.setItem(nodeKeyStorage, value.trim()); }
 
   hasSession() {
     return this.tokens !== null;
@@ -295,6 +300,8 @@ class APIClient {
       headers.set("Idempotency-Key", crypto.randomUUID());
     }
     if (this.tokens) headers.set("Authorization", `Bearer ${this.tokens.accessToken}`);
+    const nodeKey = this.nodeKey();
+    if (nodeKey) headers.set("X-NexDrop-Node-Key", nodeKey);
     const response = await fetch(path, { ...init, headers });
     if (response.status === 401 && retry && (await this.refresh())) {
       return this.requestRaw(path, { ...init, headers }, false);

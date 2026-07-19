@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,7 @@ type API struct {
 	pairingLimit *fixedWindowLimiter
 	adminLimit   *fixedWindowLimiter
 	cursorKey    []byte
+	nodeKey      string
 }
 
 func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
@@ -56,6 +58,7 @@ func NewWithCursorKey(cursorKey []byte, authService *auth.Service, deviceService
 		pairingLimit: newFixedWindowLimiter(rateLimit("NEXDROP_PAIRING_RATE_LIMIT_PER_MINUTE", 10)),
 		adminLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE", 30)),
 		cursorKey:    append([]byte(nil), cursorKey...),
+		nodeKey:      strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY")),
 	}
 }
 
@@ -112,6 +115,21 @@ func enforceRateLimit(w http.ResponseWriter, r *http.Request, limiter *fixedWind
 	return false
 }
 
+func (api *API) nodeKeyRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if api.nodeKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := strings.TrimSpace(r.Header.Get("X-NexDrop-Node-Key"))
+		if len(provided) != len(api.nodeKey) || subtle.ConstantTimeCompare([]byte(provided), []byte(api.nodeKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "NODE_KEY_REQUIRED")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (api *API) adminRateLimited(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity := "anonymous"
@@ -138,7 +156,7 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/admin-verify", api.verifyAdmin)
 	mux.HandleFunc("POST /api/auth/invitations/accept", api.acceptInvitation)
 	mux.HandleFunc("GET /api/account", api.account)
-	mux.HandleFunc("POST /api/devices", api.createDevice)
+	mux.Handle("POST /api/devices", api.nodeKeyRequired(http.HandlerFunc(api.createDevice)))
 	mux.HandleFunc("GET /api/devices", api.listDevices)
 	mux.HandleFunc("PATCH /api/devices/{id}", api.renameDevice)
 	mux.HandleFunc("DELETE /api/devices/{id}", api.deleteDevice)
