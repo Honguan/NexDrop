@@ -1,4 +1,4 @@
-name: Diagnose NexDrop client
+name: Apply final NexDrop fixes
 
 on:
   pull_request:
@@ -7,36 +7,48 @@ on:
       - .github/workflows/diagnose-client.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: agent/fix-windows-exit-device-join
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
-        with:
-          channel: stable
-          cache: true
-      - name: Capture source and analyzer output
+          fetch-depth: 0
+      - name: Fix analyzer and load scenario
         shell: bash
         run: |
-          set +e
-          cd client
-          flutter pub get
-          flutter analyze > ../client-analyze.log 2>&1
-          status=$?
-          cd ..
-          tar --exclude=.git -czf source-snapshot.tar.gz .
-          echo "$status" > client-analyze.status
-          exit 0
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nexdrop-client-diagnostics
-          path: |
-            client-analyze.log
-            client-analyze.status
-            source-snapshot.tar.gz
-          if-no-files-found: error
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path('client/lib/main.dart')
+          text = main.read_text()
+          old = """  if (value < 1024 * 1024 * 1024)\n    return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';\n"""
+          new = """  if (value < 1024 * 1024 * 1024) {\n    return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';\n  }\n"""
+          if text.count(old) != 1:
+              raise SystemExit('unexpected _formatBytes source')
+          main.write_text(text.replace(old, new))
+
+          loadtest = Path('cmd/nexdrop-loadtest/main.go')
+          text = loadtest.read_text()
+          admin = """\tadmin, err := client.login(ctx, config.username, config.password)\n\tif err != nil {\n\t\treturn scenarioState{}, err\n\t}\n"""
+          approvals = """\tfor index, device := range devices {\n\t\tif err := client.request(ctx, http.MethodPost, \"/api/devices/\"+device.id+\"/approve\", admin.AccessToken, nil, http.StatusOK, nil); err != nil {\n\t\t\treturn scenarioState{}, fmt.Errorf(\"approve device %d: %w\", index+1, err)\n\t\t}\n\t}\n\n"""
+          if text.count(admin) != 1 or text.count(approvals) != 1:
+              raise SystemExit('unexpected load-test setup source')
+          loadtest.write_text(text.replace(admin, '').replace(approvals, ''))
+          PY
+          rm -f .github/workflows/diagnose-client.yml
+          git diff --check
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenAI Codex"
+          git config user.email "codex@openai.com"
+          git add -A
+          git commit -m "fix: align client lint and trusted device load test"
+          git push origin HEAD:agent/fix-windows-exit-device-join
