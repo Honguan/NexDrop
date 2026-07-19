@@ -6,6 +6,10 @@ on:
       - agent/fix-windows-exit-device-join
     paths:
       - .github/workflows/agent-inspect-android.yml
+  pull_request:
+    branches:
+      - master
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
