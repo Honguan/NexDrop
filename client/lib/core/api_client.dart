@@ -45,7 +45,8 @@ class ApiClient {
 
   static const protocolVersion = '1.1';
   static const clientVersion = 'nexdrop-v1.1';
-  static const _nodeKey = 'nexdrop.node_url';
+  static const _nodeUrlKey = 'nexdrop.node_url';
+  static const _nodeSecretKey = 'nexdrop.node_secret';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
   static const _accept = 'application/vnd.nexdrop.v1+json';
@@ -54,6 +55,7 @@ class ApiClient {
   final http.Client _client;
   final FlutterSecureStorage _storage;
   Uri? _node;
+  String? _nodeSecret;
   String? _accessToken;
   String? _refreshToken;
   Future<bool>? _refreshing;
@@ -62,7 +64,8 @@ class ApiClient {
   bool get authenticated => _accessToken != null;
 
   Future<bool> restore() async {
-    final node = await _storage.read(key: _nodeKey);
+    final node = await _storage.read(key: _nodeUrlKey);
+    _nodeSecret = await _storage.read(key: _nodeSecretKey);
     _accessToken = await _storage.read(key: _accessKey);
     _refreshToken = await _storage.read(key: _refreshKey);
     if (node == null) return false;
@@ -72,14 +75,17 @@ class ApiClient {
 
   Future<UserAccount> login(
     String nodeUrl,
+    String nodeSecret,
     String identifier,
     String password,
+    String totp,
   ) async {
     _node = validateNodeUrl(nodeUrl);
+    _nodeSecret = nodeSecret.trim();
     final response = await _client.post(
       _uri('/api/auth/login'),
       headers: const {'Content-Type': 'application/json', 'Accept': _accept},
-      body: jsonEncode({'identifier': identifier.trim(), 'password': password}),
+      body: jsonEncode({'identifier': identifier.trim(), 'password': password, 'totp': totp.trim()}),
     );
     if (response.statusCode != HttpStatus.ok) throw _error(response);
     await _saveTokens(jsonDecode(response.body) as Map<String, dynamic>);
@@ -279,7 +285,8 @@ class ApiClient {
     _accessToken = json['accessToken'] as String;
     _refreshToken = json['refreshToken'] as String;
     await Future.wait([
-      _storage.write(key: _nodeKey, value: _node.toString()),
+      _storage.write(key: _nodeUrlKey, value: _node.toString()),
+      _storage.write(key: _nodeSecretKey, value: _nodeSecret),
       _storage.write(key: _accessKey, value: _accessToken),
       _storage.write(key: _refreshKey, value: _refreshToken),
     ]);

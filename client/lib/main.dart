@@ -215,9 +215,11 @@ class LoginView extends StatefulWidget {
 }
 
 class _LoginViewState extends State<LoginView> {
-  final node = TextEditingController(text: 'https://');
+  final node = TextEditingController(text: 'http://');
+  final nodeSecret = TextEditingController();
   final identifier = TextEditingController();
   final password = TextEditingController();
+  final totp = TextEditingController();
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -242,6 +244,8 @@ class _LoginViewState extends State<LoginView> {
                   ),
                 ),
                 const SizedBox(height: 14),
+                TextField(controller: nodeSecret, obscureText: true, decoration: const InputDecoration(labelText: '節點密鑰')),
+                const SizedBox(height: 14),
                 TextField(
                   controller: identifier,
                   decoration: const InputDecoration(labelText: '帳號或電子郵件'),
@@ -253,6 +257,8 @@ class _LoginViewState extends State<LoginView> {
                   onSubmitted: (_) => _login(),
                   decoration: const InputDecoration(labelText: '密碼'),
                 ),
+                const SizedBox(height: 14),
+                TextField(controller: totp, keyboardType: TextInputType.number, maxLength: 6, inputFormatters: [FilteringTextInputFormatter.digitsOnly], decoration: const InputDecoration(labelText: 'OTP 六位數驗證碼')),
                 if (widget.controller.error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
@@ -280,7 +286,7 @@ class _LoginViewState extends State<LoginView> {
 
   void _login() => unawaited(
     widget.controller
-        .login(node.text, identifier.text, password.text)
+        .login(node.text, nodeSecret.text, identifier.text, password.text, totp.text)
         .catchError((_) {}),
   );
 }
@@ -295,7 +301,7 @@ class Workspace extends StatefulWidget {
 
 class _WorkspaceState extends State<Workspace> {
   int selected = 0;
-  static const labels = ['傳送', '傳輸紀錄', '設備', '統計', '設定'];
+  static const labels = ['聊天室', '傳輸紀錄', '設備', '統計', '設定'];
   static const icons = [
     Icons.send_rounded,
     Icons.history_rounded,
@@ -316,8 +322,7 @@ class _WorkspaceState extends State<Workspace> {
     ];
     final body = Column(
       children: [
-        if (widget.controller.currentDevice?.trusted != true)
-          _PendingBanner(controller: widget.controller),
+
         if (widget.controller.error != null)
           MaterialBanner(
             content: Text(widget.controller.error!),
@@ -831,7 +836,7 @@ class DevicesView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _Page(
     title: '設備',
-    subtitle: '待核准設備會自動產生配對碼，再由任一已信任設備完成核准。',
+    subtitle: '設備輸入節點連結與節點密鑰後會直接加入，不再使用配對碼。',
     child: Card(
       child: Column(
         children: [

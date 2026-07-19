@@ -96,6 +96,17 @@ func main() {
 	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
 		fatal("bootstrap administrator", err)
 	}
+	if secret := strings.TrimSpace(os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET")); secret != "" {
+		credential, err := store.CredentialByIdentifier(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"))
+		if err != nil {
+			fatal("load bootstrap administrator", err)
+		}
+		if !credential.TOTPEnabled {
+			if err := store.SetTOTPSecret(context.Background(), credential.ID, secret); err != nil {
+				fatal("bootstrap administrator OTP", err)
+			}
+		}
+	}
 	cleaner, err := maintenance.NewCleaner(store, storagePath)
 	if err != nil {
 		fatal("configure cleanup worker", err)

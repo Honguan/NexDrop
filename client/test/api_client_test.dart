@@ -21,7 +21,13 @@ void main() {
         final api = ApiClient(client: client);
 
         await expectLater(
-          api.login('https://node.example', 'user', 'password'),
+          api.login(
+            'https://node.example',
+            'node-secret',
+            'user',
+            'password',
+            '123456',
+          ),
           throwsA(
             isA<ApiException>()
                 .having((error) => error.code, 'code', 'INVALID_CREDENTIALS')
@@ -33,6 +39,7 @@ void main() {
             .singleWhere((header) => header.key.toLowerCase() == 'accept')
             .value;
         expect(accept, 'application/vnd.nexdrop.v1+json');
+        expect(captured.body, contains('"totp":"123456"'));
       });
     }
 
@@ -48,7 +55,13 @@ void main() {
       );
 
       await expectLater(
-        api.login('https://node.example', 'user', 'password'),
+        api.login(
+          'https://node.example',
+          'node-secret',
+          'user',
+          'password',
+          '123456',
+        ),
         throwsA(
           isA<ApiException>()
               .having((error) => error.code, 'code', 'RATE_LIMITED')

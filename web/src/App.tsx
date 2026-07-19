@@ -21,7 +21,7 @@ import {
 import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 import { rateLimitMessage } from "./errors";
 
-type View = "send" | "activity" | "devices" | "analytics" | "admin";
+type View = "chat" | "devices" | "analytics" | "admin";
 type SharedContent = { content: string; groupId: string };
 const pausedTransfers = new Set<string>();
 const cancelledTransfers = new Set<string>();
@@ -32,8 +32,7 @@ async function waitWhilePaused(transferId: string) {
 }
 
 const navItems: Array<{ id: View; label: string; glyph: string }> = [
-  { id: "send", label: "傳送", glyph: "↗" },
-  { id: "activity", label: "傳輸紀錄", glyph: "◷" },
+  { id: "chat", label: "聊天室", glyph: "◉" },
   { id: "devices", label: "設備", glyph: "▣" },
   { id: "analytics", label: "統計", glyph: "▥" },
 ];
@@ -174,7 +173,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
 }
 
 function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [view, setView] = useState<View>("send");
+  const [view, setView] = useState<View>("chat");
   const [devices, setDevices] = useState<Device[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -230,6 +229,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
         if (message.type === "heartbeat_ack") reload().catch(() => undefined);
         if (message.type === "notification" && message.notification) {
           socket?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
+          if ("Notification" in window) {
+            if (Notification.permission === "granted") new Notification("NexDrop", { body: "收到新的訊息或資料" });
+            else if (Notification.permission === "default") void Notification.requestPermission();
+          }
           reload().catch(() => undefined);
         }
       };
@@ -256,8 +259,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
-      case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
+      case "chat": return <ChatView user={user} devices={devices} transfers={transfers} initialShare={sharedContent} reload={reload} onTransferCreated={(transfer) => setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)])} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
       case "analytics": return <AnalyticsView user={user} />;
       case "admin": return <AdminView user={user} notify={setNotice} />;
@@ -291,6 +293,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       </nav>
     </div>
   );
+}
+
+function ChatView({ user, devices, transfers, initialShare, reload, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; transfers: Transfer[]; initialShare: SharedContent; reload: () => Promise<void>; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
+  return <section className="chat-layout"><SendView user={user} devices={devices} initialShare={initialShare} onTransferCreated={onTransferCreated} onSent={onSent} notify={notify} /><ActivityView user={user} devices={devices} transfers={transfers} reload={reload} /></section>;
 }
 
 function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
@@ -364,11 +370,11 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
     <section className="page send-page">
       <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />
       <div className="send-grid">
-        <form className="composer card" onSubmit={send}>
+        <form className="composer card" onSubmit={send} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const dropped = Array.from(event.dataTransfer.files); if (dropped.length) { setFiles(dropped); setContent(""); } }}>
           <div className="card-title"><span className="step">01</span><div><h3>輸入內容或選擇檔案</h3><p>內容會在瀏覽器內先加密</p></div></div>
           <textarea value={content} onChange={(event) => { setContent(event.target.value); if (event.target.value) setFiles([]); }} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
           {!files.length && <label className="check"><input type="checkbox" checked={notification} onChange={(event) => setNotification(event.target.checked)} /> 一般通知訊息</label>}
-          <label className="file-input"><input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); if (event.target.files?.length) setContent(""); }} /><span>＋ 選擇檔案</span><small>{files.length ? `${files.length} 個檔案 · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}` : "圖片與一般檔案皆可"}</small></label>
+          <label className="file-input"><input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); if (event.target.files?.length) setContent(""); }} /><span>＋ 選擇檔案</span><small>{files.length ? `${files.length} 個檔案 · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}` : "可選擇或拖放圖片與一般檔案"}</small></label>
           <div className="composer-meta"><span>{files.length ? "檔名與內容皆加密" : `${content.length.toLocaleString()} 字元`}</span><span className="secure-pill">● 端對端加密</span></div>
           <div className="divider" />
           <div className="card-title"><span className="step">02</span><div><h3>選擇目的地</h3><p>{trusted.length ? `${trusted.length} 台信任設備可用` : "尚無信任設備"}</p></div></div>
@@ -378,7 +384,7 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
                 <DeviceGlyph type={item.type} /><span><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></span><i>{selected.includes(item.id) ? "✓" : "+"}</i>
               </button>
             ))}
-            {!trusted.length && <Empty text="請前往「設備」查看此設備自動產生的配對碼" />}
+            {!trusted.length && <Empty text="請先在「設備」輸入節點密鑰並登記此設備" />}
           </div>
           <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || selected.length === 0}>{busy ? "正在加密與上傳…" : <>傳送給 {selected.length} 台設備 <span>↗</span></>}</button>
         </form>
@@ -485,89 +491,28 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
 
 function DevicesView({ user, devices, reload, notify }: { user: User; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const [pairing, setPairing] = useState<{ id: string; code: string; qrPayload: string; expiresAt: string } | null>(null);
-  const [pairingInput, setPairingInput] = useState({ challengeId: "", code: "", payload: "" });
-  const pairingRequested = useRef(false);
+  const [nodeKey, setNodeKey] = useState(api.nodeKey());
   const localDevice = devices.find((item) => item.id === deviceID(user.id));
   const registered = Boolean(localDevice && localDevice.trustStatus !== "REVOKED");
-
+  function importSettings(value: string) {
+    const trimmed = value.trim();
+    try { const parsed = new URL(trimmed); const key = parsed.searchParams.get("key") ?? ""; if (parsed.protocol === "nexdrop:" && parsed.hostname === "join" && key) setNodeKey(key); else setNodeKey(trimmed); } catch { setNodeKey(trimmed); }
+  }
   async function register() {
-    setBusy(true);
+    api.setNodeKey(nodeKey); setBusy(true);
     try {
       const keys = await ensureDeviceKey(user.id);
-      const created = await api.send<Device>("/api/devices", "POST", {
-        displayName: browserName(), type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
-        publicKey: keys.publicKey, keyAlgorithm: "X25519",
-      });
-      rememberDevice(user.id, created.id);
-      await reload();
-      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已成為第一台信任設備" : "此瀏覽器已產生配對碼");
+      const created = await api.send<Device>("/api/devices", "POST", { displayName: browserName(), type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME", publicKey: keys.publicKey, keyAlgorithm: "X25519" });
+      rememberDevice(user.id, created.id); await reload(); notify("設備已使用節點密鑰加入");
     } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
   }
-
-  const createPairing = useCallback(async () => {
-    if (!localDevice || localDevice.trustStatus !== "PENDING") return;
-    setBusy(true);
-    try {
-      setPairing(await api.send<{ id: string; code: string; qrPayload: string; expiresAt: string }>(`/api/devices/${localDevice.id}/pairing-code`, "POST"));
-    } catch (reason) {
-      pairingRequested.current = false;
-      notify(messageFor(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [localDevice?.id, localDevice?.trustStatus, notify]);
-
-  useEffect(() => {
-    if (!localDevice || localDevice.trustStatus !== "PENDING" || pairingRequested.current) return;
-    pairingRequested.current = true;
-    void createPairing();
-  }, [createPairing, localDevice]);
-
-  function readPairingPayload(value: string) {
-    setPairingInput((current) => ({ ...current, payload: value }));
-    const parsed = new URL(value.trim());
-    if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
-    setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });
-  }
-
-  async function pair(event: FormEvent) {
-    event.preventDefault();
-    if (!localDevice || localDevice.trustStatus !== "TRUSTED") return;
-    setBusy(true);
-    try {
-      await api.send(`/api/devices/${localDevice.id}/pair`, "POST", {
-        challengeId: pairingInput.challengeId.trim(),
-        code: pairingInput.code.trim(),
-      });
-      setPairingInput({ challengeId: "", code: "", payload: "" });
-      await reload();
-      notify("新設備已完成配對");
-    } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
-  }
-
-  async function revoke(id: string) {
-    try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); }
-  }
-
-  return (
-    <section className="page">
-      <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="待核准設備會自動產生配對碼，再由任一已信任設備完成核准。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
-      {localDevice?.trustStatus === "PENDING" && <div className="card settings-form">
-        <div className="list-title"><div><p className="eyebrow">PAIR THIS DEVICE</p><h3>此設備配對碼</h3></div><button className="secondary" disabled={busy} onClick={() => { pairingRequested.current = true; void createPairing(); }}>重新產生</button></div>
-        {pairing ? <><label>6 位數配對碼<input readOnly value={pairing.code} onFocus={(event) => event.currentTarget.select()} /></label><label>挑戰 ID<input readOnly value={pairing.id} onFocus={(event) => event.currentTarget.select()} /></label><label>完整配對資料<input readOnly value={pairing.qrPayload} onFocus={(event) => event.currentTarget.select()} /></label><small>請在 10 分鐘內，於另一台已信任設備的「核准新設備」輸入以上資料。</small></> : <PanelLoader />}
-      </div>}
-      {localDevice?.trustStatus === "TRUSTED" && <form className="card settings-form" onSubmit={pair}>
-        <div className="list-title"><div><p className="eyebrow">APPROVE DEVICE</p><h3>核准新設備</h3></div><button className="primary" disabled={busy}>完成配對</button></div>
-        <label>貼上新設備的完整配對資料<input value={pairingInput.payload} onChange={(event) => { try { readPairingPayload(event.target.value); } catch { setPairingInput({ ...pairingInput, payload: event.target.value }); } }} placeholder="nexdrop://pair?..." /></label>
-        <div className="settings-grid"><label>挑戰 ID<input value={pairingInput.challengeId} onChange={(event) => setPairingInput({ ...pairingInput, challengeId: event.target.value })} required /></label><label>6 位數配對碼<input inputMode="numeric" pattern="[0-9]{6}" value={pairingInput.code} onChange={(event) => setPairingInput({ ...pairingInput, code: event.target.value.replace(/\D/g, "").slice(0, 6) })} required /></label></div>
-      </form>}
-      <div className="cards-grid devices-grid">
-        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
-        {!devices.length && <Empty text="尚未登記任何設備" />}
-      </div>
-    </section>
-  );
+  async function revoke(id: string) { try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); } }
+  const importValue = `nexdrop://join?node=${encodeURIComponent(location.origin)}&key=${encodeURIComponent(nodeKey)}`;
+  return <section className="page">
+    <PageHeading eyebrow="NODE DEVICES" title="設備" description="設備只需要節點連結與節點密鑰即可加入；同一節點不再使用配對碼。" action={<button className="primary" onClick={register} disabled={busy || registered || !nodeKey.trim()}>{busy ? "加入中…" : registered ? "此瀏覽器已加入" : "+ 加入此瀏覽器"}</button>} />
+    <div className="card settings-form"><div className="list-title"><div><p className="eyebrow">NODE IMPORT</p><h3>節點連結與密鑰</h3></div><button className="secondary" type="button" onClick={() => navigator.clipboard.writeText(importValue)}>一鍵複製導入</button></div><label>節點連結<input readOnly value={location.origin} /></label><label>節點密鑰<input type="password" value={nodeKey} onChange={(event) => importSettings(event.target.value)} placeholder="貼上節點密鑰或完整 nexdrop://join 資料" /></label><label>完整導入資料<input value={importValue} onChange={(event) => importSettings(event.target.value)} onFocus={(event) => event.currentTarget.select()} /></label></div>
+    <div className="cards-grid devices-grid">{devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}{!devices.length && <Empty text="尚未加入任何設備" />}</div>
+  </section>;
 }
 
 function AnalyticsView({ user }: { user: User }) {
@@ -766,7 +711,7 @@ function formatBytes(value: number) { if (!value) return "0 B"; const units = ["
 function currentNodeStatisticsPath() { const now = Date.now(); return `/api/statistics/node?${new URLSearchParams({ from: new Date(now - 2 * 60 * 1000).toISOString(), to: new Date(now + 60 * 1000).toISOString() })}`; }
 function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
-function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
+function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", NODE_KEY_REQUIRED: "節點密鑰不正確或尚未設定", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 
 function readSharedContent() {
   if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };

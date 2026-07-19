@@ -261,3 +261,5 @@ input:focus, textarea:focus { border-color: #5bcfae; box-shadow: 0 0 0 3px rgba(
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.chat-layout{display:grid;gap:24px}.chat-layout>.page{padding-bottom:0}.chat-layout .send-page{min-height:auto}

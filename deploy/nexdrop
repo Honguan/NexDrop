@@ -75,6 +75,8 @@ regenerate_install_secrets() {
     set_env_value POSTGRES_PASSWORD "$(random_hex 32)"
     set_env_value NEXDROP_CURSOR_SECRET "$(random_hex 32)"
     set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(random_hex 24)"
+    set_env_value NEXDROP_NODE_KEY "$(random_hex 32)"
+    set_env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET "$(od -An -N20 -tx1 /dev/urandom | tr -d ' \n' | xxd -r -p | base32 | tr -d '=\n')"
     GENERATED_DEFAULTS=true
 }
 
@@ -183,6 +185,8 @@ replace_install_placeholders() {
     case "$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)" in
         change-me|change-this-password|replace-with-a-random-admin-password)
             set_env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD "$(random_hex 24)"
+    set_env_value NEXDROP_NODE_KEY "$(random_hex 32)"
+    set_env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET "$(od -An -N20 -tx1 /dev/urandom | tr -d ' \n' | xxd -r -p | base32 | tr -d '=\n')"
             GENERATED_DEFAULTS=true
             ;;
     esac
@@ -245,6 +249,8 @@ configure_install() {
   管理員密碼：$(env_value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
   PostgreSQL 密碼：$(env_value POSTGRES_PASSWORD)
   分頁游標秘密：$(env_value NEXDROP_CURSOR_SECRET)
+  節點密鑰：$(env_value NEXDROP_NODE_KEY)
+  Web OTP 密鑰：$(env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)
 EOF
         printf '接受預設 [a]、逐項更新全部設定 [e]、重新隨機全部秘密 [r]（預設 a）: '
         IFS= read -r choice || choice=a
@@ -304,6 +310,8 @@ EOF
     cat <<EOF
   PostgreSQL 密碼：$(env_value POSTGRES_PASSWORD)
   分頁游標秘密：$(env_value NEXDROP_CURSOR_SECRET)
+  節點密鑰：$(env_value NEXDROP_NODE_KEY)
+  Web OTP 密鑰：$(env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)
 EOF
 }
 
