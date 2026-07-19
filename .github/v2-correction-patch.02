@@ -1,0 +1,297 @@
+@@ -828,39 +887,21 @@ class _ActivityViewState extends State<ActivityView> {
+ class DevicesView extends StatelessWidget {
+   const DevicesView({super.key, required this.controller});
+   final AppController controller;
++
+   @override
+   Widget build(BuildContext context) => _Page(
+     title: '設備',
+-    subtitle: '待核准設備會自動產生配對碼，再由任一已信任設備完成核准。',
++    subtitle: '設備使用節點連結與節點密鑰直接加入；離線設備由管理後台刪除。',
+     child: Card(
+       child: Column(
+         children: [
+-          if (controller.currentDevice?.trusted == true)
+-            ListTile(
+-              leading: const Icon(Icons.qr_code_scanner_rounded),
+-              title: const Text('核准新設備'),
+-              subtitle: const Text('輸入新設備畫面上自動產生的挑戰 ID 與 6 位數配對碼。'),
+-              trailing: FilledButton.tonal(
+-                onPressed: () => _showPairDialog(context, controller),
+-                child: const Text('輸入配對碼'),
+-              ),
+-            ),
+-          ...controller.devices.map(
+-            (device) => ListTile(
+-              leading: Icon(
+-                device.type == 'ANDROID'
+-                    ? Icons.phone_android_rounded
+-                    : Icons.computer_rounded,
+-              ),
+-              title: Text(device.displayName),
+-              subtitle: Text(
+-                '${device.type} · ${device.online ? '在線' : device.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(device.lastSeenAt!)}'}${device.lanCapable ? ' · LAN' : ''}',
+-              ),
+-              trailing: device.trustStatus == 'PENDING'
+-                  ? const Chip(label: Text('待配對'))
+-                  : const Icon(Icons.verified_user_rounded),
+-            ),
+-          ),
++          ...controller.devices.map((device) => ListTile(
++            leading: CircleAvatar(child: Icon(device.online ? Icons.devices_rounded : Icons.devices_other_rounded)),
++            title: Text(device.displayName),
++            subtitle: Text('${device.type} · ${device.online ? '目前在線' : device.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(device.lastSeenAt!)}'}'),
++            trailing: Chip(label: Text(device.trusted ? '已連接' : '已撤銷')),
++          )),
++          if (controller.devices.isEmpty) const ListTile(title: Text('尚未加入任何設備')),
+         ],
+       ),
+     ),
+@@ -899,6 +940,13 @@ class StatisticsView extends StatelessWidget {
+   );
+ }
+ 
++String _deviceName(AppController controller, String id) {
++  for (final device in controller.devices) {
++    if (device.id == id) return device.displayName;
++  }
++  return id.length > 8 ? id.substring(0, 8) : id;
++}
++
+ String _formatBytes(int value) {
+   if (value < 1024) return '$value B';
+   if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
+@@ -972,178 +1020,6 @@ class SettingsView extends StatelessWidget {
+   );
+ }
+ 
+-class _PendingBanner extends StatefulWidget {
+-  const _PendingBanner({required this.controller});
+-  final AppController controller;
+-
+-  @override
+-  State<_PendingBanner> createState() => _PendingBannerState();
+-}
+-
+-class _PendingBannerState extends State<_PendingBanner> {
+-  Map<String, dynamic>? pairing;
+-  bool loading = false;
+-  String? pairingDeviceId;
+-
+-  @override
+-  void initState() {
+-    super.initState();
+-    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+-  }
+-
+-  @override
+-  void didUpdateWidget(covariant _PendingBanner oldWidget) {
+-    super.didUpdateWidget(oldWidget);
+-    final nextId = widget.controller.currentDevice?.id;
+-    if (nextId != pairingDeviceId) {
+-      pairing = null;
+-      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+-    }
+-  }
+-
+-  Future<void> _refresh() async {
+-    final device = widget.controller.currentDevice;
+-    if (device == null || device.trusted || loading) return;
+-    setState(() {
+-      loading = true;
+-      pairingDeviceId = device.id;
+-    });
+-    try {
+-      final result = await widget.controller.createPairingCode(device);
+-      if (mounted && pairingDeviceId == device.id) setState(() => pairing = result);
+-    } catch (_) {
+-      // AppController already exposes an actionable error banner.
+-    } finally {
+-      if (mounted) setState(() => loading = false);
+-    }
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    final code = pairing?['code'] as String?;
+-    final challengeId = pairing?['id'] as String?;
+-    final qrPayload = pairing?['qrPayload'] as String?;
+-    return MaterialBanner(
+-      leading: const Icon(Icons.phonelink_lock_rounded),
+-      content: Column(
+-        crossAxisAlignment: CrossAxisAlignment.start,
+-        children: [
+-          const Text('此設備尚待配對，配對碼已由本機自動產生。'),
+-          if (loading) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
+-          if (code != null && challengeId != null) ...[
+-            const SizedBox(height: 12),
+-            Wrap(
+-              spacing: 16,
+-              runSpacing: 12,
+-              crossAxisAlignment: WrapCrossAlignment.center,
+-              children: [
+-                if (qrPayload != null)
+-                  QrImageView(data: qrPayload, size: 128, backgroundColor: Colors.white),
+-                Column(
+-                  crossAxisAlignment: CrossAxisAlignment.start,
+-                  children: [
+-                    Text(code, style: Theme.of(context).textTheme.headlineMedium),
+-                    SelectableText(challengeId, style: Theme.of(context).textTheme.bodySmall),
+-                    const SizedBox(height: 4),
+-                    const Text('請在 10 分鐘內，於另一台已信任設備輸入以上資料。'),
+-                  ],
+-                ),
+-              ],
+-            ),
+-          ],
+-        ],
+-      ),
+-      actions: [
+-        TextButton(onPressed: loading ? null : _refresh, child: const Text('重新產生')),
+-        if (qrPayload != null)
+-          TextButton(
+-            onPressed: () async {
+-              await Clipboard.setData(ClipboardData(text: qrPayload));
+-              if (context.mounted) {
+-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製配對資料')));
+-              }
+-            },
+-            child: const Text('複製配對資料'),
+-          ),
+-      ],
+-    );
+-  }
+-}
+-
+-Future<void> _showPairDialog(
+-  BuildContext context,
+-  AppController controller,
+-) async {
+-  final challenge = TextEditingController();
+-  final code = TextEditingController();
+-  final payload = TextEditingController();
+-  String? validationError;
+-  await showDialog<void>(
+-    context: context,
+-    builder: (context) => StatefulBuilder(
+-      builder: (context, setDialogState) => AlertDialog(
+-        title: const Text('核准新設備'),
+-        content: SingleChildScrollView(
+-          child: Column(
+-            mainAxisSize: MainAxisSize.min,
+-            crossAxisAlignment: CrossAxisAlignment.stretch,
+-            children: [
+-              const Text('請從待核准設備畫面取得自動產生的配對資料，再於這台已信任設備完成核准。'),
+-              const SizedBox(height: 12),
+-              TextField(
+-                controller: payload,
+-                decoration: const InputDecoration(
+-                  labelText: '貼上完整配對資料（選填）',
+-                  helperText: '可貼上 nexdrop://pair 配對資料，自動帶入下方欄位。',
+-                ),
+-                onChanged: (value) {
+-                  final uri = Uri.tryParse(value.trim());
+-                  if (uri?.scheme == 'nexdrop' && uri?.host == 'pair') {
+-                    challenge.text = uri!.queryParameters['id'] ?? '';
+-                    code.text = uri.queryParameters['code'] ?? '';
+-                    setDialogState(() => validationError = null);
+-                  }
+-                },
+-              ),
+-              const SizedBox(height: 12),
+-              TextField(
+-                controller: challenge,
+-                decoration: const InputDecoration(labelText: '挑戰 ID'),
+-              ),
+-              const SizedBox(height: 12),
+-              TextField(
+-                controller: code,
+-                keyboardType: TextInputType.number,
+-                maxLength: 6,
+-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+-                decoration: const InputDecoration(labelText: '6 位數配對碼'),
+-              ),
+-              if (validationError != null)
+-                Text(validationError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+-            ],
+-          ),
+-        ),
+-        actions: [
+-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+-          FilledButton(
+-            onPressed: () {
+-              final challengeID = challenge.text.trim();
+-              final pairingCode = code.text.trim();
+-              if (challengeID.isEmpty || !RegExp(r'^\d{6}$').hasMatch(pairingCode)) {
+-                setDialogState(() => validationError = '請輸入挑戰 ID 與完整的 6 位數配對碼。');
+-                return;
+-              }
+-              Navigator.pop(context);
+-              unawaited(controller.redeemPairingCode(challengeID, pairingCode).catchError((_) {}));
+-            },
+-            child: const Text('核准設備'),
+-          ),
+-        ],
+-      ),
+-    ),
+-  );
+-}
+-
+ class _Page extends StatelessWidget {
+   const _Page({
+     required this.title,
+diff --git a/client/windows/build-release.ps1 b/client/windows/build-release.ps1
+index cc330bf..b82af67 100644
+--- a/client/windows/build-release.ps1
++++ b/client/windows/build-release.ps1
+@@ -1,6 +1,6 @@
+ param(
+ 	[string]$Flutter = 'flutter',
+-	[string]$Version = '1.0.5',
++	[string]$Version = '2.0.0',
+ 	[string]$OutputDirectory = '',
+ 	[string]$InnoSetup = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+ 	[string]$CertificatePath = '',
+diff --git a/client/windows/installer.iss b/client/windows/installer.iss
+index e1aac22..93a2d2b 100644
+--- a/client/windows/installer.iss
++++ b/client/windows/installer.iss
+@@ -1,6 +1,6 @@
+ #define MyAppName "NexDrop Desktop"
+ #ifndef MyAppVersion
+-  #define MyAppVersion "1.0.5"
++  #define MyAppVersion "2.0.0"
+ #endif
+ #ifndef SourceDir
+   #define SourceDir "build\windows\x64\runner\Release"
+diff --git a/cmd/nexdrop/main.go b/cmd/nexdrop/main.go
+index dc3d8a4..52bfaec 100644
+--- a/cmd/nexdrop/main.go
++++ b/cmd/nexdrop/main.go
+@@ -8,6 +8,7 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"log/slog"
++	"net"
+ 	"net/http"
+ 	"os"
+ 	"path/filepath"
+@@ -65,6 +66,11 @@ func main() {
+ 	if len(cursorSecret) < 32 {
+ 		fatal("configuration failed", errors.New("NEXDROP_CURSOR_SECRET must contain at least 32 characters"))
+ 	}
++	nodeOwner := strings.TrimSpace(os.Getenv("NEXDROP_NODE_OWNER"))
++	nodeKey := strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY"))
++	if nodeOwner == "" || len(nodeKey) < 32 {
++		fatal("configuration failed", errors.New("NEXDROP_NODE_OWNER and a node key of at least 32 characters are required"))
++	}
+ 	store, err := postgres.OpenWithPassword(context.Background(), databaseURL, os.Getenv("NEXDROP_DATABASE_PASSWORD"))
+ 	if err != nil {
+ 		fatal("connect to PostgreSQL", err)
+@@ -96,6 +102,9 @@ func main() {
+ 	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
+ 		fatal("bootstrap administrator", err)
+ 	}
++	if err := adminService.BootstrapTOTP(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET")); err != nil {
++		fatal("bootstrap administrator TOTP", err)
++	}
