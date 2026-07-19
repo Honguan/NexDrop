@@ -30,13 +30,12 @@ import (
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
-	buildversion "nexdrop/internal/version"
 	"nexdrop/internal/webui"
 )
 
 const defaultAddress = ":8080"
 
-var version = buildversion.ProductVersion
+var version = "development"
 
 type healthResponse struct {
 	Status  string `json:"status"`

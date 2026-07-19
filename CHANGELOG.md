@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-19
+
+### Fixed
+
+- 修正由 1.x 升級至 2.0 時，既有 `.env` 缺少節點密鑰與 Web OTP 密鑰，導致更新後顯示空白的問題。
+- `update` 現在會自動產生缺少、空白或仍為範例值的 `NEXDROP_NODE_KEY` 與 `NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET`，寫回 `.env` 並立即顯示。
+- 已存在的節點密鑰與 OTP 密鑰會永久保留，不會因後續更新而重新產生。
+
 ## [2.0.0] - 2026-07-19
 
 ### Changed
