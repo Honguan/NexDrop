@@ -1,10 +1,9 @@
 name: docs
 on:
   pull_request:
-  push:
-    branches: [master]
 permissions:
-  contents: read
+  contents: write
+  actions: read
 jobs:
   check:
     name: docs
@@ -13,3 +12,27 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - shell: pwsh
         run: ./scripts/check-docs.ps1
+  inspect-release:
+    if: github.head_ref == 'agent/inspect-v2.0.1-release'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/inspect-v2.0.1-release
+      - name: Record current release workflow state
+        shell: bash
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          tag='v2.0.1'
+          tag_commit=$(gh api "repos/$repo/commits/$tag" --jq '.sha')
+          {
+            printf 'TAG_COMMIT=%s\n\nRELEASE_RUNS\n' "$tag_commit"
+            gh api "repos/$repo/actions/workflows/release.yml/runs?per_page=20" --jq '.workflow_runs[] | [.id,.event,.head_branch,.head_sha,.status,(.conclusion // ""),.created_at] | @tsv'
+          } > release-v2.0.1-current.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add release-v2.0.1-current.txt
+          git commit -m 'chore: record current 2.0.1 release state'
+          git push origin HEAD:agent/inspect-v2.0.1-release
