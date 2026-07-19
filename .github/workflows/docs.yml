@@ -5,7 +5,7 @@ on:
     branches: [master]
 permissions:
   contents: write
-  actions: read
+  actions: write
 jobs:
   check:
     name: docs
@@ -25,7 +25,7 @@ jobs:
         with:
           ref: agent/publish-v2.0.1
           fetch-depth: 0
-      - name: Verify public release and assets
+      - name: Dispatch and verify public release
         shell: bash
         run: |
           set -eu
@@ -33,7 +33,10 @@ jobs:
           tag='v2.0.1'
           report='release-v2.0.1-verification.txt'
           tag_commit=$(gh api "repos/$repo/commits/$tag" --jq '.sha')
-          run_id=''
+          run_id=$(gh api "repos/$repo/actions/workflows/release.yml/runs?per_page=50" --jq ".workflow_runs[] | select(.head_sha == \"$tag_commit\" and .head_branch == \"$tag\") | .id" | head -n 1 || true)
+          if test -z "$run_id"; then
+            gh workflow run release.yml --repo "$repo" --ref "$tag"
+          fi
           for _ in $(seq 1 180); do
             run_id=$(gh api "repos/$repo/actions/workflows/release.yml/runs?per_page=50" --jq ".workflow_runs[] | select(.head_sha == \"$tag_commit\" and .head_branch == \"$tag\") | .id" | head -n 1 || true)
             test -n "$run_id" && break
