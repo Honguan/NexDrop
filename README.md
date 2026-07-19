@@ -6,7 +6,7 @@ NexDrop 是可自行架設的混合式多裝置傳輸平台。它會優先在區
 
 ## 架構
 
-Go 模組化單體提供 API、WebSocket、任務與管理服務；PostgreSQL 保存狀態；Flutter 共用 Windows/Android 用戶端；React 提供 Web UI；Manifest V3 擴充功能可獨立配對為一台設備。詳見 [架構文件](docs/architecture.md)。
+Go 模組化單體提供 API、WebSocket 與傳輸任務服務；PostgreSQL 保存狀態；Flutter 共用 Windows/Android 用戶端；React 提供 Web UI；Manifest V3 擴充功能可獨立配對為一台設備。詳見 [架構文件](docs/architecture.md)。
 
 ## 快速部署 Linux Node
 
@@ -53,7 +53,7 @@ cd ../client && flutter analyze && flutter test
 ./deploy/nexdrop backup --output /var/lib/nexdrop/backups/manual.tar.gz
 ./deploy/nexdrop cleanup --limit 100
 ./deploy/nexdrop update
-# 或鎖定版本：./deploy/nexdrop update 1.0.5
+# 或鎖定版本：./deploy/nexdrop update 2.0.1
 ```
 
 ## 安全與發布
