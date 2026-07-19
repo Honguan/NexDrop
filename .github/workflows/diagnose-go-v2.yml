@@ -1,0 +1,29 @@
+name: Diagnose NexDrop 2.0 Go
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.head_ref == 'agent/refactor-node-chat-enrollment'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version-file: go.mod, cache: true}
+      - name: Capture Go vet output
+        shell: bash
+        run: |
+          set +e
+          go vet ./... > "$RUNNER_TEMP/go-vet.log" 2>&1
+          echo "exit=$?" >> "$RUNNER_TEMP/go-vet.log"
+          exit 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: nexdrop-v2-go-vet
+          path: ${{ runner.temp }}/go-vet.log
+          if-no-files-found: error
