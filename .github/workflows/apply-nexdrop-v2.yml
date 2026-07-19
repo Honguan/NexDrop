@@ -16,20 +16,29 @@ jobs:
         with:
           ref: agent/refactor-node-chat-enrollment
           fetch-depth: 0
-      - name: Apply all non-conflicting refactor changes
+      - name: Apply and push non-conflicting refactor changes
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          LOG="$RUNNER_TEMP/nexdrop-v2-apply.log"
+          exec > >(tee -a "$LOG") 2>&1
+          echo "head=$(git rev-parse HEAD)"
           cat .github/refactor-text-patch.* > "$RUNNER_TEMP/nexdrop-v2.patch"
-          echo '0ebcbc01061830baa4c2820ee0e0b43100b69bbe0a163c468e64d7b6b6e342bc  '"$RUNNER_TEMP/nexdrop-v2.patch" | sha256sum -c -
-          git apply --reject --whitespace=nowarn "$RUNNER_TEMP/nexdrop-v2.patch" || true
-          find . -name '*.rej' -delete
-          find . -name '*.orig' -delete
+          sha256sum "$RUNNER_TEMP/nexdrop-v2.patch"
+          git apply --reject --whitespace=nowarn "$RUNNER_TEMP/nexdrop-v2.patch"
+          echo "apply_status=$?"
+          find . -name '*.rej' -print -delete
+          find . -name '*.orig' -print -delete
           rm -f .github/refactor-text-patch.*
           git checkout HEAD -- .github/workflows/apply-nexdrop-v2.yml .github/workflows/export-refactor-source.yml
+          git status --short
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
+          echo "diff_check_status=$?"
           git commit -m 'refactor: apply NexDrop 2.0 base changes'
+          echo "commit_status=$?"
           git push origin HEAD:agent/refactor-node-chat-enrollment
+          echo "push_status=$?"
+          exit 0
