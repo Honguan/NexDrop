@@ -28,7 +28,8 @@ jobs:
             echo '--- MAIN ACTIVITY ---'
             find client/android/app/src/main -type f \( -name 'MainActivity.kt' -o -name 'MainActivity.java' \) -print -exec sed -n '1,320p' {} \;
           } > android-entrypoint.txt
-          tar --exclude=.git --exclude=source-snapshot.tar.gz -czf source-snapshot.tar.gz .
+          tar --exclude=.git -czf /tmp/source-snapshot.tar.gz .
+          mv /tmp/source-snapshot.tar.gz source-snapshot.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: android-entrypoint
