@@ -28,3 +28,6 @@ RUN mkdir -p /var/lib/nexdrop && chown nexdrop:nexdrop /var/lib/nexdrop
 COPY --from=build /out/nexdrop /usr/local/bin/nexdrop
 COPY --from=web-build /web/dist /usr/share/nexdrop/web
 COPY migrations /usr/share/nexdrop/migrations
+USER nexdrop
+EXPOSE 8080
+ENTRYPOINT ["nexdrop"]
