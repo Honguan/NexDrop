@@ -1,0 +1,42 @@
+name: Diagnose NexDrop client
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/diagnose-client.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/fix-windows-exit-device-join
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          cache: true
+      - name: Capture source and analyzer output
+        shell: bash
+        run: |
+          set +e
+          cd client
+          flutter pub get
+          flutter analyze > ../client-analyze.log 2>&1
+          status=$?
+          cd ..
+          tar --exclude=.git -czf source-snapshot.tar.gz .
+          echo "$status" > client-analyze.status
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexdrop-client-diagnostics
+          path: |
+            client-analyze.log
+            client-analyze.status
+            source-snapshot.tar.gz
+          if-no-files-found: error
