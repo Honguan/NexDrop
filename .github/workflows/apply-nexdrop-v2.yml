@@ -30,7 +30,7 @@ jobs:
           find . -name '*.rej' -print -delete
           find . -name '*.orig' -print -delete
           rm -f .github/refactor-text-patch.*
-          git checkout HEAD -- .github/workflows/apply-nexdrop-v2.yml .github/workflows/export-refactor-source.yml
+          git checkout HEAD -- .github/workflows/apply-nexdrop-v2.yml .github/workflows/export-refactor-source.yml .github/workflows/release.yml
           git status --short
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
