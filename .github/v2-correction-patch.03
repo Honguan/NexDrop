@@ -1,0 +1,313 @@
+ 	cleaner, err := maintenance.NewCleaner(store, storagePath)
+ 	if err != nil {
+ 		fatal("configure cleanup worker", err)
+@@ -134,7 +143,7 @@ func main() {
+ 
+ 	server := &http.Server{
+ 		Addr:              address,
+-		Handler:           mux,
++		Handler:           allowedIPHandler(mux, os.Getenv("NEXDROP_ALLOWED_IPS")),
+ 		ReadHeaderTimeout: 5 * time.Second,
+ 		IdleTimeout:       60 * time.Second,
+ 	}
+@@ -145,6 +154,36 @@ func main() {
+ 	}
+ }
+ 
++func allowedIPHandler(next http.Handler, configured string) http.Handler {
++	allowed := make(map[string]struct{})
++	for _, value := range strings.Split(configured, ",") {
++		if value = strings.TrimSpace(value); value != "" {
++			allowed[value] = struct{}{}
++		}
++	}
++	if len(allowed) == 0 {
++		return next
++	}
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
++			next.ServeHTTP(w, r)
++			return
++		}
++		host := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
++		if host == "" {
++			host = r.RemoteAddr
++			if parsed, _, err := net.SplitHostPort(host); err == nil {
++				host = parsed
++			}
++		}
++		if _, ok := allowed[host]; !ok {
++			http.Error(w, "source IP is not allowed", http.StatusForbidden)
++			return
++		}
++		next.ServeHTTP(w, r)
++	})
++}
++
+ func fatal(message string, err error) {
+ 	slog.Error(message, "module", "server", "error_code", "FATAL", "error", err)
+ 	os.Exit(1)
+diff --git a/extension/scripts/package-release.ps1 b/extension/scripts/package-release.ps1
+index f4732a1..e1036d8 100644
+--- a/extension/scripts/package-release.ps1
++++ b/extension/scripts/package-release.ps1
+@@ -1,5 +1,5 @@
+ param(
+-    [string]$Version = '1.0.5',
++    [string]$Version = '2.0.0',
+     [string]$OutputDirectory = '..\dist'
+ )
+ 
+diff --git a/internal/admin/service.go b/internal/admin/service.go
+index 4be54f7..a9a8f66 100644
+--- a/internal/admin/service.go
++++ b/internal/admin/service.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"crypto/rand"
+ 	"crypto/sha256"
++	"encoding/base32"
+ 	"encoding/base64"
+ 	"errors"
+ 	"os"
+@@ -31,13 +32,15 @@ type User struct {
+ }
+ 
+ type Device struct {
+-	ID            string    `json:"id"`
+-	OwnerUserID   string    `json:"ownerUserId"`
+-	OwnerUsername string    `json:"ownerUsername"`
+-	DisplayName   string    `json:"displayName"`
+-	Type          string    `json:"type"`
+-	TrustStatus   string    `json:"trustStatus"`
+-	CreatedAt     time.Time `json:"createdAt"`
++	ID            string     `json:"id"`
++	OwnerUserID   string     `json:"ownerUserId"`
++	OwnerUsername string     `json:"ownerUsername"`
++	DisplayName   string     `json:"displayName"`
++	Type          string     `json:"type"`
++	TrustStatus   string     `json:"trustStatus"`
++	Online        bool       `json:"online"`
++	LastSeenAt    *time.Time `json:"lastSeenAt,omitempty"`
++	CreatedAt     time.Time  `json:"createdAt"`
+ }
+ 
+ type Group struct {
+@@ -187,6 +190,23 @@ func (service *Service) Bootstrap(ctx context.Context, username, email, password
+ 	return service.store.BootstrapAdmin(ctx, strings.TrimSpace(username), strings.TrimSpace(email), string(hash))
+ }
+ 
++func (service *Service) BootstrapTOTP(ctx context.Context, identifier, secret string) error {
++	identifier = strings.TrimSpace(identifier)
++	secret = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(secret), " ", ""))
++	if identifier == "" && secret == "" {
++		return nil
++	}
++	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
++	if identifier == "" || err != nil || len(decoded) < 16 {
++		return ErrInvalid
++	}
++	store, ok := service.store.(BootstrapTOTPStore)
++	if !ok {
++		return nil
++	}
++	return store.BootstrapAdminTOTP(ctx, identifier, secret)
++}
++
+ func (service *Service) Users(ctx context.Context, session auth.Session, limit, offset int) ([]User, error) {
+ 	if !session.Admin {
+ 		return nil, ErrForbidden
+@@ -302,6 +322,20 @@ func (service *Service) RevokeDevice(ctx context.Context, session auth.Session,
+ 	return service.store.RevokeAdminDevice(ctx, session, deviceID, time.Now().UTC())
+ }
+ 
++func (service *Service) DeleteDevice(ctx context.Context, session auth.Session, deviceID string) error {
++	if !session.Admin {
++		return ErrForbidden
++	}
++	if !isUUID(deviceID) {
++		return ErrInvalid
++	}
++	store, ok := service.store.(DeviceDeleteStore)
++	if !ok {
++		return ErrInvalid
++	}
++	return store.DeleteAdminDevice(ctx, session, deviceID, time.Now().UTC())
++}
++
+ func (service *Service) Groups(ctx context.Context, session auth.Session, limit, offset int) ([]Group, error) {
+ 	if !session.Admin {
+ 		return nil, ErrForbidden
+diff --git a/internal/api/admin.go b/internal/api/admin.go
+index 67d1356..da90fa0 100644
+--- a/internal/api/admin.go
++++ b/internal/api/admin.go
+@@ -159,6 +159,18 @@ func (api *API) revokeAdminDevice(w http.ResponseWriter, r *http.Request) {
+ 	w.WriteHeader(http.StatusNoContent)
+ }
+ 
++func (api *API) deleteAdminDevice(w http.ResponseWriter, r *http.Request) {
++	session, ok := api.authenticateAdmin(w, r)
++	if !ok {
++		return
++	}
++	if err := api.admin.DeleteDevice(r.Context(), session, r.PathValue("id")); err != nil {
++		writeAdminError(w, err)
++		return
++	}
++	w.WriteHeader(http.StatusNoContent)
++}
++
+ func (api *API) adminGroups(w http.ResponseWriter, r *http.Request) {
+ 	session, ok := api.authenticateAdmin(w, r)
+ 	if !ok {
+diff --git a/internal/api/api.go b/internal/api/api.go
+index e50acf9..2075539 100644
+--- a/internal/api/api.go
++++ b/internal/api/api.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"crypto/rand"
+ 	"crypto/sha256"
++	"crypto/subtle"
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"errors"
+@@ -131,6 +132,7 @@ func (api *API) Routes() http.Handler {
+ 	adminMux := http.NewServeMux()
+ 	mux.HandleFunc("GET /api/version", api.version)
+ 	mux.HandleFunc("POST /api/auth/login", api.login)
++	mux.HandleFunc("POST /api/node/enroll", api.enrollNode)
+ 	mux.HandleFunc("POST /api/auth/refresh", api.refresh)
+ 	mux.HandleFunc("POST /api/auth/logout", api.logout)
+ 	mux.HandleFunc("POST /api/auth/totp/setup", api.setupTOTP)
+@@ -142,13 +144,10 @@ func (api *API) Routes() http.Handler {
+ 	mux.HandleFunc("GET /api/devices", api.listDevices)
+ 	mux.HandleFunc("PATCH /api/devices/{id}", api.renameDevice)
+ 	mux.HandleFunc("DELETE /api/devices/{id}", api.deleteDevice)
+-	mux.HandleFunc("POST /api/devices/{id}/approve", api.approveDevice)
+ 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
+ 	mux.HandleFunc("POST /api/devices/{id}/session-challenge", api.createDeviceSessionChallenge)
+ 	mux.HandleFunc("POST /api/devices/{id}/attach-session", api.attachDeviceSession)
+ 	mux.HandleFunc("PUT /api/devices/{id}/lan-identity", api.registerDeviceLANIdentity)
+-	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
+-	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
+ 	mux.HandleFunc("POST /api/groups", api.createGroup)
+ 	mux.HandleFunc("GET /api/groups", api.listGroups)
+ 	mux.HandleFunc("GET /api/groups/{id}", api.getGroup)
+@@ -182,6 +181,7 @@ func (api *API) Routes() http.Handler {
+ 	adminMux.HandleFunc("POST /api/admin/users/{id}/reset-password", api.resetAdminPassword)
+ 	adminMux.HandleFunc("GET /api/admin/devices", api.adminDevices)
+ 	adminMux.HandleFunc("POST /api/admin/devices/{id}/revoke", api.revokeAdminDevice)
++	adminMux.HandleFunc("DELETE /api/admin/devices/{id}", api.deleteAdminDevice)
+ 	adminMux.HandleFunc("GET /api/admin/groups", api.adminGroups)
+ 	adminMux.HandleFunc("DELETE /api/admin/groups/{id}", api.deleteAdminGroup)
+ 	adminMux.HandleFunc("GET /api/admin/settings", api.adminSettings)
+@@ -269,6 +269,32 @@ func (api *API) refresh(w http.ResponseWriter, r *http.Request) {
+ 	writeJSON(w, http.StatusOK, pair)
+ }
+ 
++func (api *API) enrollNode(w http.ResponseWriter, r *http.Request) {
++	var request struct {
++		NodeKey string `json:"nodeKey"`
++	}
++	if err := decodeJSON(r, &request); err != nil {
++		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
++		return
++	}
++	configuredKey := strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY"))
++	owner := strings.TrimSpace(os.Getenv("NEXDROP_NODE_OWNER"))
++	providedKey := strings.TrimSpace(request.NodeKey)
++	if !enforceRateLimit(w, r, api.loginLimit, "node-enroll") {
++		return
++	}
++	if len(configuredKey) < 32 || owner == "" || len(providedKey) != len(configuredKey) || subtle.ConstantTimeCompare([]byte(providedKey), []byte(configuredKey)) != 1 {
++		writeError(w, http.StatusUnauthorized, "INVALID_NODE_KEY")
++		return
++	}
++	pair, err := api.auth.IssueForIdentifier(r.Context(), owner)
++	if err != nil {
++		writeError(w, http.StatusUnauthorized, "INVALID_NODE_KEY")
++		return
++	}
++	writeJSON(w, http.StatusOK, pair)
++}
++
+ func (api *API) login(w http.ResponseWriter, r *http.Request) {
+ 	var request struct {
+ 		Identifier string `json:"identifier"`
+diff --git a/internal/auth/service.go b/internal/auth/service.go
+index f94dadf..0ba3a88 100644
+--- a/internal/auth/service.go
++++ b/internal/auth/service.go
+@@ -77,6 +77,28 @@ func (service *Service) Login(ctx context.Context, identifier, password string)
+ 	return service.LoginWithTOTP(ctx, identifier, password, "")
+ }
+ 
++// IssueForIdentifier creates a device session for a node owner after the API
++// has validated the deployment node key. It deliberately bypasses password and
++// TOTP because those credentials are reserved for the Web administration UI.
++func (service *Service) IssueForIdentifier(ctx context.Context, identifier string) (TokenPair, error) {
++	credential, err := service.store.CredentialByIdentifier(ctx, strings.TrimSpace(identifier))
++	if err != nil {
++		return TokenPair{}, ErrInvalidCredentials
++	}
++	pair, err := service.issueTokenPair()
++	if err != nil {
++		return TokenPair{}, err
++	}
++	_, err = service.store.CreateSession(
++		ctx, credential.ID, hashToken(pair.AccessToken), pair.AccessExpiresAt,
++		hashToken(pair.RefreshToken), pair.RefreshExpiresAt,
++	)
++	if err != nil {
++		return TokenPair{}, fmt.Errorf("create node enrollment session: %w", err)
++	}
++	return pair, nil
++}
++
+ func (service *Service) LoginWithTOTP(ctx context.Context, identifier, password, code string) (TokenPair, error) {
+ 	credential, err := service.store.CredentialByIdentifier(ctx, identifier)
+ 	if err != nil || bcrypt.CompareHashAndPassword([]byte(credential.PasswordHash), []byte(password)) != nil {
+diff --git a/internal/postgres/admin.go b/internal/postgres/admin.go
+index 248c5dd..5277876 100644
+--- a/internal/postgres/admin.go
++++ b/internal/postgres/admin.go
+@@ -20,6 +20,31 @@ func (store *Store) BootstrapAdmin(ctx context.Context, username, email, passwor
+ 	return err
+ }
+ 
++func (store *Store) BootstrapAdminTOTP(ctx context.Context, identifier, secret string) error {
++	command, err := store.pool.Exec(ctx, `
++		UPDATE users SET totp_secret=$2
++		WHERE (lower(username)=lower($1) OR lower(email)=lower($1))
++		  AND is_admin=true AND disabled_at IS NULL
++		  AND (totp_secret IS NULL OR totp_secret='')
++	`, identifier, secret)
++	if err != nil {
++		return err
++	}
++	if command.RowsAffected() > 0 {
++		return nil
++	}
++	var existing string
++	err = store.pool.QueryRow(ctx, `
++		SELECT COALESCE(totp_secret, '') FROM users
++		WHERE (lower(username)=lower($1) OR lower(email)=lower($1))
++		  AND is_admin=true AND disabled_at IS NULL
++	`, identifier).Scan(&existing)
++	if err != nil {
++		return mapAdminError(err)
++	}
++	return nil
++}
++
+ func (store *Store) ListAdminUsers(ctx context.Context, limit, offset int) ([]admin.User, error) {
+ 	rows, err := store.pool.Query(ctx, `
+ 		SELECT id::text, username, email, is_admin, disabled_at, created_at
+@@ -206,8 +231,15 @@ func (store *Store) ResetAdminPasswordByIdentifier(ctx context.Context, identifi
+ func (store *Store) ListAdminDevices(ctx context.Context, limit, offset int) ([]admin.Device, error) {
+ 	rows, err := store.pool.Query(ctx, `
+ 		SELECT d.id::text, d.user_id::text, u.username, d.display_name, d.device_type,
+-		       d.trust_status, d.created_at
++		       d.trust_status,
