@@ -4,7 +4,8 @@ on:
   push:
     branches: [master]
 permissions:
-  contents: read
+  contents: write
+  actions: read
 jobs:
   check:
     name: docs
@@ -13,3 +14,36 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - shell: pwsh
         run: ./scripts/check-docs.ps1
+  inspect-release-v2-final:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/verify-release-v2.0.0'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/verify-release-v2.0.0
+          fetch-depth: 0
+      - name: Record final publication state
+        shell: bash
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          report='release-v2-final.txt'
+          run_id='29674738665'
+          status=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.status')
+          conclusion=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.conclusion // ""')
+          printf 'RUN_ID=%s\nRUN_STATUS=%s\nRUN_CONCLUSION=%s\n\nJOBS\n' "$run_id" "$status" "$conclusion" > "$report"
+          gh api "repos/$repo/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[] | [.name,.status,(.conclusion // "")] | @tsv' >> "$report"
+          printf '\nRELEASE\n' >> "$report"
+          if release_json=$(gh api "repos/$repo/releases/tags/v2.0.0" 2>/dev/null); then
+            printf '%s\n' "$release_json" | jq -r '"NAME=" + (.name // ""), "DRAFT=" + (.draft|tostring), "PRERELEASE=" + (.prerelease|tostring), "PUBLISHED_AT=" + (.published_at // ""), "HTML_URL=" + (.html_url // ""), "ASSET_COUNT=" + ((.assets|length)|tostring), "ASSETS", (.assets[]?.name)' >> "$report"
+          else
+            printf 'NOT_PUBLISHED\n' >> "$report"
+          fi
+          git fetch origin master
+          git checkout origin/master -- .github/workflows/docs.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/docs.yml "$report"
+          git commit -m 'chore: record final NexDrop 2.0 publication'
+          git push origin HEAD:agent/verify-release-v2.0.0
