@@ -320,27 +320,6 @@ func (store *Store) DeleteDevice(ctx context.Context, userID, deviceID string) e
 	return nil
 }
 
-func (store *Store) ApproveDevice(ctx context.Context, session auth.Session, deviceID string) (device.Device, error) {
-	result, err := scanDevice(store.pool.QueryRow(ctx, `
-		UPDATE devices d SET trust_status = 'TRUSTED'
-		FROM device_keys k
-		WHERE d.id = $1 AND k.device_id = d.id AND d.revoked_at IS NULL
-		  AND ($2 OR EXISTS (
-		      SELECT 1 FROM user_sessions s
-		      JOIN devices actor ON actor.id = s.device_id
-		      WHERE s.id = $3 AND s.revoked_at IS NULL
-		        AND actor.user_id = d.user_id
-		        AND actor.trust_status = 'TRUSTED' AND actor.revoked_at IS NULL
-		  ))
-		RETURNING d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
-		          d.trust_status, d.revoked_at, d.created_at
-	`, deviceID, session.Admin, session.SessionID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return device.Device{}, device.ErrForbidden
-	}
-	return result, err
-}
-
 func (store *Store) RevokeDevice(ctx context.Context, session auth.Session, deviceID string, now time.Time) (device.Device, error) {
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {

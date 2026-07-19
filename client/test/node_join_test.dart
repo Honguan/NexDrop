@@ -14,9 +14,7 @@ void main() {
   test('rejects incomplete or unrelated URIs', () {
     expect(NodeJoinConfiguration.tryParse('https://example.com'), isNull);
     expect(
-      NodeJoinConfiguration.tryParse(
-        'nexdrop://join?node=https://n.example',
-      ),
+      NodeJoinConfiguration.tryParse('nexdrop://join?node=https://n.example'),
       isNull,
     );
   });

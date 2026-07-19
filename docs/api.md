@@ -19,7 +19,6 @@ X-NexDrop-API-Version: 1
 
 建立傳輸、上傳分段、完成檔案、同步統計、回報進度及已讀須送 `Idempotency-Key: <UUID>`。相同 key 與內容會重播原結果；不同內容回傳 `IDEMPOTENCY_CONFLICT`。
 
-`GET /api/transfers` 新版支援 `limit`（1–100）、`cursor`、`from`、`to`、`status`，依 `created_at DESC, id DESC` 回傳。管理端 `GET /api/admin/failures` 與 `GET /api/admin/audit-logs` 在協商新版媒體型別時使用相同的分頁參數與 envelope；未協商的 1.x 用戶端仍可使用既有 `offset` 陣列介面。
 
 ```json
 {"items":[],"nextCursor":"<opaque signed cursor>"}

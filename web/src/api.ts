@@ -111,86 +111,6 @@ export type GroupStatistic = {
   activeUsers: number;
 };
 
-export type AdminUser = User & { disabledAt?: string; createdAt: string };
-
-export type AdminDevice = {
-  id: string;
-  ownerUserId: string;
-  ownerUsername: string;
-  displayName: string;
-  type: string;
-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
-  createdAt: string;
-};
-
-export type AdminGroup = {
-  id: string;
-  name: string;
-  ownerUserId: string;
-  ownerUsername: string;
-  memberCount: number;
-  deviceCount: number;
-  createdAt: string;
-};
-
-export type Invitation = {
-  id: string;
-  username: string;
-  email: string;
-  admin: boolean;
-  token: string;
-  expiresAt: string;
-  createdAt: string;
-};
-
-export type StorageOverview = {
-  fileCount: number;
-  storedBytes: number;
-  uploadingBytes: number;
-  expiredBytes: number;
-  quotaBytesUsed: number;
-  quotaByteLimit: number;
-};
-
-export type NodeSettings = {
-  publicRegistrationEnabled: boolean;
-  singleFileLimitBytes: number;
-  defaultUserQuotaBytes: number;
-  defaultGroupQuotaBytes: number;
-  nodeCacheLimitBytes: number;
-  defaultUserDailyBytes: number;
-  defaultGroupDailyBytes: number;
-  diskWarningPercent: number;
-  diskStopPercent: number;
-};
-
-export type AuditLog = {
-  id: string;
-  action: string;
-  targetType: string;
-  targetId?: string;
-  createdAt: string;
-};
-
-export type AdminFailure = {
-  transferId: string;
-  targetDeviceId: string;
-  errorCode: string;
-  createdAt: string;
-};
-
-export type NodeMetric = {
-  recordedAt: string;
-  cpuPercent: number;
-  memoryBytes: number;
-  diskBytes: number;
-  cacheBytes: number;
-  networkUploadBytes: number;
-  networkDownloadBytes: number;
-  onlineDevices: number;
-  activeTransfers: number;
-};
-
 type TokenPair = {
   accessToken: string;
   refreshToken: string;
@@ -256,15 +176,6 @@ class APIClient {
     });
   }
 
-  async acceptInvitation(token: string, password: string) {
-    const response = await fetch("/api/auth/invitations/accept", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: versionMediaType },
-      body: JSON.stringify({ token, password }),
-    });
-    if (!response.ok) throw await this.error(response);
-    return (await response.json()) as { username: string };
-  }
 
   async get<T>(path: string): Promise<T> {
     return this.request<T>(path, { method: "GET" });

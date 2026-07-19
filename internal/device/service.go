@@ -69,7 +69,6 @@ type Store interface {
 	ListDevices(context.Context, string) ([]Device, error)
 	RenameDevice(context.Context, string, string, string) (Device, error)
 	DeleteDevice(context.Context, string, string) error
-	ApproveDevice(context.Context, auth.Session, string) (Device, error)
 	RevokeDevice(context.Context, auth.Session, string, time.Time) (Device, error)
 	DevicePublicKeyForSession(context.Context, auth.Session, string) ([]byte, error)
 	CreateDeviceSessionChallenge(context.Context, auth.Session, string, []byte, time.Time, time.Time) (string, error)
@@ -167,13 +166,6 @@ func (service *Service) Delete(ctx context.Context, session auth.Session, id str
 		return ErrInvalid
 	}
 	return service.store.DeleteDevice(ctx, session.ID, id)
-}
-
-func (service *Service) Approve(ctx context.Context, session auth.Session, id string) (Device, error) {
-	if id == "" {
-		return Device{}, ErrInvalid
-	}
-	return service.store.ApproveDevice(ctx, session, id)
 }
 
 func (service *Service) Revoke(ctx context.Context, session auth.Session, id string) (Device, error) {

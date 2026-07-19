@@ -16,34 +16,28 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
-	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
 )
 
 type testStore struct {
-	credential         auth.Credential
-	accessHash         []byte
-	sessionError       error
-	refresh            []byte
-	devices            []device.Device
-	groups             []group.Group
-	sessionDeviceID    *string
-	adminVerified      bool
-	fileRecord         filetransfer.FileRecord
-	chunks             map[int]filetransfer.ChunkRecord
-	page               transfer.Page
-	pageOptions        transfer.PageOptions
-	auditPage          admin.AuditLogPage
-	auditPageOptions   admin.PageOptions
-	failurePage        admin.FailurePage
-	failurePageOptions admin.PageOptions
+	credential      auth.Credential
+	accessHash      []byte
+	sessionError    error
+	refresh         []byte
+	devices         []device.Device
+	groups          []group.Group
+	sessionDeviceID *string
+	adminVerified   bool
+	fileRecord      filetransfer.FileRecord
+	chunks          map[int]filetransfer.ChunkRecord
+	page            transfer.Page
+	pageOptions     transfer.PageOptions
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -68,7 +62,7 @@ func (store *testStore) SessionByAccessToken(_ context.Context, access []byte, _
 
 func TestAuthenticationStoreFailureReturnsServiceUnavailable(t *testing.T) {
 	store := &testStore{sessionError: errors.New("database unavailable")}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil).Routes()
 	request := httptest.NewRequest(http.MethodGet, "/api/account", nil)
 	request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
 	request.Header.Set("Authorization", "Bearer access-token")
@@ -134,10 +128,6 @@ func (store *testStore) RenameDevice(_ context.Context, _, id, name string) (dev
 }
 
 func (store *testStore) DeleteDevice(context.Context, string, string) error { return nil }
-
-func (store *testStore) ApproveDevice(_ context.Context, _ auth.Session, id string) (device.Device, error) {
-	return device.Device{ID: id, TrustStatus: device.TrustTrusted}, nil
-}
 
 func (store *testStore) RevokeDevice(_ context.Context, _ auth.Session, id string, now time.Time) (device.Device, error) {
 	return device.Device{ID: id, TrustStatus: device.TrustRevoked, RevokedAt: &now}, nil
@@ -301,90 +291,6 @@ func (*testStore) NodeStatistics(context.Context, auth.Session, analytics.TimeRa
 	return []analytics.NodeMetric{}, nil
 }
 
-func (*testStore) BootstrapAdmin(context.Context, string, string, string) error { return nil }
-
-func (*testStore) ListAdminUsers(context.Context, int, int) ([]admin.User, error) {
-	return []admin.User{}, nil
-}
-
-func (*testStore) CreateAdminUser(context.Context, auth.Session, string, string, string, bool) (admin.User, error) {
-	return admin.User{}, nil
-}
-
-func (*testStore) CreateAdminInvitation(context.Context, auth.Session, string, string, bool, []byte, time.Time) (admin.Invitation, error) {
-	return admin.Invitation{}, nil
-}
-
-func (*testStore) AcceptAdminInvitation(context.Context, []byte, string, time.Time) (admin.User, error) {
-	return admin.User{}, nil
-}
-
-func (*testStore) DisableAdminUser(context.Context, auth.Session, string, time.Time) error {
-	return nil
-}
-
-func (*testStore) ResetAdminPassword(context.Context, auth.Session, string, string, time.Time) error {
-	return nil
-}
-
-func (*testStore) ResetAdminPasswordByIdentifier(context.Context, string, string, time.Time) error {
-	return nil
-}
-
-func (*testStore) ListAdminDevices(context.Context, int, int) ([]admin.Device, error) {
-	return []admin.Device{}, nil
-}
-
-func (*testStore) RevokeAdminDevice(context.Context, auth.Session, string, time.Time) error {
-	return nil
-}
-
-func (*testStore) ListAdminGroups(context.Context, int, int) ([]admin.Group, error) {
-	return []admin.Group{}, nil
-}
-
-func (*testStore) DeleteAdminGroup(context.Context, auth.Session, string, time.Time) error {
-	return nil
-}
-
-func (*testStore) AdminNodeSettings(context.Context) (admin.NodeSettings, error) {
-	return admin.NodeSettings{SingleFileLimitBytes: 1024, DefaultUserQuotaBytes: 2048, DefaultGroupQuotaBytes: 4096, NodeCacheLimitBytes: 8192, DefaultUserDailyBytes: 16384, DefaultGroupDailyBytes: 32768, DiskWarningPercent: 80, DiskStopPercent: 95}, nil
-}
-
-func (*testStore) UpdateAdminNodeSettings(_ context.Context, _ auth.Session, settings admin.NodeSettings) (admin.NodeSettings, error) {
-	return settings, nil
-}
-
-func (*testStore) SetAdminQuota(_ context.Context, _ auth.Session, quota admin.Quota) (admin.Quota, error) {
-	return quota, nil
-}
-
-func (*testStore) AdminStorageOverview(context.Context, time.Time) (admin.StorageOverview, error) {
-	return admin.StorageOverview{}, nil
-}
-
-func (*testStore) ListAdminFailures(context.Context, int, int) ([]admin.Failure, error) {
-	return []admin.Failure{}, nil
-}
-
-func (*testStore) ListAdminAuditLogs(context.Context, int, int) ([]admin.AuditLog, error) {
-	return []admin.AuditLog{}, nil
-}
-
-func (store *testStore) ListAdminAuditLogPage(_ context.Context, options admin.PageOptions) (admin.AuditLogPage, error) {
-	store.auditPageOptions = options
-	return store.auditPage, nil
-}
-
-func (store *testStore) ListAdminFailurePage(_ context.Context, options admin.PageOptions) (admin.FailurePage, error) {
-	store.failurePageOptions = options
-	return store.failurePage, nil
-}
-
-func (*testStore) DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error) {
-	return nil, nil
-}
-
 func TestLoginAndReadAccount(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -394,7 +300,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
 		PasswordHash: string(passwordHash),
 	}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil).Routes()
 
 	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
 	loginResponse := httptest.NewRecorder()
@@ -427,7 +333,7 @@ func TestLoginAndReadAccount(t *testing.T) {
 }
 
 func TestAPIVersionHeadersAndNegotiatedError(t *testing.T) {
-	handler := New(nil, nil, nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(nil, nil, nil, nil, nil, nil).Routes()
 	request := httptest.NewRequest(http.MethodGet, "/api/account", nil)
 	request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
 	response := httptest.NewRecorder()
@@ -463,7 +369,7 @@ func TestTransferRequestLogIncludesCorrelationFields(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
 	defer slog.SetDefault(previous)
 
-	handler := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil).Routes()
 	const transferID = "11111111-1111-4111-8111-111111111111"
 	request := httptest.NewRequest(http.MethodGet, "/api/transfers/"+transferID, nil)
 	request.Header.Set("Authorization", "Bearer invalid")
@@ -480,7 +386,7 @@ func TestTransferRequestLogIncludesCorrelationFields(t *testing.T) {
 }
 
 func TestLegacyErrorRemainsCompatible(t *testing.T) {
-	handler := New(nil, nil, nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(nil, nil, nil, nil, nil, nil).Routes()
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/account", nil))
@@ -500,7 +406,7 @@ func TestLoginRateLimitReturnsRetryAfter(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}}
-	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil).Routes()
 	var response *httptest.ResponseRecorder
 	for range 11 {
 		request := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"wrong"}`))
@@ -516,31 +422,6 @@ func TestLoginRateLimitReturnsRetryAfter(t *testing.T) {
 	}
 }
 
-func TestAdminRateLimitUsesSessionIdentity(t *testing.T) {
-	api := New(auth.NewService(&testStore{}, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil)
-	api.adminLimit = newFixedWindowLimiter(1)
-	handler := api.Routes()
-
-	request := func(token string) *httptest.ResponseRecorder {
-		value := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
-		value.Header.Set("Authorization", "Bearer "+token)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, value)
-		return response
-	}
-
-	if response := request("session-a"); response.Code == http.StatusTooManyRequests {
-		t.Fatalf("first session-a request status = %d", response.Code)
-	}
-	if response := request("session-b"); response.Code == http.StatusTooManyRequests {
-		t.Fatalf("first session-b request status = %d", response.Code)
-	}
-	response := request("session-a")
-	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
-		t.Fatalf("second session-a status = %d, Retry-After = %q", response.Code, response.Header().Get("Retry-After"))
-	}
-}
-
 func TestCreateAndListDevice(t *testing.T) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
 	if err != nil {
@@ -551,7 +432,7 @@ func TestCreateAndListDevice(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, device.NewService(store), pairing.NewService(store), nil, nil, nil, nil, nil).Routes()
+	handler := New(authService, device.NewService(store), nil, nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -600,7 +481,7 @@ func TestCreateAndListGroup(t *testing.T) {
 		PasswordHash: string(passwordHash),
 	}}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, group.NewService(store), nil, nil, nil, nil).Routes()
+	handler := New(authService, nil, group.NewService(store), nil, nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -643,7 +524,7 @@ func TestCreateTransfer(t *testing.T) {
 		sessionDeviceID: &senderDeviceID,
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, nil, nil, transfer.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -680,7 +561,7 @@ func TestVersionedTransferCreationRequiresIdempotencyKey(t *testing.T) {
 	senderDeviceID := "sender-device"
 	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}, sessionDeviceID: &senderDeviceID}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, nil, nil, transfer.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -705,7 +586,7 @@ func TestVersionedTransferListUsesPageEnvelope(t *testing.T) {
 	deviceID := "device-1"
 	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}, sessionDeviceID: &deviceID}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, nil, nil, transfer.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -731,7 +612,7 @@ func TestLegacyTransferListRemainsArray(t *testing.T) {
 	deviceID := "device-1"
 	store := &testStore{credential: auth.Credential{User: auth.User{ID: "user-1", Username: "owner"}, PasswordHash: string(passwordHash)}, sessionDeviceID: &deviceID}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, nil, nil, transfer.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -764,7 +645,7 @@ func TestVersionedTransferCursorIsSignedAndTamperProof(t *testing.T) {
 		},
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, transfer.NewService(store), nil, nil, nil).Routes()
+	handler := New(authService, nil, nil, transfer.NewService(store), nil, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -820,7 +701,7 @@ func TestUploadAndDownloadChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(authService, nil, nil, nil, nil, fileService, nil, nil).Routes()
+	handler := New(authService, nil, nil, nil, fileService, nil).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -853,7 +734,7 @@ func TestUploadMetricsAndReadOverview(t *testing.T) {
 		sessionDeviceID: &deviceID,
 	}
 	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, nil, nil, analytics.NewService(store), nil).Routes()
+	handler := New(authService, nil, nil, nil, nil, analytics.NewService(store)).Routes()
 	pair, err := authService.Login(context.Background(), "owner", "password")
 	if err != nil {
 		t.Fatal(err)
@@ -878,152 +759,5 @@ func TestUploadMetricsAndReadOverview(t *testing.T) {
 	handler.ServeHTTP(overviewResponse, overview)
 	if overviewResponse.Code != http.StatusOK {
 		t.Fatalf("overview status = %d, body = %s", overviewResponse.Code, overviewResponse.Body.String())
-	}
-}
-
-func TestAdminAPIRequiresReauthentication(t *testing.T) {
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := &testStore{credential: auth.Credential{
-		User:         auth.User{ID: "admin-1", Username: "admin", Admin: true},
-		PasswordHash: string(passwordHash),
-	}}
-	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := New(authService, nil, nil, nil, nil, nil, nil, admin.NewService(store)).Routes()
-	pair, err := authService.Login(context.Background(), "admin", "password")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unverified := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
-	unverified.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-	unverifiedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(unverifiedResponse, unverified)
-	if unverifiedResponse.Code != http.StatusForbidden {
-		t.Fatalf("unverified admin status = %d, want %d", unverifiedResponse.Code, http.StatusForbidden)
-	}
-	unverifiedAudit := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs", nil)
-	unverifiedAudit.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-	unverifiedAuditResponse := httptest.NewRecorder()
-	handler.ServeHTTP(unverifiedAuditResponse, unverifiedAudit)
-	if unverifiedAuditResponse.Code != http.StatusForbidden {
-		t.Fatalf("unverified audit status = %d, want %d", unverifiedAuditResponse.Code, http.StatusForbidden)
-	}
-	store.adminVerified = true
-
-	request := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
-	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("admin settings status = %d, body = %s", response.Code, response.Body.String())
-	}
-	for _, endpoint := range []struct {
-		method string
-		path   string
-		status int
-	}{
-		{http.MethodGet, "/api/admin/devices", http.StatusOK},
-		{http.MethodPost, "/api/admin/devices/11111111-1111-1111-1111-111111111111/revoke", http.StatusNoContent},
-		{http.MethodGet, "/api/admin/groups", http.StatusOK},
-		{http.MethodDelete, "/api/admin/groups/22222222-2222-2222-2222-222222222222", http.StatusNoContent},
-	} {
-		request := httptest.NewRequest(endpoint.method, endpoint.path, nil)
-		request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != endpoint.status {
-			t.Fatalf("%s %s status = %d, body = %s", endpoint.method, endpoint.path, response.Code, response.Body.String())
-		}
-	}
-	invitePayload, err := json.Marshal(map[string]any{"username": "invitee", "email": "invitee@example.com", "admin": false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inviteRequest := httptest.NewRequest(http.MethodPost, "/api/admin/invitations", bytes.NewReader(invitePayload))
-	inviteRequest.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-	inviteResponse := httptest.NewRecorder()
-	handler.ServeHTTP(inviteResponse, inviteRequest)
-	if inviteResponse.Code != http.StatusCreated {
-		t.Fatalf("create invitation status = %d, body = %s", inviteResponse.Code, inviteResponse.Body.String())
-	}
-	var invitation admin.Invitation
-	if err := json.Unmarshal(inviteResponse.Body.Bytes(), &invitation); err != nil || invitation.Token == "" {
-		t.Fatalf("invitation response = %+v, %v", invitation, err)
-	}
-	acceptPayload, err := json.Marshal(map[string]any{"token": invitation.Token, "password": "invited-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	acceptResponse := httptest.NewRecorder()
-	handler.ServeHTTP(acceptResponse, httptest.NewRequest(http.MethodPost, "/api/auth/invitations/accept", bytes.NewReader(acceptPayload)))
-	if acceptResponse.Code != http.StatusCreated {
-		t.Fatalf("accept invitation status = %d, body = %s", acceptResponse.Code, acceptResponse.Body.String())
-	}
-}
-
-func TestVersionedAdminHistoryUsesSignedCursor(t *testing.T) {
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	createdAt := time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC)
-	auditID := "11111111-1111-4111-8111-111111111111"
-	failureID := "22222222-2222-4222-8222-222222222222"
-	store := &testStore{
-		credential:    auth.Credential{User: auth.User{ID: "33333333-3333-4333-8333-333333333333", Username: "admin", Admin: true}, PasswordHash: string(passwordHash)},
-		adminVerified: true,
-		auditPage:     admin.AuditLogPage{Items: []admin.AuditLog{{ID: auditID, CreatedAt: createdAt}}, NextPageKey: admin.PageKey{ID: auditID, CreatedAt: createdAt}},
-		failurePage:   admin.FailurePage{Items: []admin.Failure{{TransferID: failureID, CreatedAt: createdAt}}, NextPageKey: admin.PageKey{ID: failureID, CreatedAt: createdAt}},
-	}
-	authService := auth.NewService(store, time.Minute, time.Hour)
-	handler := NewWithCursorKey([]byte("admin-history-test-cursor-secret-32-bytes"), authService, nil, nil, nil, nil, nil, nil, admin.NewService(store)).Routes()
-	pair, err := authService.Login(context.Background(), "admin", "password")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, test := range []struct {
-		path    string
-		options *admin.PageOptions
-	}{
-		{"/api/admin/audit-logs?limit=1&from=2026-07-01T00:00:00Z&to=2026-07-31T00:00:00Z", &store.auditPageOptions},
-		{"/api/admin/failures?limit=1&status=FAILED", &store.failurePageOptions},
-	} {
-		request := httptest.NewRequest(http.MethodGet, test.path, nil)
-		request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-		request.Header.Set("Accept", versionMediaType)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusOK {
-			t.Fatalf("%s status = %d, body = %s", test.path, response.Code, response.Body.String())
-		}
-		var page struct {
-			NextCursor string `json:"nextCursor"`
-		}
-		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil || page.NextCursor == "" {
-			t.Fatalf("%s page = %+v, %v", test.path, page, err)
-		}
-		if test.options.Limit != 1 {
-			t.Fatalf("%s options = %+v", test.path, *test.options)
-		}
-		tampered := httptest.NewRequest(http.MethodGet, strings.Split(test.path, "?")[0]+"?cursor="+url.QueryEscape(page.NextCursor+"x"), nil)
-		tampered.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-		tampered.Header.Set("Accept", versionMediaType)
-		tamperedResponse := httptest.NewRecorder()
-		handler.ServeHTTP(tamperedResponse, tampered)
-		if tamperedResponse.Code != http.StatusBadRequest {
-			t.Fatalf("tampered %s status = %d, body = %s", test.path, tamperedResponse.Code, tamperedResponse.Body.String())
-		}
-	}
-
-	legacy := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?limit=1&offset=0", nil)
-	legacy.Header.Set("Authorization", "Bearer "+pair.AccessToken)
-	legacyResponse := httptest.NewRecorder()
-	handler.ServeHTTP(legacyResponse, legacy)
-	var legacyItems []admin.AuditLog
-	if legacyResponse.Code != http.StatusOK || json.Unmarshal(legacyResponse.Body.Bytes(), &legacyItems) != nil {
-		t.Fatalf("legacy status = %d, body = %s", legacyResponse.Code, legacyResponse.Body.String())
 	}
 }
