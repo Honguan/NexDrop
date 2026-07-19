@@ -25,30 +25,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Capture runtime version diagnostics
+      - name: Apply verified runtime version fix
         shell: bash
         run: |
-          if test -f main-version-fix.log; then
-            cat main-version-fix.log
-            exit 0
-          fi
-          set +e
-          {
-            set -x
-            python3 scripts/apply-main-version-link-fix.py
-            gofmt -w cmd/nexdrop/main.go
-            version=$(tr -d '\r\n' < VERSION)
-            go build -trimpath -ldflags "-X main.version=${version} -X nexdrop/internal/version.ProductVersion=${version} -X nexdrop/internal/version.BuildCommit=${GITHUB_SHA}" -o /tmp/nexdrop-version-test ./cmd/nexdrop
-            actual=$(/tmp/nexdrop-version-test version)
-            printf 'EXPECTED=%s\nACTUAL=%s\n' "$version" "$actual"
-            test "$actual" = "$version"
-            go test ./...
-          } >main-version-fix.log 2>&1
-          status=$?
-          cat main-version-fix.log
+          python3 scripts/apply-main-version-link-fix.py
+          gofmt -w cmd/nexdrop/main.go
+          version=$(tr -d '\r\n' < VERSION)
+          go build -trimpath -ldflags "-X main.version=${version} -X nexdrop/internal/version.ProductVersion=${version} -X nexdrop/internal/version.BuildCommit=${GITHUB_SHA}" -o /tmp/nexdrop-version-test ./cmd/nexdrop
+          test "$(/tmp/nexdrop-version-test version)" = "$version"
+          go test ./...
+          git fetch origin master
+          git checkout origin/master -- .github/workflows/docs.yml
+          rm -f scripts/apply-main-version-link-fix.py main-version-fix.log /tmp/nexdrop-version-test
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add main-version-fix.log
-          git commit -m 'chore: capture runtime version diagnostics'
+          git add -A
+          git commit -m 'fix: make node runtime version linkable'
           git push origin HEAD:release/v2.0.1
-          exit 0
