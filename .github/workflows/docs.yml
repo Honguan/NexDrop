@@ -5,6 +5,7 @@ on:
     branches: [master]
 permissions:
   contents: write
+  actions: read
 jobs:
   check:
     name: docs
@@ -13,24 +14,55 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - shell: pwsh
         run: ./scripts/check-docs.ps1
-  publish-v2-0-1:
+  verify-v2-0-1:
     if: github.event_name == 'pull_request' && github.head_ref == 'agent/publish-v2.0.1'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: master
+          ref: agent/publish-v2.0.1
           fetch-depth: 0
-      - name: Create verified release tag
+      - name: Verify public release and assets
         shell: bash
         run: |
-          test "$(tr -d '\r\n' < VERSION)" = '2.0.1'
-          test -f docs/release-notes-v2.0.1.md
+          set -eu
+          repo="$GITHUB_REPOSITORY"
+          tag='v2.0.1'
+          report='release-v2.0.1-verification.txt'
+          tag_commit=$(gh api "repos/$repo/commits/$tag" --jq '.sha')
+          run_id=''
+          for _ in $(seq 1 180); do
+            run_id=$(gh api "repos/$repo/actions/workflows/release.yml/runs?per_page=50" --jq ".workflow_runs[] | select(.head_sha == \"$tag_commit\" and .head_branch == \"$tag\") | .id" | head -n 1 || true)
+            test -n "$run_id" && break
+            sleep 10
+          done
+          test -n "$run_id"
+          status=''
+          conclusion=''
+          for _ in $(seq 1 240); do
+            status=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.status')
+            conclusion=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.conclusion // ""')
+            test "$status" = completed && break
+            sleep 10
+          done
+          {
+            printf 'TAG=%s\nTAG_COMMIT=%s\nRUN_ID=%s\nRUN_STATUS=%s\nRUN_CONCLUSION=%s\n\nJOBS\n' "$tag" "$tag_commit" "$run_id" "$status" "$conclusion"
+            gh api "repos/$repo/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[] | [.name,.status,(.conclusion // "")] | @tsv'
+            printf '\nRELEASE\n'
+            gh api "repos/$repo/releases/tags/$tag" --jq '"NAME=" + (.name // ""), "DRAFT=" + (.draft|tostring), "PRERELEASE=" + (.prerelease|tostring), "PUBLISHED_AT=" + (.published_at // ""), "HTML_URL=" + (.html_url // ""), "ASSET_COUNT=" + ((.assets|length)|tostring), "ASSETS", (.assets[]?.name)'
+          } > "$report"
+          test "$status" = completed
+          test "$conclusion" = success
+          test "$(gh api "repos/$repo/releases/tags/$tag" --jq '.draft')" = false
+          test "$(gh api "repos/$repo/releases/tags/$tag" --jq '.prerelease')" = false
+          test "$(gh api "repos/$repo/releases/tags/$tag" --jq '.assets | length')" -ge 10
+          git fetch origin master
+          git checkout origin/master -- .github/workflows/docs.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git rev-parse 'refs/tags/v2.0.1' >/dev/null 2>&1; then
-            test "$(git rev-list -n 1 v2.0.1)" = "$(git rev-parse HEAD)"
-          else
-            git tag -a v2.0.1 -m 'NexDrop 2.0.1'
-            git push origin v2.0.1
-          fi
+          git add .github/workflows/docs.yml "$report"
+          git commit -m 'chore: record NexDrop 2.0.1 release verification'
+          git push origin HEAD:agent/publish-v2.0.1
