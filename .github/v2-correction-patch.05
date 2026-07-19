@@ -1,0 +1,160 @@
+   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
+   const content = loading ? <PanelLoader /> : (() => {
+     switch (view) {
+-      case "send": return <SendView user={user} devices={devices} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
+-      case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
+-      case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
++      case "chat": return <ChatView user={user} devices={devices} transfers={transfers} initialShare={sharedContent} onTransferCreated={(transfer) => setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)])} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} reload={reload} notify={setNotice} />;
++      case "devices": return <DevicesView devices={devices} />;
+       case "analytics": return <AnalyticsView user={user} />;
+       case "admin": return <AdminView user={user} notify={setNotice} />;
+     }
+@@ -293,7 +312,17 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+   );
+ }
+ 
+-function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
++function ChatView({ user, devices, transfers, initialShare, onTransferCreated, onSent, reload, notify }: { user: User; devices: Device[]; transfers: Transfer[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; reload: () => Promise<void>; notify: (value: string) => void }) {
++  return <section className="page chat-page">
++    <PageHeading eyebrow="NODE CHAT" title="節點聊天室" description="預設傳給節點所有設備；取消勾選後，只有指定設備能看到這筆對話。" />
++    <div className="chat-shell">
++      <SendView user={user} devices={devices} initialShare={initialShare} onTransferCreated={onTransferCreated} onSent={onSent} notify={notify} embedded />
++      <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} embedded />
++    </div>
++  </section>;
++}
++
++function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify, embedded = false }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void; embedded?: boolean }) {
+   const [selection, setSelection] = useState<string[] | null>(null);
+   const [content, setContent] = useState(initialShare.content);
+   const [files, setFiles] = useState<File[]>([]);
+@@ -361,10 +390,8 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
+   }
+ 
+   return (
+-    <section className="page send-page">
+-      <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />
+-      <div className="send-grid">
+-        <form className="composer card" onSubmit={send}>
++    <div className={embedded ? "chat-composer" : "page send-page"}>{!embedded && <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />}<div className="send-grid">
++        <form className="composer card" onSubmit={send} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const dropped = Array.from(event.dataTransfer.files); if (dropped.length) { setFiles(dropped); setContent(""); } }}>
+           <div className="card-title"><span className="step">01</span><div><h3>輸入內容或選擇檔案</h3><p>內容會在瀏覽器內先加密</p></div></div>
+           <textarea value={content} onChange={(event) => { setContent(event.target.value); if (event.target.value) setFiles([]); }} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
+           {!files.length && <label className="check"><input type="checkbox" checked={notification} onChange={(event) => setNotification(event.target.checked)} /> 一般通知訊息</label>}
+@@ -378,7 +405,7 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
+                 <DeviceGlyph type={item.type} /><span><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></span><i>{selected.includes(item.id) ? "✓" : "+"}</i>
+               </button>
+             ))}
+-            {!trusted.length && <Empty text="請前往「設備」查看此設備自動產生的配對碼" />}
++            {!trusted.length && <Empty text="尚無其他已加入節點的設備" />}
+           </div>
+           <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || selected.length === 0}>{busy ? "正在加密與上傳…" : <>傳送給 {selected.length} 台設備 <span>↗</span></>}</button>
+         </form>
+@@ -393,11 +420,11 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
+           <div className="privacy-note"><span>◆</span><p><strong>內容不會以明文離開瀏覽器</strong><small>每個目的設備都有獨立包裝的內容金鑰。</small></p></div>
+         </aside>
+       </div>
+-    </section>
++    </div>
+   );
+ }
+ 
+-function ActivityView({ user, devices, transfers, reload }: { user: User; devices: Device[]; transfers: Transfer[]; reload: () => Promise<void> }) {
++function ActivityView({ user, devices, transfers, reload, embedded = false }: { user: User; devices: Device[]; transfers: Transfer[]; reload: () => Promise<void>; embedded?: boolean }) {
+   const [decrypted, setDecrypted] = useState<Record<string, string>>({});
+   const [downloading, setDownloading] = useState("");
+   const names = useMemo(() => Object.fromEntries(devices.map((item) => [item.id, item.displayName])), [devices]);
+@@ -464,9 +491,7 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
+   }
+ 
+   return (
+-    <section className="page">
+-      <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />
+-      <div className="table-card card">
++    <div className={embedded ? "chat-history" : "page"}>{!embedded && <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />}<div className="table-card card">
+         <div className="table-head"><span>內容</span><span>目的地</span><span>路徑</span><span>狀態</span><span>時間</span></div>
+         {transfers.map((item) => (
+           <article className="table-row" key={item.id}>
+@@ -479,95 +504,18 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
+         ))}
+         {!transfers.length && <Empty text="還沒有傳輸紀錄" />}
+       </div>
+-    </section>
++    </div>
+   );
+ }
+ 
+-function DevicesView({ user, devices, reload, notify }: { user: User; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
+-  const [busy, setBusy] = useState(false);
+-  const [pairing, setPairing] = useState<{ id: string; code: string; qrPayload: string; expiresAt: string } | null>(null);
+-  const [pairingInput, setPairingInput] = useState({ challengeId: "", code: "", payload: "" });
+-  const pairingRequested = useRef(false);
+-  const localDevice = devices.find((item) => item.id === deviceID(user.id));
+-  const registered = Boolean(localDevice && localDevice.trustStatus !== "REVOKED");
+-
+-  async function register() {
+-    setBusy(true);
+-    try {
+-      const keys = await ensureDeviceKey(user.id);
+-      const created = await api.send<Device>("/api/devices", "POST", {
+-        displayName: browserName(), type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
+-        publicKey: keys.publicKey, keyAlgorithm: "X25519",
+-      });
+-      rememberDevice(user.id, created.id);
+-      await reload();
+-      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已成為第一台信任設備" : "此瀏覽器已產生配對碼");
+-    } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
+-  }
+-
+-  const createPairing = useCallback(async () => {
+-    if (!localDevice || localDevice.trustStatus !== "PENDING") return;
+-    setBusy(true);
+-    try {
+-      setPairing(await api.send<{ id: string; code: string; qrPayload: string; expiresAt: string }>(`/api/devices/${localDevice.id}/pairing-code`, "POST"));
+-    } catch (reason) {
+-      pairingRequested.current = false;
+-      notify(messageFor(reason));
+-    } finally {
+-      setBusy(false);
+-    }
+-  }, [localDevice?.id, localDevice?.trustStatus, notify]);
+-
+-  useEffect(() => {
+-    if (!localDevice || localDevice.trustStatus !== "PENDING" || pairingRequested.current) return;
+-    pairingRequested.current = true;
+-    void createPairing();
+-  }, [createPairing, localDevice]);
+-
+-  function readPairingPayload(value: string) {
+-    setPairingInput((current) => ({ ...current, payload: value }));
+-    const parsed = new URL(value.trim());
+-    if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
+-    setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });
+-  }
+-
+-  async function pair(event: FormEvent) {
+-    event.preventDefault();
+-    if (!localDevice || localDevice.trustStatus !== "TRUSTED") return;
+-    setBusy(true);
+-    try {
+-      await api.send(`/api/devices/${localDevice.id}/pair`, "POST", {
+-        challengeId: pairingInput.challengeId.trim(),
+-        code: pairingInput.code.trim(),
+-      });
+-      setPairingInput({ challengeId: "", code: "", payload: "" });
+-      await reload();
+-      notify("新設備已完成配對");
+-    } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
+-  }
+-
+-  async function revoke(id: string) {
+-    try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); }
+-  }
+-
+-  return (
+-    <section className="page">
+-      <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="待核准設備會自動產生配對碼，再由任一已信任設備完成核准。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
+-      {localDevice?.trustStatus === "PENDING" && <div className="card settings-form">
+-        <div className="list-title"><div><p className="eyebrow">PAIR THIS DEVICE</p><h3>此設備配對碼</h3></div><button className="secondary" disabled={busy} onClick={() => { pairingRequested.current = true; void createPairing(); }}>重新產生</button></div>
+-        {pairing ? <><label>6 位數配對碼<input readOnly value={pairing.code} onFocus={(event) => event.currentTarget.select()} /></label><label>挑戰 ID<input readOnly value={pairing.id} onFocus={(event) => event.currentTarget.select()} /></label><label>完整配對資料<input readOnly value={pairing.qrPayload} onFocus={(event) => event.currentTarget.select()} /></label><small>請在 10 分鐘內，於另一台已信任設備的「核准新設備」輸入以上資料。</small></> : <PanelLoader />}
+-      </div>}
