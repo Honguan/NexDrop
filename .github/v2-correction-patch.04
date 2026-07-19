@@ -1,0 +1,230 @@
++		       COALESCE(c.disconnected_at IS NULL AND c.last_seen_at >= now() - interval '45 seconds', false),
++		       c.last_seen_at, d.created_at
+ 		FROM devices d JOIN users u ON u.id = d.user_id
++		LEFT JOIN LATERAL (
++			SELECT last_seen_at, disconnected_at FROM device_connections
++			WHERE device_id=d.id ORDER BY connected_at DESC LIMIT 1
++		) c ON true
++		WHERE d.deleted_at IS NULL
+ 		ORDER BY d.created_at DESC LIMIT $1 OFFSET $2
+ 	`, limit, offset)
+ 	if err != nil {
+@@ -217,7 +249,7 @@ func (store *Store) ListAdminDevices(ctx context.Context, limit, offset int) ([]
+ 	result := make([]admin.Device, 0)
+ 	for rows.Next() {
+ 		var item admin.Device
+-		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.OwnerUsername, &item.DisplayName, &item.Type, &item.TrustStatus, &item.CreatedAt); err != nil {
++		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.OwnerUsername, &item.DisplayName, &item.Type, &item.TrustStatus, &item.Online, &item.LastSeenAt, &item.CreatedAt); err != nil {
+ 			return nil, err
+ 		}
+ 		result = append(result, item)
+@@ -247,6 +279,36 @@ func (store *Store) RevokeAdminDevice(ctx context.Context, actor auth.Session, d
+ 	return tx.Commit(ctx)
+ }
+ 
++func (store *Store) DeleteAdminDevice(ctx context.Context, actor auth.Session, deviceID string, now time.Time) error {
++	tx, err := store.pool.Begin(ctx)
++	if err != nil {
++		return err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++	command, err := tx.Exec(ctx, `
++		UPDATE devices d
++		SET deleted_at=$2, trust_status='REVOKED', revoked_at=COALESCE(revoked_at, $2)
++		WHERE d.id=$1 AND d.deleted_at IS NULL AND NOT EXISTS (
++			SELECT 1 FROM device_connections c
++			WHERE c.device_id=d.id AND c.disconnected_at IS NULL
++			  AND c.last_seen_at >= $2 - interval '45 seconds'
++		)
++	`, deviceID, now)
++	if err != nil {
++		return mapAdminError(err)
++	}
++	if command.RowsAffected() == 0 {
++		return admin.ErrConflict
++	}
++	if _, err := tx.Exec(ctx, `UPDATE user_sessions SET revoked_at=$2 WHERE device_id=$1 AND revoked_at IS NULL`, deviceID, now); err != nil {
++		return err
++	}
++	if err := insertAudit(ctx, tx, actor, "DEVICE_DELETED", "DEVICE", deviceID); err != nil {
++		return err
++	}
++	return tx.Commit(ctx)
++}
++
+ func (store *Store) ListAdminGroups(ctx context.Context, limit, offset int) ([]admin.Group, error) {
+ 	rows, err := store.pool.Query(ctx, `
+ 		SELECT g.id::text, g.name, g.owner_user_id::text, u.username,
+diff --git a/internal/postgres/store.go b/internal/postgres/store.go
+index a233924..e2ab9a3 100644
+--- a/internal/postgres/store.go
++++ b/internal/postgres/store.go
+@@ -213,18 +213,8 @@ func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name
+ 
+ 	var result device.Device
+ 	err = tx.QueryRow(ctx, `
+-		WITH locked_user AS (
+-			SELECT id FROM users WHERE id = $1 FOR UPDATE
+-		)
+ 		INSERT INTO devices (user_id, display_name, device_type, trust_status)
+-		SELECT locked_user.id, $2, $3,
+-		       CASE WHEN EXISTS (
+-		           SELECT 1 FROM devices existing
+-		           WHERE existing.user_id = locked_user.id
+-		             AND existing.trust_status = 'TRUSTED'
+-		             AND existing.revoked_at IS NULL
+-		       ) THEN 'PENDING' ELSE 'TRUSTED' END
+-		FROM locked_user
++		VALUES ($1, $2, $3, 'TRUSTED')
+ 		RETURNING id::text, display_name, device_type, trust_status, revoked_at, created_at
+ 	`, session.ID, name, deviceType).Scan(
+ 		&result.ID, &result.DisplayName, &result.Type, &result.TrustStatus, &result.RevokedAt, &result.CreatedAt,
+diff --git a/scripts/build-node-release.ps1 b/scripts/build-node-release.ps1
+index 3f7e124..ca91037 100644
+--- a/scripts/build-node-release.ps1
++++ b/scripts/build-node-release.ps1
+@@ -1,5 +1,5 @@
+ param(
+-	[string]$Version = '1.0.5',
++	[string]$Version = '2.0.0',
+ 	[string]$Commit = 'development',
+ 	[string]$OutputDirectory = 'dist'
+ )
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+index b88d0f7..a5bad32 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -21,7 +21,7 @@ import {
+ import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
+ import { rateLimitMessage } from "./errors";
+ 
+-type View = "send" | "activity" | "devices" | "analytics" | "admin";
++type View = "chat" | "devices" | "analytics" | "admin";
+ type SharedContent = { content: string; groupId: string };
+ const pausedTransfers = new Set<string>();
+ const cancelledTransfers = new Set<string>();
+@@ -32,8 +32,7 @@ async function waitWhilePaused(transferId: string) {
+ }
+ 
+ const navItems: Array<{ id: View; label: string; glyph: string }> = [
+-  { id: "send", label: "傳送", glyph: "↗" },
+-  { id: "activity", label: "傳輸紀錄", glyph: "◷" },
++  { id: "chat", label: "聊天室", glyph: "◈" },
+   { id: "devices", label: "設備", glyph: "▣" },
+   { id: "analytics", label: "統計", glyph: "▥" },
+ ];
+@@ -69,7 +68,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
+   const [identifier, setIdentifier] = useState("");
+   const [password, setPassword] = useState("");
+   const [totp, setTotp] = useState("");
+-  const [needsTOTP, setNeedsTOTP] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState("");
+   const [invitationToken, setInvitationToken] = useState(() => new URLSearchParams(location.search).get("invite") ?? "");
+@@ -105,9 +103,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
+       await api.login(identifier, password, totp);
+       onLogin(await api.get<User>("/api/account"));
+     } catch (reason) {
+-      if (reason instanceof APIError && reason.code === "TOTP_REQUIRED") {
+-        setNeedsTOTP(true);
+-      }
+       setError(messageFor(reason));
+     } finally {
+       setBusy(false);
+@@ -159,10 +154,10 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
+             密碼
+             <input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 12 個字元" required />
+           </label>
+-          {needsTOTP && <label>
+-            六位數驗證碼
+-            <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={totp} onChange={(event) => setTotp(event.target.value)} required />
+-          </label>}
++          <label>
++            六位數 OTP
++            <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={totp} onChange={(event) => setTotp(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="安裝時輸出的 6 位數" required />
++          </label>
+           {error && <p className="form-error" role="alert">{error}</p>}
+           {invitationAccepted && <p className="muted" role="status">邀請已接受，請使用新密碼登入。</p>}
+           <button className="primary large" disabled={busy}>{busy ? "正在連線…" : "安全登入"}</button>
+@@ -174,31 +169,48 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
+ }
+ 
+ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+-  const [view, setView] = useState<View>("send");
++  const [view, setView] = useState<View>("chat");
+   const [devices, setDevices] = useState<Device[]>([]);
+   const [transfers, setTransfers] = useState<Transfer[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [notice, setNotice] = useState("");
+   const [online, setOnline] = useState(false);
+   const [sharedContent, setSharedContent] = useState(readSharedContent);
++  const knownDevices = useRef<Set<string> | null>(null);
+ 
+   const reload = useCallback(async () => {
+-	const [nextDevices, transferPage] = await Promise.all([
++    const [nextDevices, transferPage] = await Promise.all([
+       api.get<Device[]>("/api/devices"),
+-	  api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
++      api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
+     ]);
++    if (knownDevices.current) {
++      for (const joined of nextDevices.filter((item) => !knownDevices.current!.has(item.id))) {
++        setNotice(`${joined.displayName} 已加入節點`);
++      }
++    }
++    knownDevices.current = new Set(nextDevices.map((item) => item.id));
+     setDevices(nextDevices);
+-	setTransfers(transferPage.items);
++    setTransfers(transferPage.items);
+   }, []);
+ 
+   useEffect(() => {
+     const synchronize = async () => {
+-      const storedDeviceID = deviceID(user.id);
+-      if (storedDeviceID) {
+-        const challenge = await api.send<{ id: string; sessionId: string; ephemeralPublicKey: string; nonce: string }>(`/api/devices/${storedDeviceID}/session-challenge`, "POST");
+-        const proof = await proveDeviceSession(user.id, challenge.ephemeralPublicKey, challenge.nonce, challenge.sessionId);
+-        await api.send(`/api/devices/${storedDeviceID}/attach-session`, "POST", { challengeId: challenge.id, proof });
++      let localDeviceID = deviceID(user.id);
++      const keys = await ensureDeviceKey(user.id);
++      const available = await api.get<Device[]>("/api/devices");
++      if (!localDeviceID || !available.some((item) => item.id === localDeviceID && item.trustStatus === "TRUSTED")) {
++        const created = await api.send<Device>("/api/devices", "POST", {
++          displayName: browserName(),
++          type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
++          publicKey: keys.publicKey,
++          keyAlgorithm: "X25519",
++        });
++        localDeviceID = created.id;
++        rememberDevice(user.id, created.id);
+       }
++      const challenge = await api.send<{ id: string; sessionId: string; ephemeralPublicKey: string; nonce: string }>(`/api/devices/${localDeviceID}/session-challenge`, "POST");
++      const proof = await proveDeviceSession(user.id, challenge.ephemeralPublicKey, challenge.nonce, challenge.sessionId);
++      await api.send(`/api/devices/${localDeviceID}/attach-session`, "POST", { challengeId: challenge.id, proof });
+       await reload();
+     };
+     synchronize().catch((reason) => setNotice(messageFor(reason))).finally(() => setLoading(false));
+@@ -222,13 +234,21 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+       socket = new WebSocket(url, "nexdrop.v1");
+       socket.onopen = () => setOnline(true);
+       socket.onmessage = (event) => {
+-        const message = JSON.parse(event.data as string) as { type: string; notificationId?: string; notification?: { id: string } };
++        const message = JSON.parse(event.data as string) as { type: string; notificationId?: string; notification?: { id: string; type?: string; payload?: Record<string, unknown> } };
+         if (message.type === "connected") {
+           reload().catch(() => undefined);
+           heartbeat = window.setInterval(() => socket?.send(JSON.stringify({ type: "heartbeat" })), 5000);
+         }
+         if (message.type === "heartbeat_ack") reload().catch(() => undefined);
+         if (message.type === "notification" && message.notification) {
++          const joined = message.notification.type === "DEVICE_JOINED";
++          const title = joined ? "新設備加入 NexDrop" : "NexDrop 收到新訊息";
++          const body = joined ? String(message.notification.payload?.displayName ?? "新設備已加入") : "開啟節點聊天室查看內容。";
++          setNotice(`${title}：${body}`);
++          if ("Notification" in window) {
++            if (Notification.permission === "default") void Notification.requestPermission();
++            if (Notification.permission === "granted") new Notification(title, { body });
++          }
+           socket?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
+           reload().catch(() => undefined);
+         }
+@@ -256,9 +276,8 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
