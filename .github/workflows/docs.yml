@@ -4,7 +4,8 @@ on:
   push:
     branches: [master]
 permissions:
-  contents: read
+  contents: write
+  actions: read
 jobs:
   check:
     name: docs
@@ -13,3 +14,60 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - shell: pwsh
         run: ./scripts/check-docs.ps1
+  verify-release-v2:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/verify-release-v2.0.0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/verify-release-v2.0.0
+          fetch-depth: 0
+      - name: Wait for release and record authoritative result
+        shell: bash
+        run: |
+          set -u
+          repo="$GITHUB_REPOSITORY"
+          tag='v2.0.0'
+          report='release-v2-verification.txt'
+          : > "$report"
+          printf 'TAG=%s\n' "$tag" >> "$report"
+          tag_commit=$(gh api "repos/$repo/commits/$tag" --jq '.sha' 2>/dev/null || true)
+          printf 'TAG_COMMIT=%s\n' "$tag_commit" >> "$report"
+          run_id=''
+          for _ in $(seq 1 180); do
+            run_id=$(gh api "repos/$repo/actions/workflows/release.yml/runs?event=push&per_page=50" --jq ".workflow_runs[] | select(.head_sha == \"$tag_commit\") | .id" 2>/dev/null | head -n 1 || true)
+            if test -n "$run_id"; then break; fi
+            sleep 10
+          done
+          printf 'RUN_ID=%s\n' "$run_id" >> "$report"
+          status='not_found'
+          conclusion='not_found'
+          if test -n "$run_id"; then
+            for _ in $(seq 1 240); do
+              status=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.status' 2>/dev/null || echo api_error)
+              conclusion=$(gh api "repos/$repo/actions/runs/$run_id" --jq '.conclusion // ""' 2>/dev/null || echo api_error)
+              if test "$status" = completed; then break; fi
+              sleep 10
+            done
+          fi
+          printf 'RUN_STATUS=%s\nRUN_CONCLUSION=%s\n' "$status" "$conclusion" >> "$report"
+          if test -n "$run_id"; then
+            printf '\nJOBS\n' >> "$report"
+            gh api "repos/$repo/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[] | [.name,.status,(.conclusion // "")] | @tsv' >> "$report" 2>/dev/null || printf 'jobs_api_error\n' >> "$report"
+          fi
+          printf '\nRELEASE\n' >> "$report"
+          if release_json=$(gh api "repos/$repo/releases/tags/$tag" 2>/dev/null); then
+            printf '%s\n' "$release_json" | jq -r '"NAME=" + (.name // ""), "DRAFT=" + (.draft|tostring), "PRERELEASE=" + (.prerelease|tostring), "PUBLISHED_AT=" + (.published_at // ""), "HTML_URL=" + (.html_url // ""), "ASSET_COUNT=" + ((.assets|length)|tostring), "ASSETS", (.assets[]?.name)' >> "$report"
+          else
+            printf 'NOT_PUBLISHED\n' >> "$report"
+          fi
+          git fetch origin master
+          git checkout origin/master -- .github/workflows/docs.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/docs.yml "$report"
+          git commit -m 'chore: record NexDrop 2.0 release verification'
+          git push origin HEAD:agent/verify-release-v2.0.0
