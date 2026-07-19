@@ -21,7 +21,7 @@ import {
 import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 import { rateLimitMessage } from "./errors";
 
-type View = "send" | "activity" | "devices" | "analytics" | "admin";
+type View = "chat" | "devices" | "analytics" | "admin";
 type SharedContent = { content: string; groupId: string };
 const pausedTransfers = new Set<string>();
 const cancelledTransfers = new Set<string>();
@@ -32,8 +32,7 @@ async function waitWhilePaused(transferId: string) {
 }
 
 const navItems: Array<{ id: View; label: string; glyph: string }> = [
-  { id: "send", label: "傳送", glyph: "↗" },
-  { id: "activity", label: "傳輸紀錄", glyph: "◷" },
+  { id: "chat", label: "聊天室", glyph: "◈" },
   { id: "devices", label: "設備", glyph: "▣" },
   { id: "analytics", label: "統計", glyph: "▥" },
 ];
@@ -69,7 +68,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
-  const [needsTOTP, setNeedsTOTP] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [invitationToken, setInvitationToken] = useState(() => new URLSearchParams(location.search).get("invite") ?? "");
@@ -105,9 +103,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
       await api.login(identifier, password, totp);
       onLogin(await api.get<User>("/api/account"));
     } catch (reason) {
-      if (reason instanceof APIError && reason.code === "TOTP_REQUIRED") {
-        setNeedsTOTP(true);
-      }
       setError(messageFor(reason));
     } finally {
       setBusy(false);
@@ -159,10 +154,10 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
             密碼
             <input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 12 個字元" required />
           </label>
-          {needsTOTP && <label>
-            六位數驗證碼
-            <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={totp} onChange={(event) => setTotp(event.target.value)} required />
-          </label>}
+          <label>
+            六位數 OTP
+            <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={totp} onChange={(event) => setTotp(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="安裝時輸出的 6 位數" required />
+          </label>
           {error && <p className="form-error" role="alert">{error}</p>}
           {invitationAccepted && <p className="muted" role="status">邀請已接受，請使用新密碼登入。</p>}
           <button className="primary large" disabled={busy}>{busy ? "正在連線…" : "安全登入"}</button>
@@ -174,31 +169,48 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
 }
 
 function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [view, setView] = useState<View>("send");
+  const [view, setView] = useState<View>("chat");
   const [devices, setDevices] = useState<Device[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(false);
   const [sharedContent, setSharedContent] = useState(readSharedContent);
+  const knownDevices = useRef<Set<string> | null>(null);
 
   const reload = useCallback(async () => {
-	const [nextDevices, transferPage] = await Promise.all([
+    const [nextDevices, transferPage] = await Promise.all([
       api.get<Device[]>("/api/devices"),
-	  api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
+      api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
     ]);
+    if (knownDevices.current) {
+      for (const joined of nextDevices.filter((item) => !knownDevices.current!.has(item.id))) {
+        setNotice(`${joined.displayName} 已加入節點`);
+      }
+    }
+    knownDevices.current = new Set(nextDevices.map((item) => item.id));
     setDevices(nextDevices);
-	setTransfers(transferPage.items);
+    setTransfers(transferPage.items);
   }, []);
 
   useEffect(() => {
     const synchronize = async () => {
-      const storedDeviceID = deviceID(user.id);
-      if (storedDeviceID) {
-        const challenge = await api.send<{ id: string; sessionId: string; ephemeralPublicKey: string; nonce: string }>(`/api/devices/${storedDeviceID}/session-challenge`, "POST");
-        const proof = await proveDeviceSession(user.id, challenge.ephemeralPublicKey, challenge.nonce, challenge.sessionId);
-        await api.send(`/api/devices/${storedDeviceID}/attach-session`, "POST", { challengeId: challenge.id, proof });
+      let localDeviceID = deviceID(user.id);
+      const keys = await ensureDeviceKey(user.id);
+      const available = await api.get<Device[]>("/api/devices");
+      if (!localDeviceID || !available.some((item) => item.id === localDeviceID && item.trustStatus === "TRUSTED")) {
+        const created = await api.send<Device>("/api/devices", "POST", {
+          displayName: browserName(),
+          type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
+          publicKey: keys.publicKey,
+          keyAlgorithm: "X25519",
+        });
+        localDeviceID = created.id;
+        rememberDevice(user.id, created.id);
       }
+      const challenge = await api.send<{ id: string; sessionId: string; ephemeralPublicKey: string; nonce: string }>(`/api/devices/${localDeviceID}/session-challenge`, "POST");
+      const proof = await proveDeviceSession(user.id, challenge.ephemeralPublicKey, challenge.nonce, challenge.sessionId);
+      await api.send(`/api/devices/${localDeviceID}/attach-session`, "POST", { challengeId: challenge.id, proof });
       await reload();
     };
     synchronize().catch((reason) => setNotice(messageFor(reason))).finally(() => setLoading(false));
@@ -222,13 +234,21 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       socket = new WebSocket(url, "nexdrop.v1");
       socket.onopen = () => setOnline(true);
       socket.onmessage = (event) => {
-        const message = JSON.parse(event.data as string) as { type: string; notificationId?: string; notification?: { id: string } };
+        const message = JSON.parse(event.data as string) as { type: string; notificationId?: string; notification?: { id: string; type?: string; payload?: Record<string, unknown> } };
         if (message.type === "connected") {
           reload().catch(() => undefined);
           heartbeat = window.setInterval(() => socket?.send(JSON.stringify({ type: "heartbeat" })), 5000);
         }
         if (message.type === "heartbeat_ack") reload().catch(() => undefined);
         if (message.type === "notification" && message.notification) {
+          const joined = message.notification.type === "DEVICE_JOINED";
+          const title = joined ? "新設備加入 NexDrop" : "NexDrop 收到新訊息";
+          const body = joined ? String(message.notification.payload?.displayName ?? "新設備已加入") : "開啟節點聊天室查看內容。";
+          setNotice(`${title}：${body}`);
+          if ("Notification" in window) {
+            if (Notification.permission === "default") void Notification.requestPermission();
+            if (Notification.permission === "granted") new Notification(title, { body });
+          }
           socket?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
           reload().catch(() => undefined);
         }
@@ -256,9 +276,8 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
-      case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
-      case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
+      case "chat": return <ChatView user={user} devices={devices} transfers={transfers} initialShare={sharedContent} onTransferCreated={(transfer) => setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)])} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} reload={reload} notify={setNotice} />;
+      case "devices": return <DevicesView devices={devices} />;
       case "analytics": return <AnalyticsView user={user} />;
       case "admin": return <AdminView user={user} notify={setNotice} />;
     }
@@ -293,7 +312,17 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
-function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
+function ChatView({ user, devices, transfers, initialShare, onTransferCreated, onSent, reload, notify }: { user: User; devices: Device[]; transfers: Transfer[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; reload: () => Promise<void>; notify: (value: string) => void }) {
+  return <section className="page chat-page">
+    <PageHeading eyebrow="NODE CHAT" title="節點聊天室" description="預設傳給節點所有設備；取消勾選後，只有指定設備能看到這筆對話。" />
+    <div className="chat-shell">
+      <SendView user={user} devices={devices} initialShare={initialShare} onTransferCreated={onTransferCreated} onSent={onSent} notify={notify} embedded />
+      <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} embedded />
+    </div>
+  </section>;
+}
+
+function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify, embedded = false }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void; embedded?: boolean }) {
   const [selection, setSelection] = useState<string[] | null>(null);
   const [content, setContent] = useState(initialShare.content);
   const [files, setFiles] = useState<File[]>([]);
@@ -361,10 +390,8 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
   }
 
   return (
-    <section className="page send-page">
-      <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />
-      <div className="send-grid">
-        <form className="composer card" onSubmit={send}>
+    <div className={embedded ? "chat-composer" : "page send-page"}>{!embedded && <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />}<div className="send-grid">
+        <form className="composer card" onSubmit={send} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const dropped = Array.from(event.dataTransfer.files); if (dropped.length) { setFiles(dropped); setContent(""); } }}>
           <div className="card-title"><span className="step">01</span><div><h3>輸入內容或選擇檔案</h3><p>內容會在瀏覽器內先加密</p></div></div>
           <textarea value={content} onChange={(event) => { setContent(event.target.value); if (event.target.value) setFiles([]); }} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
           {!files.length && <label className="check"><input type="checkbox" checked={notification} onChange={(event) => setNotification(event.target.checked)} /> 一般通知訊息</label>}
@@ -378,7 +405,7 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
                 <DeviceGlyph type={item.type} /><span><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></span><i>{selected.includes(item.id) ? "✓" : "+"}</i>
               </button>
             ))}
-            {!trusted.length && <Empty text="請前往「設備」查看此設備自動產生的配對碼" />}
+            {!trusted.length && <Empty text="尚無其他已加入節點的設備" />}
           </div>
           <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || selected.length === 0}>{busy ? "正在加密與上傳…" : <>傳送給 {selected.length} 台設備 <span>↗</span></>}</button>
         </form>
@@ -393,11 +420,11 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
           <div className="privacy-note"><span>◆</span><p><strong>內容不會以明文離開瀏覽器</strong><small>每個目的設備都有獨立包裝的內容金鑰。</small></p></div>
         </aside>
       </div>
-    </section>
+    </div>
   );
 }
 
-function ActivityView({ user, devices, transfers, reload }: { user: User; devices: Device[]; transfers: Transfer[]; reload: () => Promise<void> }) {
+function ActivityView({ user, devices, transfers, reload, embedded = false }: { user: User; devices: Device[]; transfers: Transfer[]; reload: () => Promise<void>; embedded?: boolean }) {
   const [decrypted, setDecrypted] = useState<Record<string, string>>({});
   const [downloading, setDownloading] = useState("");
   const names = useMemo(() => Object.fromEntries(devices.map((item) => [item.id, item.displayName])), [devices]);
@@ -464,9 +491,7 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
   }
 
   return (
-    <section className="page">
-      <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />
-      <div className="table-card card">
+    <div className={embedded ? "chat-history" : "page"}>{!embedded && <PageHeading eyebrow="ACTIVITY" title="傳輸紀錄" description="最近建立與接收的任務、路徑與交付狀態。" />}<div className="table-card card">
         <div className="table-head"><span>內容</span><span>目的地</span><span>路徑</span><span>狀態</span><span>時間</span></div>
         {transfers.map((item) => (
           <article className="table-row" key={item.id}>
@@ -479,95 +504,18 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
         ))}
         {!transfers.length && <Empty text="還沒有傳輸紀錄" />}
       </div>
-    </section>
+    </div>
   );
 }
 
-function DevicesView({ user, devices, reload, notify }: { user: User; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [pairing, setPairing] = useState<{ id: string; code: string; qrPayload: string; expiresAt: string } | null>(null);
-  const [pairingInput, setPairingInput] = useState({ challengeId: "", code: "", payload: "" });
-  const pairingRequested = useRef(false);
-  const localDevice = devices.find((item) => item.id === deviceID(user.id));
-  const registered = Boolean(localDevice && localDevice.trustStatus !== "REVOKED");
-
-  async function register() {
-    setBusy(true);
-    try {
-      const keys = await ensureDeviceKey(user.id);
-      const created = await api.send<Device>("/api/devices", "POST", {
-        displayName: browserName(), type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
-        publicKey: keys.publicKey, keyAlgorithm: "X25519",
-      });
-      rememberDevice(user.id, created.id);
-      await reload();
-      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已成為第一台信任設備" : "此瀏覽器已產生配對碼");
-    } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
-  }
-
-  const createPairing = useCallback(async () => {
-    if (!localDevice || localDevice.trustStatus !== "PENDING") return;
-    setBusy(true);
-    try {
-      setPairing(await api.send<{ id: string; code: string; qrPayload: string; expiresAt: string }>(`/api/devices/${localDevice.id}/pairing-code`, "POST"));
-    } catch (reason) {
-      pairingRequested.current = false;
-      notify(messageFor(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [localDevice?.id, localDevice?.trustStatus, notify]);
-
-  useEffect(() => {
-    if (!localDevice || localDevice.trustStatus !== "PENDING" || pairingRequested.current) return;
-    pairingRequested.current = true;
-    void createPairing();
-  }, [createPairing, localDevice]);
-
-  function readPairingPayload(value: string) {
-    setPairingInput((current) => ({ ...current, payload: value }));
-    const parsed = new URL(value.trim());
-    if (parsed.protocol !== "nexdrop:" || parsed.hostname !== "pair") return;
-    setPairingInput({ payload: value, challengeId: parsed.searchParams.get("id") ?? "", code: parsed.searchParams.get("code") ?? "" });
-  }
-
-  async function pair(event: FormEvent) {
-    event.preventDefault();
-    if (!localDevice || localDevice.trustStatus !== "TRUSTED") return;
-    setBusy(true);
-    try {
-      await api.send(`/api/devices/${localDevice.id}/pair`, "POST", {
-        challengeId: pairingInput.challengeId.trim(),
-        code: pairingInput.code.trim(),
-      });
-      setPairingInput({ challengeId: "", code: "", payload: "" });
-      await reload();
-      notify("新設備已完成配對");
-    } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
-  }
-
-  async function revoke(id: string) {
-    try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); }
-  }
-
-  return (
-    <section className="page">
-      <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="待核准設備會自動產生配對碼，再由任一已信任設備完成核准。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
-      {localDevice?.trustStatus === "PENDING" && <div className="card settings-form">
-        <div className="list-title"><div><p className="eyebrow">PAIR THIS DEVICE</p><h3>此設備配對碼</h3></div><button className="secondary" disabled={busy} onClick={() => { pairingRequested.current = true; void createPairing(); }}>重新產生</button></div>
-        {pairing ? <><label>6 位數配對碼<input readOnly value={pairing.code} onFocus={(event) => event.currentTarget.select()} /></label><label>挑戰 ID<input readOnly value={pairing.id} onFocus={(event) => event.currentTarget.select()} /></label><label>完整配對資料<input readOnly value={pairing.qrPayload} onFocus={(event) => event.currentTarget.select()} /></label><small>請在 10 分鐘內，於另一台已信任設備的「核准新設備」輸入以上資料。</small></> : <PanelLoader />}
-      </div>}
-      {localDevice?.trustStatus === "TRUSTED" && <form className="card settings-form" onSubmit={pair}>
-        <div className="list-title"><div><p className="eyebrow">APPROVE DEVICE</p><h3>核准新設備</h3></div><button className="primary" disabled={busy}>完成配對</button></div>
-        <label>貼上新設備的完整配對資料<input value={pairingInput.payload} onChange={(event) => { try { readPairingPayload(event.target.value); } catch { setPairingInput({ ...pairingInput, payload: event.target.value }); } }} placeholder="nexdrop://pair?..." /></label>
-        <div className="settings-grid"><label>挑戰 ID<input value={pairingInput.challengeId} onChange={(event) => setPairingInput({ ...pairingInput, challengeId: event.target.value })} required /></label><label>6 位數配對碼<input inputMode="numeric" pattern="[0-9]{6}" value={pairingInput.code} onChange={(event) => setPairingInput({ ...pairingInput, code: event.target.value.replace(/\D/g, "").slice(0, 6) })} required /></label></div>
-      </form>}
-      <div className="cards-grid devices-grid">
-        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
-        {!devices.length && <Empty text="尚未登記任何設備" />}
-      </div>
-    </section>
-  );
+function DevicesView({ devices }: { devices: Device[] }) {
+  return <section className="page">
+    <PageHeading eyebrow="NODE DEVICES" title="設備" description="設備只需節點連結與節點密鑰即可直接加入，不再使用舊式驗證或人工核准。" />
+    <div className="cards-grid devices-grid">
+      {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} /></div></article>)}
+      {!devices.length && <Empty text="尚未加入任何設備" />}
+    </div>
+  </section>;
 }
 
 function AnalyticsView({ user }: { user: User }) {
@@ -704,6 +652,10 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
     if (!confirm("確定要撤銷此裝置並登出其工作階段？")) return;
     try { await api.send(`/api/admin/devices/${id}/revoke`, "POST"); await load(); notify("裝置已撤銷"); } catch (reason) { notify(messageFor(reason)); }
   }
+  async function deleteOfflineDevice(id: string) {
+    if (!confirm("確定要刪除此離線設備？設備必須重新輸入節點密鑰才能加入。")) return;
+    try { await api.send(`/api/admin/devices/${id}`, "DELETE"); await load(); notify("離線設備已刪除"); } catch (reason) { notify(messageFor(reason)); }
+  }
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     if (!settings) return;
@@ -723,7 +675,7 @@ function AdminView({ user, notify }: { user: User; notify: (value: string) => vo
       {settings && <div className="card settings-form"><h3>帳號建立政策</h3><label className="check"><input type="checkbox" checked={settings.publicRegistrationEnabled} onChange={(event) => setSettings({ ...settings, publicRegistrationEnabled: event.target.checked })} /> 公開註冊開關（第一版預設關閉）</label><small>變更後請在「節點與儲存」按下儲存設定；關閉時僅允許管理員建立或邀請帳號。</small></div>}
       <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>裝置</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核與失敗（{failures.length}）</button></div>
       {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>{inviteMode ? "邀請使用者" : "建立使用者"}</h3><label className="check"><input type="checkbox" checked={inviteMode} onChange={(event) => { setInviteMode(event.target.checked); setInvitationLink(""); }} /> 由受邀者自行設定密碼</label><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label>{!inviteMode && <label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label>}<label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">{inviteMode ? "建立邀請連結" : "建立帳號"}</button>{invitationLink && <label>一次性邀請連結<input readOnly value={invitationLink} onFocus={(event) => event.currentTarget.select()} /><small>連結七天內有效，接受後立即失效。</small></label>}</form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
-      {tab === "resources" && <div className="card user-list"><div className="list-title"><h3>所有裝置</h3><span>{adminDevices.length} 台</span></div>{adminDevices.map((item) => <article key={item.id}><span className="avatar small">{item.displayName[0]?.toUpperCase()}</span><p><strong>{item.displayName}</strong><small>{item.ownerUsername} · {item.type}</small></p><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revokeDevice(item.id)}>撤銷</button>}</article>)}{!adminDevices.length && <Empty text="尚無裝置" />}</div>}
+      {tab === "resources" && <div className="card user-list"><div className="list-title"><h3>所有裝置</h3><span>{adminDevices.length} 台</span></div>{adminDevices.map((item) => <article key={item.id}><span className="avatar small">{item.displayName[0]?.toUpperCase()}</span><p><strong>{item.displayName}</strong><small>{item.ownerUsername} · {item.type}</small></p><Status value={item.trustStatus} />{!item.online && <button className="text-danger" onClick={() => deleteOfflineDevice(item.id)}>刪除離線設備</button>}{item.online && item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revokeDevice(item.id)}>撤銷</button>}</article>)}{!adminDevices.length && <Empty text="尚無裝置" />}</div>}
       {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="在線設備" value={nodeMetrics.at(-1)!.onlineDevices.toLocaleString()} note="即時連線" /><Metric label="進行中傳輸" value={nodeMetrics.at(-1)!.activeTransfers.toLocaleString()} note="目前工作" /></div>}{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
       {tab === "audit" && <div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div>}
       </>}
@@ -766,7 +718,7 @@ function formatBytes(value: number) { if (!value) return "0 B"; const units = ["
 function currentNodeStatisticsPath() { const now = Date.now(); return `/api/statistics/node?${new URLSearchParams({ from: new Date(now - 2 * 60 * 1000).toISOString(), to: new Date(now + 60 * 1000).toISOString() })}`; }
 function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
-function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
+function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號、密碼或 OTP 不正確", INVALID_NODE_KEY: "節點密鑰不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 
 function readSharedContent() {
   if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };

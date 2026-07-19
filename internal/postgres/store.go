@@ -213,18 +213,8 @@ func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name
 
 	var result device.Device
 	err = tx.QueryRow(ctx, `
-		WITH locked_user AS (
-			SELECT id FROM users WHERE id = $1 FOR UPDATE
-		)
 		INSERT INTO devices (user_id, display_name, device_type, trust_status)
-		SELECT locked_user.id, $2, $3,
-		       CASE WHEN EXISTS (
-		           SELECT 1 FROM devices existing
-		           WHERE existing.user_id = locked_user.id
-		             AND existing.trust_status = 'TRUSTED'
-		             AND existing.revoked_at IS NULL
-		       ) THEN 'PENDING' ELSE 'TRUSTED' END
-		FROM locked_user
+		VALUES ($1, $2, $3, 'TRUSTED')
 		RETURNING id::text, display_name, device_type, trust_status, revoked_at, created_at
 	`, session.ID, name, deviceType).Scan(
 		&result.ID, &result.DisplayName, &result.Type, &result.TrustStatus, &result.RevokedAt, &result.CreatedAt,

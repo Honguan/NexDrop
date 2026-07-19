@@ -159,6 +159,18 @@ func (api *API) revokeAdminDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (api *API) deleteAdminDevice(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticateAdmin(w, r)
+	if !ok {
+		return
+	}
+	if err := api.admin.DeleteDevice(r.Context(), session, r.PathValue("id")); err != nil {
+		writeAdminError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (api *API) adminGroups(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticateAdmin(w, r)
 	if !ok {

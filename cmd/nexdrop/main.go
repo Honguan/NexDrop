@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,6 +66,11 @@ func main() {
 	if len(cursorSecret) < 32 {
 		fatal("configuration failed", errors.New("NEXDROP_CURSOR_SECRET must contain at least 32 characters"))
 	}
+	nodeOwner := strings.TrimSpace(os.Getenv("NEXDROP_NODE_OWNER"))
+	nodeKey := strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY"))
+	if nodeOwner == "" || len(nodeKey) < 32 {
+		fatal("configuration failed", errors.New("NEXDROP_NODE_OWNER and a node key of at least 32 characters are required"))
+	}
 	store, err := postgres.OpenWithPassword(context.Background(), databaseURL, os.Getenv("NEXDROP_DATABASE_PASSWORD"))
 	if err != nil {
 		fatal("connect to PostgreSQL", err)
@@ -95,6 +101,9 @@ func main() {
 	adminService := admin.NewService(store)
 	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
 		fatal("bootstrap administrator", err)
+	}
+	if err := adminService.BootstrapTOTP(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET")); err != nil {
+		fatal("bootstrap administrator TOTP", err)
 	}
 	cleaner, err := maintenance.NewCleaner(store, storagePath)
 	if err != nil {
@@ -134,7 +143,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              address,
-		Handler:           mux,
+		Handler:           allowedIPHandler(mux, os.Getenv("NEXDROP_ALLOWED_IPS")),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -143,6 +152,36 @@ func main() {
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		fatal("HTTP server stopped", err)
 	}
+}
+
+func allowedIPHandler(next http.Handler, configured string) http.Handler {
+	allowed := make(map[string]struct{})
+	for _, value := range strings.Split(configured, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			allowed[value] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		host := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+		if host == "" {
+			host = r.RemoteAddr
+			if parsed, _, err := net.SplitHostPort(host); err == nil {
+				host = parsed
+			}
+		}
+		if _, ok := allowed[host]; !ok {
+			http.Error(w, "source IP is not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func fatal(message string, err error) {

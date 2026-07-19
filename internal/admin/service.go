@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -31,13 +32,15 @@ type User struct {
 }
 
 type Device struct {
-	ID            string    `json:"id"`
-	OwnerUserID   string    `json:"ownerUserId"`
-	OwnerUsername string    `json:"ownerUsername"`
-	DisplayName   string    `json:"displayName"`
-	Type          string    `json:"type"`
-	TrustStatus   string    `json:"trustStatus"`
-	CreatedAt     time.Time `json:"createdAt"`
+	ID            string     `json:"id"`
+	OwnerUserID   string     `json:"ownerUserId"`
+	OwnerUsername string     `json:"ownerUsername"`
+	DisplayName   string     `json:"displayName"`
+	Type          string     `json:"type"`
+	TrustStatus   string     `json:"trustStatus"`
+	Online        bool       `json:"online"`
+	LastSeenAt    *time.Time `json:"lastSeenAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
 }
 
 type Group struct {
@@ -187,6 +190,23 @@ func (service *Service) Bootstrap(ctx context.Context, username, email, password
 	return service.store.BootstrapAdmin(ctx, strings.TrimSpace(username), strings.TrimSpace(email), string(hash))
 }
 
+func (service *Service) BootstrapTOTP(ctx context.Context, identifier, secret string) error {
+	identifier = strings.TrimSpace(identifier)
+	secret = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(secret), " ", ""))
+	if identifier == "" && secret == "" {
+		return nil
+	}
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	if identifier == "" || err != nil || len(decoded) < 16 {
+		return ErrInvalid
+	}
+	store, ok := service.store.(BootstrapTOTPStore)
+	if !ok {
+		return nil
+	}
+	return store.BootstrapAdminTOTP(ctx, identifier, secret)
+}
+
 func (service *Service) Users(ctx context.Context, session auth.Session, limit, offset int) ([]User, error) {
 	if !session.Admin {
 		return nil, ErrForbidden
@@ -300,6 +320,20 @@ func (service *Service) RevokeDevice(ctx context.Context, session auth.Session, 
 		return ErrInvalid
 	}
 	return service.store.RevokeAdminDevice(ctx, session, deviceID, time.Now().UTC())
+}
+
+func (service *Service) DeleteDevice(ctx context.Context, session auth.Session, deviceID string) error {
+	if !session.Admin {
+		return ErrForbidden
+	}
+	if !isUUID(deviceID) {
+		return ErrInvalid
+	}
+	store, ok := service.store.(DeviceDeleteStore)
+	if !ok {
+		return ErrInvalid
+	}
+	return store.DeleteAdminDevice(ctx, session, deviceID, time.Now().UTC())
 }
 
 func (service *Service) Groups(ctx context.Context, session auth.Session, limit, offset int) ([]Group, error) {

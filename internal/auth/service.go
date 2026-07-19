@@ -77,6 +77,28 @@ func (service *Service) Login(ctx context.Context, identifier, password string) 
 	return service.LoginWithTOTP(ctx, identifier, password, "")
 }
 
+// IssueForIdentifier creates a device session for a node owner after the API
+// has validated the deployment node key. It deliberately bypasses password and
+// TOTP because those credentials are reserved for the Web administration UI.
+func (service *Service) IssueForIdentifier(ctx context.Context, identifier string) (TokenPair, error) {
+	credential, err := service.store.CredentialByIdentifier(ctx, strings.TrimSpace(identifier))
+	if err != nil {
+		return TokenPair{}, ErrInvalidCredentials
+	}
+	pair, err := service.issueTokenPair()
+	if err != nil {
+		return TokenPair{}, err
+	}
+	_, err = service.store.CreateSession(
+		ctx, credential.ID, hashToken(pair.AccessToken), pair.AccessExpiresAt,
+		hashToken(pair.RefreshToken), pair.RefreshExpiresAt,
+	)
+	if err != nil {
+		return TokenPair{}, fmt.Errorf("create node enrollment session: %w", err)
+	}
+	return pair, nil
+}
+
 func (service *Service) LoginWithTOTP(ctx context.Context, identifier, password, code string) (TokenPair, error) {
 	credential, err := service.store.CredentialByIdentifier(ctx, identifier)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(credential.PasswordHash), []byte(password)) != nil {

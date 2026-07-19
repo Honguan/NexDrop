@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:path/path.dart' as path;
 
 class PlatformSharePayload {
@@ -22,6 +23,8 @@ class PlatformShareService {
   static const _methods = MethodChannel('com.nexdrop/client');
   static const _events = EventChannel('com.nexdrop/client/shares');
   final _shares = StreamController<PlatformSharePayload>.broadcast();
+  final _notifications = FlutterLocalNotificationsPlugin();
+  bool _notificationsReady = false;
   StreamSubscription<dynamic>? _subscription;
   Timer? _windowsTimer;
   bool _readingWindowsQueue = false;
@@ -56,6 +59,7 @@ class PlatformShareService {
   }
 
   Future<void> initialize() async {
+    await _initializeNotifications();
     if (Platform.isWindows) {
       await _startWindowsBridge();
       return;
@@ -74,6 +78,47 @@ class PlatformShareService {
       // Desktop platforms use command-line integration instead.
     } on PlatformException {
       // Sharing remains optional when the host platform rejects an item.
+    }
+  }
+
+  Future<void> _initializeNotifications() async {
+    try {
+      await _notifications.initialize(
+        settings: const InitializationSettings(
+          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+          windows: WindowsInitializationSettings(
+            appName: 'NexDrop',
+            appUserModelId: 'NexDrop.Desktop',
+            guid: '4f3fb6d9-827b-42a8-a45a-90ce17f5fc43',
+          ),
+        ),
+      );
+      _notificationsReady = true;
+    } catch (_) {
+      _notificationsReady = false;
+    }
+  }
+
+  Future<void> showNotification(String title, String body) async {
+    if (!_notificationsReady) return;
+    try {
+      await _notifications.show(
+        id: DateTime.now().millisecondsSinceEpoch.remainder(1 << 31),
+        title: title,
+        body: body,
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'nexdrop_messages',
+            'NexDrop 訊息',
+            channelDescription: '設備加入與收到新內容通知',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          windows: WindowsNotificationDetails(),
+        ),
+      );
+    } catch (_) {
+      // The in-app banner remains available when the OS rejects notifications.
     }
   }
 

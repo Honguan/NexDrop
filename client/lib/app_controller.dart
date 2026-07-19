@@ -62,6 +62,12 @@ class AppController extends ChangeNotifier {
   String? receiveDirectory;
   Set<String> get lanOnlineDeviceIds => lan.onlineDeviceIds;
   String? error;
+  String? notification;
+
+  void dismissNotification() {
+    notification = null;
+    notifyListeners();
+  }
   WebSocketChannel? _socket;
   StreamSubscription<dynamic>? _socketSubscription;
   Timer? _heartbeat;
@@ -108,12 +114,21 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> login(String node, String identifier, String password) async {
+  Future<void> enroll(String node, String nodeKey) async {
     await _run(() async {
-      account = await api.login(node, identifier, password);
+      account = await api.enroll(node, nodeKey);
       await _synchronize();
     });
   }
+
+  Future<void> importNodeConfiguration(String value) async {
+    await _run(() async {
+      account = await api.importNodeConfiguration(value);
+      await _synchronize();
+    });
+  }
+
+  Future<String> exportNodeConfiguration() => api.exportNodeConfiguration();
 
   Future<void> logout() async {
     await _disconnect();
@@ -254,11 +269,6 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> approve(Device device) => _run(() async {
-    await api.sendJson('/api/devices/${device.id}/approve', 'POST');
-    await reload();
-  });
-
   Future<String> readText(TransferSummary transfer) async {
     if (account == null || currentDevice == null) {
       throw StateError('尚未登入設備');
@@ -370,26 +380,6 @@ class AppController extends ChangeNotifier {
         await transfersService.retryWaitingLan();
       });
 
-  Future<Map<String, dynamic>> createPairingCode(Device device) async {
-    late Map<String, dynamic> result;
-    await _run(
-      () async => result =
-          await api.sendJson('/api/devices/${device.id}/pairing-code', 'POST')
-              as Map<String, dynamic>,
-    );
-    return result;
-  }
-
-  Future<void> redeemPairingCode(String challengeId, String code) =>
-      _run(() async {
-        if (currentDevice == null) return;
-        await api.sendJson('/api/devices/${currentDevice!.id}/pair', 'POST', {
-          'challengeId': challengeId.trim(),
-          'code': code.trim(),
-        });
-        await reload();
-      });
-
   Future<void> _synchronize() async {
     final session = await transfersService.synchronizeDevice(account!);
     currentDevice = session.device;
@@ -419,12 +409,19 @@ class AppController extends ChangeNotifier {
           } else if (message['type'] == 'heartbeat_ack') {
             unawaited(reload());
           } else if (message['type'] == 'notification') {
-            final notification =
-                message['notification'] as Map<String, dynamic>?;
+            final data = message['notification'] as Map<String, dynamic>?;
+            final joined = data?['type'] == 'DEVICE_JOINED';
+            final payload = data?['payload'] as Map<String, dynamic>?;
+            final title = joined ? '新設備加入 NexDrop' : 'NexDrop 收到新訊息';
+            final body = joined
+                ? '${payload?['displayName'] ?? '新設備'} 已加入節點'
+                : '開啟節點聊天室查看內容';
+            notification = '$title：$body';
+            unawaited(platformShare.showNotification(title, body));
             _socket?.sink.add(
               jsonEncode({
                 'type': 'notification_ack',
-                'notificationId': notification?['id'],
+                'notificationId': data?['id'],
               }),
             );
             unawaited(reload());
@@ -519,6 +516,8 @@ class AppController extends ChangeNotifier {
       createdAt: transfer.createdAt,
     );
     await database.cacheLocalTransfer(transfer);
+    notification = 'NexDrop 收到新資料：來自 ${incoming.senderDeviceId}';
+    unawaited(platformShare.showNotification('NexDrop 收到新資料', '開啟節點聊天室查看內容'));
     notifyListeners();
   }
 

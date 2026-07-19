@@ -119,7 +119,9 @@ export type AdminDevice = {
   ownerUsername: string;
   displayName: string;
   type: string;
-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
+  trustStatus: "TRUSTED" | "REVOKED";
+  online: boolean;
+  lastSeenAt?: string;
   createdAt: string;
 };
 

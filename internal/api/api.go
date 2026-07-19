@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -131,6 +132,7 @@ func (api *API) Routes() http.Handler {
 	adminMux := http.NewServeMux()
 	mux.HandleFunc("GET /api/version", api.version)
 	mux.HandleFunc("POST /api/auth/login", api.login)
+	mux.HandleFunc("POST /api/node/enroll", api.enrollNode)
 	mux.HandleFunc("POST /api/auth/refresh", api.refresh)
 	mux.HandleFunc("POST /api/auth/logout", api.logout)
 	mux.HandleFunc("POST /api/auth/totp/setup", api.setupTOTP)
@@ -142,13 +144,10 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/devices", api.listDevices)
 	mux.HandleFunc("PATCH /api/devices/{id}", api.renameDevice)
 	mux.HandleFunc("DELETE /api/devices/{id}", api.deleteDevice)
-	mux.HandleFunc("POST /api/devices/{id}/approve", api.approveDevice)
 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
 	mux.HandleFunc("POST /api/devices/{id}/session-challenge", api.createDeviceSessionChallenge)
 	mux.HandleFunc("POST /api/devices/{id}/attach-session", api.attachDeviceSession)
 	mux.HandleFunc("PUT /api/devices/{id}/lan-identity", api.registerDeviceLANIdentity)
-	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
-	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
 	mux.HandleFunc("POST /api/groups", api.createGroup)
 	mux.HandleFunc("GET /api/groups", api.listGroups)
 	mux.HandleFunc("GET /api/groups/{id}", api.getGroup)
@@ -182,6 +181,7 @@ func (api *API) Routes() http.Handler {
 	adminMux.HandleFunc("POST /api/admin/users/{id}/reset-password", api.resetAdminPassword)
 	adminMux.HandleFunc("GET /api/admin/devices", api.adminDevices)
 	adminMux.HandleFunc("POST /api/admin/devices/{id}/revoke", api.revokeAdminDevice)
+	adminMux.HandleFunc("DELETE /api/admin/devices/{id}", api.deleteAdminDevice)
 	adminMux.HandleFunc("GET /api/admin/groups", api.adminGroups)
 	adminMux.HandleFunc("DELETE /api/admin/groups/{id}", api.deleteAdminGroup)
 	adminMux.HandleFunc("GET /api/admin/settings", api.adminSettings)
@@ -264,6 +264,32 @@ func (api *API) refresh(w http.ResponseWriter, r *http.Request) {
 	pair, err := api.auth.Refresh(r.Context(), request.RefreshToken)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "INVALID_TOKEN")
+		return
+	}
+	writeJSON(w, http.StatusOK, pair)
+}
+
+func (api *API) enrollNode(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		NodeKey string `json:"nodeKey"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	configuredKey := strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY"))
+	owner := strings.TrimSpace(os.Getenv("NEXDROP_NODE_OWNER"))
+	providedKey := strings.TrimSpace(request.NodeKey)
+	if !enforceRateLimit(w, r, api.loginLimit, "node-enroll") {
+		return
+	}
+	if len(configuredKey) < 32 || owner == "" || len(providedKey) != len(configuredKey) || subtle.ConstantTimeCompare([]byte(providedKey), []byte(configuredKey)) != 1 {
+		writeError(w, http.StatusUnauthorized, "INVALID_NODE_KEY")
+		return
+	}
+	pair, err := api.auth.IssueForIdentifier(r.Context(), owner)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "INVALID_NODE_KEY")
 		return
 	}
 	writeJSON(w, http.StatusOK, pair)

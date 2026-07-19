@@ -20,6 +20,31 @@ func (store *Store) BootstrapAdmin(ctx context.Context, username, email, passwor
 	return err
 }
 
+func (store *Store) BootstrapAdminTOTP(ctx context.Context, identifier, secret string) error {
+	command, err := store.pool.Exec(ctx, `
+		UPDATE users SET totp_secret=$2
+		WHERE (lower(username)=lower($1) OR lower(email)=lower($1))
+		  AND is_admin=true AND disabled_at IS NULL
+		  AND (totp_secret IS NULL OR totp_secret='')
+	`, identifier, secret)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() > 0 {
+		return nil
+	}
+	var existing string
+	err = store.pool.QueryRow(ctx, `
+		SELECT COALESCE(totp_secret, '') FROM users
+		WHERE (lower(username)=lower($1) OR lower(email)=lower($1))
+		  AND is_admin=true AND disabled_at IS NULL
+	`, identifier).Scan(&existing)
+	if err != nil {
+		return mapAdminError(err)
+	}
+	return nil
+}
+
 func (store *Store) ListAdminUsers(ctx context.Context, limit, offset int) ([]admin.User, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT id::text, username, email, is_admin, disabled_at, created_at
@@ -206,8 +231,15 @@ func (store *Store) ResetAdminPasswordByIdentifier(ctx context.Context, identifi
 func (store *Store) ListAdminDevices(ctx context.Context, limit, offset int) ([]admin.Device, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT d.id::text, d.user_id::text, u.username, d.display_name, d.device_type,
-		       d.trust_status, d.created_at
+		       d.trust_status,
+		       COALESCE(c.disconnected_at IS NULL AND c.last_seen_at >= now() - interval '45 seconds', false),
+		       c.last_seen_at, d.created_at
 		FROM devices d JOIN users u ON u.id = d.user_id
+		LEFT JOIN LATERAL (
+			SELECT last_seen_at, disconnected_at FROM device_connections
+			WHERE device_id=d.id ORDER BY connected_at DESC LIMIT 1
+		) c ON true
+		WHERE d.deleted_at IS NULL
 		ORDER BY d.created_at DESC LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -217,7 +249,7 @@ func (store *Store) ListAdminDevices(ctx context.Context, limit, offset int) ([]
 	result := make([]admin.Device, 0)
 	for rows.Next() {
 		var item admin.Device
-		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.OwnerUsername, &item.DisplayName, &item.Type, &item.TrustStatus, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.OwnerUsername, &item.DisplayName, &item.Type, &item.TrustStatus, &item.Online, &item.LastSeenAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -242,6 +274,36 @@ func (store *Store) RevokeAdminDevice(ctx context.Context, actor auth.Session, d
 		return err
 	}
 	if err := insertAudit(ctx, tx, actor, "DEVICE_REVOKED", "DEVICE", deviceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (store *Store) DeleteAdminDevice(ctx context.Context, actor auth.Session, deviceID string, now time.Time) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `
+		UPDATE devices d
+		SET deleted_at=$2, trust_status='REVOKED', revoked_at=COALESCE(revoked_at, $2)
+		WHERE d.id=$1 AND d.deleted_at IS NULL AND NOT EXISTS (
+			SELECT 1 FROM device_connections c
+			WHERE c.device_id=d.id AND c.disconnected_at IS NULL
+			  AND c.last_seen_at >= $2 - interval '45 seconds'
+		)
+	`, deviceID, now)
+	if err != nil {
+		return mapAdminError(err)
+	}
+	if command.RowsAffected() == 0 {
+		return admin.ErrConflict
+	}
+	if _, err := tx.Exec(ctx, `UPDATE user_sessions SET revoked_at=$2 WHERE device_id=$1 AND revoked_at IS NULL`, deviceID, now); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, actor, "DEVICE_DELETED", "DEVICE", deviceID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

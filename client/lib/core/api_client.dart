@@ -47,6 +47,7 @@ class ApiClient {
   static const protocolVersion = '1.1';
   static const clientVersion = 'nexdrop-v1.1';
   static const _nodeKey = 'nexdrop.node_url';
+  static const _nodeSecretKey = 'nexdrop.node_key';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
   static const _accept = 'application/vnd.nexdrop.v1+json';
@@ -57,6 +58,7 @@ class ApiClient {
   Uri? _node;
   String? _accessToken;
   String? _refreshToken;
+  String? _nodeSecret;
   Future<bool>? _refreshing;
 
   Uri? get node => _node;
@@ -66,9 +68,46 @@ class ApiClient {
     final node = await _storage.read(key: _nodeKey);
     _accessToken = await _storage.read(key: _accessKey);
     _refreshToken = await _storage.read(key: _refreshKey);
+    _nodeSecret = await _storage.read(key: _nodeSecretKey);
     if (node == null) return false;
     _node = validateNodeUrl(node);
     return _accessToken != null && _refreshToken != null;
+  }
+
+  Future<UserAccount> enroll(String nodeUrl, String nodeKey) async {
+    _node = validateNodeUrl(nodeUrl);
+    final normalizedKey = nodeKey.trim();
+    if (normalizedKey.length < 16) {
+      throw const ApiException('INVALID_NODE_KEY', 400);
+    }
+    final response = await _client.post(
+      _uri('/api/node/enroll'),
+      headers: const {'Content-Type': 'application/json', 'Accept': _accept},
+      body: jsonEncode({'nodeKey': normalizedKey}),
+    );
+    if (response.statusCode != HttpStatus.ok) throw _error(response);
+    _nodeSecret = normalizedKey;
+    await _storage.write(key: _nodeSecretKey, value: normalizedKey);
+    await _saveTokens(jsonDecode(response.body) as Map<String, dynamic>);
+    return account();
+  }
+
+  Future<UserAccount> importNodeConfiguration(String value) async {
+    final decoded = jsonDecode(value.trim()) as Map<String, dynamic>;
+    final nodeUrl = (decoded['nodeUrl'] ?? decoded['nodeURL']) as String?;
+    final nodeKey = decoded['nodeKey'] as String?;
+    if (nodeUrl == null || nodeKey == null) {
+      throw const FormatException('不是有效的 NexDrop 節點設定');
+    }
+    return enroll(nodeUrl, nodeKey);
+  }
+
+  Future<String> exportNodeConfiguration() async {
+    final nodeKey = _nodeSecret ?? await _storage.read(key: _nodeSecretKey);
+    if (_node == null || nodeKey == null || nodeKey.isEmpty) {
+      throw const ApiException('NODE_NOT_CONFIGURED', 0);
+    }
+    return jsonEncode({'nodeUrl': _node.toString(), 'nodeKey': nodeKey});
   }
 
   Future<UserAccount> login(
@@ -322,16 +361,17 @@ class ApiClient {
 
   static Uri validateNodeUrl(String value) {
     final uri = Uri.parse(value.trim());
-    final localDevelopment =
-        uri.scheme == 'http' &&
-        (uri.host == '127.0.0.1' || uri.host == 'localhost');
+    final localDevelopment = uri.scheme == 'http' &&
+        (uri.host == 'localhost' ||
+            uri.host.endsWith('.local') ||
+            InternetAddress.tryParse(uri.host) != null);
     if ((!localDevelopment && uri.scheme != 'https') ||
         !uri.hasAuthority ||
         uri.userInfo.isNotEmpty ||
         uri.pathSegments.isNotEmpty ||
         uri.hasQuery ||
         uri.hasFragment) {
-      throw const FormatException('請輸入有效的 HTTPS 節點網址');
+      throw const FormatException('請輸入有效的 IP 或 HTTPS 節點網址');
     }
     return uri;
   }

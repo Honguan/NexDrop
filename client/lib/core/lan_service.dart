@@ -13,7 +13,7 @@ import 'models.dart';
 
 const _serviceType = '_nexdrop._tcp';
 const _protocolVersion = '1.1';
-const _serviceVersion = '1.0.5';
+const _serviceVersion = '2.0.0';
 const _fallbackPort = 53317;
 const _discoveryMagic = 'NEXDROP_DISCOVERY_V1';
 const _maxChunkSize = 9 * 1024 * 1024;

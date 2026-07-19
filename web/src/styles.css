@@ -261,3 +261,12 @@ input:focus, textarea:focus { border-color: #5bcfae; box-shadow: 0 0 0 3px rgba(
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* NexDrop 2.0 unified chat */
+.chat-page { max-width: 1480px; }
+.chat-shell { display: grid; grid-template-columns: minmax(340px, .8fr) minmax(520px, 1.2fr); gap: 22px; align-items: start; }
+.chat-composer .send-grid { grid-template-columns: 1fr; }
+.chat-composer .route-card { display: none; }
+.chat-history .table-card { min-height: 520px; }
+.chat-history .table-row { background: rgba(255,255,255,.62); border-radius: 16px; margin: 8px; }
+@media (max-width: 1100px) { .chat-shell { grid-template-columns: 1fr; } }
