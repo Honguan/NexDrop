@@ -29,6 +29,8 @@ jobs:
       NEXDROP_BOOTSTRAP_ADMIN_USERNAME: integration-admin
       NEXDROP_BOOTSTRAP_ADMIN_EMAIL: integration@example.invalid
       NEXDROP_BOOTSTRAP_ADMIN_PASSWORD: Integration-test-only-1234
+      NEXDROP_NODE_OWNER: integration-admin
+      NEXDROP_NODE_KEY: integration-test-node-key-32-bytes-minimum
       NEXDROP_INTEGRATION_DISPOSABLE: 'true'
       NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE: '200'
     steps:
@@ -127,7 +129,7 @@ jobs:
           docker exec "$postgres_container" pg_dump -U nexdrop -d "$rollback_database" -Fc -f /tmp/nexdrop-pre-upgrade.dump
           start_migration_server "$rollback_url" migrations
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
-            "SELECT count(*) FROM schema_migrations")" = 9
+            "SELECT count(*) FROM schema_migrations")" = 10
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
             "SELECT to_regclass('public.idempotency_records') IS NOT NULL")" = t
           docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
