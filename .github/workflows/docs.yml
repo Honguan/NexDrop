@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
 permissions:
-  contents: read
+  contents: write
 jobs:
   check:
     name: docs
@@ -13,3 +13,24 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - shell: pwsh
         run: ./scripts/check-docs.ps1
+  publish-v2-0-1:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/publish-v2.0.1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Create verified release tag
+        shell: bash
+        run: |
+          test "$(tr -d '\r\n' < VERSION)" = '2.0.1'
+          test -f docs/release-notes-v2.0.1.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git rev-parse 'refs/tags/v2.0.1' >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 v2.0.1)" = "$(git rev-parse HEAD)"
+          else
+            git tag -a v2.0.1 -m 'NexDrop 2.0.1'
+            git push origin v2.0.1
+          fi
