@@ -380,7 +380,7 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || !bytes.Equal(downloaded, smallContent) {
 		t.Fatalf("downloaded chunk = %q, %v", downloaded, err)
 	}
-	notifications, err := store.PendingNotifications(ctx, targetDevice.ID)
+	notifications, err = store.PendingNotifications(ctx, targetDevice.ID)
 	if err != nil || len(notifications) < 2 {
 		t.Fatalf("PendingNotifications() = %+v, %v", notifications, err)
 	}
