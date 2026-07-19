@@ -1,0 +1,39 @@
++ python3 scripts/apply-main-version-link-fix.py
++ gofmt -w cmd/nexdrop/main.go
+++ tr -d '\r\n'
++ version=2.0.1
++ go build -trimpath -ldflags '-X main.version=2.0.1 -X nexdrop/internal/version.ProductVersion=2.0.1 -X nexdrop/internal/version.BuildCommit=05492e4a74c2f6a2f6d64977ef02805517c52e33' -o /tmp/nexdrop-version-test ./cmd/nexdrop
+++ /tmp/nexdrop-version-test version
++ actual=2.0.1
++ printf 'EXPECTED=%s\nACTUAL=%s\n' 2.0.1 2.0.1
+EXPECTED=2.0.1
+ACTUAL=2.0.1
++ test 2.0.1 = 2.0.1
++ go test ./...
+?   	nexdrop/cmd/nexdrop	[no test files]
+?   	nexdrop/cmd/nexdrop-bridge	[no test files]
+ok  	nexdrop/cmd/nexdrop-desktop-service	0.005s
+ok  	nexdrop/cmd/nexdrop-loadtest	0.004s
+ok  	nexdrop/internal/admin	0.005s
+ok  	nexdrop/internal/analytics	0.006s
+ok  	nexdrop/internal/api	0.235s
+ok  	nexdrop/internal/auth	0.024s
+ok  	nexdrop/internal/backup	0.022s
+ok  	nexdrop/internal/desktopbridge	0.013s
+ok  	nexdrop/internal/device	0.018s
+ok  	nexdrop/internal/domain	0.008s
+ok  	nexdrop/internal/filetransfer	0.016s
+ok  	nexdrop/internal/group	0.013s
+ok  	nexdrop/internal/lan	0.031s
+ok  	nexdrop/internal/logging	0.008s
+ok  	nexdrop/internal/maintenance	0.012s
+ok  	nexdrop/internal/monitoring	0.009s
+ok  	nexdrop/internal/nativebridge	0.013s
+ok  	nexdrop/internal/operations	0.004s
+ok  	nexdrop/internal/pairing	0.007s
+ok  	nexdrop/internal/postgres	0.005s
+ok  	nexdrop/internal/presence	0.027s
+ok  	nexdrop/internal/secure	0.005s
+ok  	nexdrop/internal/transfer	0.003s
+ok  	nexdrop/internal/version	0.003s
+ok  	nexdrop/internal/webui	0.017s
