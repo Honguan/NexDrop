@@ -30,7 +30,7 @@ func TestClientVersionIncludesProductAndSupportedRelease(t *testing.T) {
 
 func TestCurrentIncludesProductAndBuildInformation(t *testing.T) {
 	information := Current()
-	if information.ProductVersion != "1.0.5" {
+	if information.ProductVersion != "2.0.0" {
 		t.Fatalf("product version = %q", information.ProductVersion)
 	}
 	if information.BuildCommit == "" {

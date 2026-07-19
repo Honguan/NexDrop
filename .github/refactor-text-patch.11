@@ -1,4 +1,0 @@
-+  assert.match(app, /onDrop/);
-+  assert.match(app, /離線設備已刪除/);
-+  assert.doesNotMatch(app, /pairing-code|配對碼|核准新設備|此設備配對碼/);
- });

@@ -158,6 +158,20 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		fmt.Println(version)
 		return true, nil
 	}
+	if arguments[0] == "totp-code" {
+		flags := flag.NewFlagSet("totp-code", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		secret := flags.String("secret", "", "base32 TOTP secret")
+		if err := flags.Parse(arguments[1:]); err != nil || strings.TrimSpace(*secret) == "" {
+			return true, errors.New("usage: nexdrop totp-code --secret BASE32_SECRET")
+		}
+		code, err := auth.CurrentTOTPCode(*secret, time.Now().UTC())
+		if err != nil {
+			return true, err
+		}
+		fmt.Println(code)
+		return true, nil
+	}
 	databaseURL := os.Getenv("NEXDROP_DATABASE_URL")
 	if databaseURL == "" {
 		return true, errors.New("NEXDROP_DATABASE_URL is required")

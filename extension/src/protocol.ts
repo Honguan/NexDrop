@@ -52,9 +52,8 @@ export async function nodeURL() {
 
 export function normalizeNodeURL(value: string) {
   const url = new URL(value.trim());
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname))) {
-    throw new Error("INVALID_NODE_URL");
-  }
+  const localHTTP = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname.endsWith(".local") || /^[0-9.]+$/.test(url.hostname) || url.hostname.includes(":"));
+  if (url.protocol !== "https:" && !localHTTP) throw new Error("INVALID_NODE_URL");
   return url.origin;
 }
 

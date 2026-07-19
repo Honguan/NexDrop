@@ -1,10 +1,10 @@
 services:
   nexdrop:
-    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:1.0.5}"
+    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:2.0.0}"
     build:
       context: .
       args:
-        VERSION: "1.0.5"
+        VERSION: "2.0.0"
     environment:
       NEXDROP_HTTP_ADDRESS: ":8080"
       NEXDROP_DATABASE_URL: "postgres://nexdrop@postgres:5432/nexdrop?sslmode=disable"
@@ -13,9 +13,15 @@ services:
       NEXDROP_STORAGE_PATH: "/var/lib/nexdrop"
       NEXDROP_WEB_PATH: "/usr/share/nexdrop/web"
       NEXDROP_MIGRATIONS_PATH: "/usr/share/nexdrop/migrations"
+      NEXDROP_NODE_OWNER: "${NEXDROP_NODE_OWNER:-admin}"
+      NEXDROP_NODE_KEY: "${NEXDROP_NODE_KEY:-}"
+      NEXDROP_ALLOWED_IPS: "${NEXDROP_ALLOWED_IPS:-}"
       NEXDROP_BOOTSTRAP_ADMIN_USERNAME: "${NEXDROP_BOOTSTRAP_ADMIN_USERNAME:-}"
       NEXDROP_BOOTSTRAP_ADMIN_EMAIL: "${NEXDROP_BOOTSTRAP_ADMIN_EMAIL:-}"
       NEXDROP_BOOTSTRAP_ADMIN_PASSWORD: "${NEXDROP_BOOTSTRAP_ADMIN_PASSWORD:-}"
+      NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET: "${NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET:-}"
+      NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE: "${NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE:-10}"
+      NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE: "${NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE:-30}"
     volumes:
       - file-data:/var/lib/nexdrop
     depends_on:
@@ -46,7 +52,7 @@ services:
   caddy:
     image: caddy:2.9-alpine
     environment:
-      NEXDROP_DOMAIN: "${NEXDROP_DOMAIN:-localhost}"
+      NEXDROP_SITE_ADDRESS: "${NEXDROP_SITE_ADDRESS:-:80}"
     ports:
       - "80:80"
       - "443:443"

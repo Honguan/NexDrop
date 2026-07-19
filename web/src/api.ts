@@ -14,7 +14,7 @@ export type Device = {
   type: string;
   publicKey?: string;
   keyAlgorithm?: string;
-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
+  trustStatus: "TRUSTED" | "REVOKED";
   online: boolean;
   lastSeenAt?: string;
   createdAt: string;
@@ -91,7 +91,7 @@ export type DeviceStatistic = {
   deviceId: string;
   displayName: string;
   deviceType: string;
-  trustStatus: "PENDING" | "TRUSTED" | "REVOKED";
+  trustStatus: "TRUSTED" | "REVOKED";
   online: boolean;
   lastSeenAt?: string;
   sentCount: number;

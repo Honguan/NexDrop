@@ -36,6 +36,22 @@ void main() {
       });
     }
 
+    test('uses node key enrollment without administrator credentials', () async {
+      late http.Request captured;
+      final api = ApiClient(
+        client: MockClient((request) async {
+          captured = request;
+          if (request.url.path == '/api/node/enroll') {
+            return http.Response('{"accessToken":"a","refreshToken":"r"}', 200);
+          }
+          return http.Response('{"id":"u","username":"admin","email":"a@example.com","admin":true,"totpEnabled":true}', 200);
+        }),
+      );
+
+      await api.enroll('http://192.168.1.10', 'node-key-123456789012345678901234');
+      expect(captured.url.path, '/api/account');
+    });
+
     test('preserves Retry-After and formats a rate limit message', () async {
       final api = ApiClient(
         client: MockClient(

@@ -42,6 +42,10 @@ esac
 [ "${#postgres_password}" -ge 32 ]
 [ "${#cursor_secret}" -ge 32 ]
 [ "${#admin_password}" -ge 12 ]
+node_key=$(value NEXDROP_NODE_KEY)
+totp_secret=$(value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)
+[ "${#node_key}" -ge 32 ]
+[ "${#totp_secret}" -ge 26 ]
 
 rm .env
 printf 'r\na\n' | ./deploy/nexdrop install
@@ -52,8 +56,10 @@ postgres_password=$(value POSTGRES_PASSWORD)
 cursor_secret=$(value NEXDROP_CURSOR_SECRET)
 admin_password=$(value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
 
-printf 'e\nlocalhost\nadmin\nadmin@example.com\nvalid-admin-password-123\n' | ./deploy/nexdrop install
-[ "$(value NEXDROP_DOMAIN)" = localhost ]
+printf 'e\nhttp://127.0.0.1\n\nadmin\nadmin@example.com\nvalid-admin-password-123\n' | ./deploy/nexdrop install
+[ "$(value NEXDROP_NODE_URL)" = http://127.0.0.1 ]
+[ "$(value NEXDROP_SITE_ADDRESS)" = :80 ]
+[ "$(value NEXDROP_NODE_OWNER)" = admin ]
 [ "$(value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)" = valid-admin-password-123 ]
 admin_password=$(value NEXDROP_BOOTSTRAP_ADMIN_PASSWORD)
 
@@ -69,6 +75,8 @@ grep -q 'compose exec -T postgres' "$DOCKER_LOG"
 printf 'a\n' | ./deploy/nexdrop install
 ./deploy/nexdrop credentials --show-secrets >"$WORK/credentials.out"
 grep -q "Bootstrap 初始密碼：$admin_password" "$WORK/credentials.out"
+grep -q "節點密鑰：$(value NEXDROP_NODE_KEY)" "$WORK/credentials.out"
+grep -q '一鍵匯入：{"nodeUrl":"http://127.0.0.1","nodeKey":"' "$WORK/credentials.out"
 
 old_postgres_password=$(value POSTGRES_PASSWORD)
 old_cursor_secret=$(value NEXDROP_CURSOR_SECRET)
@@ -83,7 +91,7 @@ if FAIL_UPDATE=1 ./deploy/nexdrop update 1.2.4 >"$WORK/update-failure.out" 2>&1;
     echo "failed update was accepted" >&2
     exit 1
 fi
-[ "$(value NEXDROP_IMAGE)" = "ghcr.io/honguan/nexdrop:1.2.3" ]
+[ "$(value NEXDROP_IMAGE)" = "ghcr.io/honguan/nexdrop:2.0.0" ]
 grep -q 'compose stop nexdrop' "$DOCKER_LOG"
 grep -q 'migration' "$WORK/update-failure.out"
 

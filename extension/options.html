@@ -4,16 +4,15 @@
   <body class="options">
     <main>
       <div class="brand"><span>N</span><strong>NexDrop</strong></div>
-      <p class="eyebrow">REGISTER EXTENSION</p><h1>將擴充功能登記為獨立設備</h1>
-      <p class="hint">擴充功能與桌面程式是不同設備；同帳號連到同一 Linux 節點時會自動信任，不需輸入配對碼。</p>
+      <p class="eyebrow">JOIN NODE</p><h1>使用節點密鑰加入</h1>
+      <p class="hint">只需輸入節點連結與節點密鑰，設備便會直接加入節點。</p>
       <form>
-        <label for="node-url">NexDrop 節點網址</label><input id="node-url" type="url" placeholder="https://drop.example.com" required />
+        <label for="node-url">NexDrop 節點連結</label><input id="node-url" type="url" placeholder="http://192.168.1.10 或 https://drop.example.com" required />
+        <label for="node-key">節點密鑰</label><input id="node-key" type="password" autocomplete="off" minlength="16" required />
         <label for="device-name">設備名稱</label><input id="device-name" value="瀏覽器擴充功能" minlength="3" maxlength="100" required />
-        <label for="identifier">帳號或電子郵件</label><input id="identifier" autocomplete="username" required />
-        <label for="password">密碼</label><input id="password" type="password" autocomplete="current-password" required />
-        <label for="totp">六位數驗證碼（未啟用可留空）</label><input id="totp" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" />
-        <p class="hint">正式環境必須使用 HTTPS；登記時會要求此節點的網站存取權限。只有既有待配對或跨節點情境才需人工核准。</p>
-        <button type="submit" class="primary">登入並登記此擴充功能</button>
+        <div class="actions"><button id="import-config" type="button" class="secondary">從剪貼簿匯入</button><button id="copy-config" type="button" class="secondary">複製設定</button></div>
+        <p class="hint">IP 可直接使用 HTTP；公開網域建議使用 HTTPS。Web 管理後台的帳號、密碼與 OTP 不需要提供給一般設備。</p>
+        <button type="submit" class="primary">加入節點</button>
         <button id="disconnect" type="button" class="secondary" hidden>中斷本機連線</button>
         <p id="save-status" role="status"></p>
       </form>

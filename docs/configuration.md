@@ -2,18 +2,21 @@
 
 | 變數 | 必要 | 預設 | 用途 |
 |---|---:|---|---|
-| `POSTGRES_PASSWORD` | 是 | install 隨機產生 | 至少 16 字元；支援英數及 `. _ ~ ! @ % + , : / -`，密碼不再插入資料庫 URL |
-| `NEXDROP_CURSOR_SECRET` | 是 | 無 | 至少 32 字元，用於簽署歷史分頁游標；升級後須保持不變 |
-| `NEXDROP_IMAGE` | 否 | `ghcr.io/honguan/nexdrop:1.0.5` | Node 映像完整標籤 |
-| `NEXDROP_DOMAIN` | 是 | `localhost` | Caddy HTTPS 網域 |
-| `NEXDROP_DATABASE_URL` | 容器內是 | Compose 自動設定 | 不含密碼的 PostgreSQL URL |
-| `NEXDROP_DATABASE_PASSWORD` | 容器內是 | Compose 自動設定 | 原樣傳入的 PostgreSQL 密碼，避免特殊字元被當成 URL 語法 |
-| `NEXDROP_STORAGE_PATH` | 否 | `/var/lib/nexdrop` | 加密分段與備份目錄 |
-| `NEXDROP_WEB_PATH` | 否 | `/usr/share/nexdrop/web` | Web 靜態檔 |
-| `NEXDROP_MIGRATIONS_PATH` | 否 | `/usr/share/nexdrop/migrations` | Migration 目錄 |
-| `NEXDROP_BOOTSTRAP_ADMIN_*` | 首次啟動 | install 產生 | 首位管理員帳號、信箱與至少 12 字元密碼；密碼支援英數及 `. _ ~ ! @ % + , : / -` |
-| `NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE` | 否 | `10` | 每 IP 與識別值登入上限 |
-| `NEXDROP_PAIRING_RATE_LIMIT_PER_MINUTE` | 否 | `10` | 每 IP 與配對身分上限 |
-| `NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE` | 否 | `30` | 每 IP 與管理工作階段上限 |
+| `POSTGRES_PASSWORD` | 是 | install 隨機產生 | PostgreSQL 密碼 |
+| `NEXDROP_CURSOR_SECRET` | 是 | install 隨機產生 | 歷史分頁游標簽章，升級時須保留 |
+| `NEXDROP_IMAGE` | 否 | `ghcr.io/honguan/nexdrop:2.0.0` | Node 映像標籤 |
+| `NEXDROP_NODE_URL` | 是 | `http://伺服器IP` | 顯示及匯入給設備的節點連結 |
+| `NEXDROP_SITE_ADDRESS` | 是 | `:80` | Caddy 監聽位址；網域模式使用 `https://drop.example.com` |
+| `NEXDROP_NODE_OWNER` | 是 | `admin` | 使用節點密鑰加入的設備所屬帳號 |
+| `NEXDROP_NODE_KEY` | 是 | install 隨機產生 | 一般設備加入節點的唯一共享密鑰，至少 32 字元 |
+| `NEXDROP_ALLOWED_IPS` | 否 | 空白 | 逗號分隔來源 IP 白名單；空白不限制 |
+| `NEXDROP_BOOTSTRAP_ADMIN_USERNAME` | 首次啟動 | `admin` | Web 管理員帳號 |
+| `NEXDROP_BOOTSTRAP_ADMIN_EMAIL` | 首次啟動 | `admin@example.com` | Web 管理員電子郵件 |
+| `NEXDROP_BOOTSTRAP_ADMIN_PASSWORD` | 首次啟動 | install 隨機產生 | Web 管理員密碼 |
+| `NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET` | 首次啟動 | install 隨機產生 | Web 管理員 Base32 OTP 密鑰 |
+| `NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE` | 否 | `10` | 登入及節點加入限流 |
+| `NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE` | 否 | `30` | 管理 API 限流 |
 
-`./deploy/nexdrop install` 會顯示全部安全預設，並提供接受、逐項修改或全部重新隨機產生三種選項。`credentials` 預設只顯示管理員的 Bootstrap 初始登入資料；若密碼已重設，該初始值即失效。只有明確執行 `credentials --show-secrets` 才會輸出 PostgreSQL 密碼與游標秘密。`configure` 更新公開／bootstrap 設定；`configure-secrets` 則逐項詢問是否更新或重新隨機產生目前管理員密碼、PostgreSQL 密碼與游標秘密，並在資料庫命令成功後才改寫 `.env`。更換游標秘密會使既有游標失效。`.env` 權限限制為部署使用者可讀且不得提交到 Git。
+`./deploy/nexdrop install` 預設偵測伺服器 IP。安裝完成後會輸出設備一鍵匯入 JSON 及 Web 管理員 OTP 資料。使用網域時，先將 DNS A／AAAA 記錄指向伺服器，再執行 `./deploy/nexdrop configure` 將節點連結改為 HTTPS 網域。
+
+一般設備只需節點連結與節點密鑰；Web 管理後台才需要帳號、密碼及六位數 OTP。`credentials` 會再次顯示上述資料；`credentials --show-secrets` 另外顯示 PostgreSQL 與游標秘密。

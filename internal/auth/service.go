@@ -146,6 +146,25 @@ func (service *Service) validPassword(ctx context.Context, identifier, password 
 	return err == nil && bcrypt.CompareHashAndPassword([]byte(credential.PasswordHash), []byte(password)) == nil
 }
 
+// CurrentTOTPCode returns the six-digit code for a bootstrap secret. It is
+// exported for the deployment CLI so a fresh installation can print the
+// initial OTP together with the authenticator URI.
+func CurrentTOTPCode(secret string, now time.Time) (string, error) {
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(normalizeSecret(secret))
+	if err != nil || len(key) < 16 {
+		return "", ErrInvalidCredentials
+	}
+	counter := uint64(now.UTC().Unix() / 30)
+	message := make([]byte, 8)
+	binary.BigEndian.PutUint64(message, counter)
+	digest := hmac.New(sha1.New, key)
+	_, _ = digest.Write(message)
+	sum := digest.Sum(nil)
+	index := sum[len(sum)-1] & 0x0f
+	value := (uint32(sum[index])&0x7f)<<24 | uint32(sum[index+1])<<16 | uint32(sum[index+2])<<8 | uint32(sum[index+3])
+	return fmt.Sprintf("%06d", value%1000000), nil
+}
+
 func validTOTP(secret, code string, now time.Time) bool {
 	if len(code) != 6 {
 		return false

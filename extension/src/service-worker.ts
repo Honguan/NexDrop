@@ -26,6 +26,19 @@ async function maintainPresence() {
     presence.addEventListener("open", () => {
       heartbeat = setInterval(() => presence?.send(JSON.stringify({ type: "heartbeat" })), 15000);
     });
+    presence.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(String(event.data)) as { type?: string; notification?: { id?: string; type?: string; payload?: Record<string, unknown> } };
+        if (message.type !== "notification" || !message.notification) return;
+        void chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icon128.png",
+          title: message.notification.type === "DEVICE_JOINED" ? "新設備加入 NexDrop" : "NexDrop 收到新訊息",
+          message: message.notification.type === "DEVICE_JOINED" ? String(message.notification.payload?.displayName ?? "新設備已連接") : "開啟 NexDrop 查看聊天室內容。",
+        });
+        if (message.notification.id) presence?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
+      } catch { /* ignore malformed presence frames */ }
+    });
     presence.addEventListener("close", schedulePresenceReconnect);
     presence.addEventListener("error", schedulePresenceReconnect);
   } catch {

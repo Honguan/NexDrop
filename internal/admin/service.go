@@ -156,6 +156,14 @@ type Store interface {
 	DeleteAdminGroupContent(context.Context, auth.Session, string, time.Time) ([]string, error)
 }
 
+type BootstrapTOTPStore interface {
+	BootstrapAdminTOTP(context.Context, string, string) error
+}
+
+type DeviceDeleteStore interface {
+	DeleteAdminDevice(context.Context, auth.Session, string, time.Time) error
+}
+
 type PagedStore interface {
 	ListAdminFailurePage(context.Context, PageOptions) (FailurePage, error)
 	ListAdminAuditLogPage(context.Context, PageOptions) (AuditLogPage, error)

@@ -10,12 +10,11 @@ test("管理後台可局部載入且輪詢不會超過預設限制", async () =>
   assert.match(app, />重試</);
 });
 
-test("待核准設備自行產生配對碼並由信任設備核准", async () => {
+test("2.0 移除配對介面並統一為聊天室", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /第一台信任設備/);
-  assert.match(app, /此設備配對碼/);
-  assert.match(app, /pairing-code/);
-  assert.match(app, /核准新設備/);
-  assert.doesNotMatch(app, /請由管理員核准這個瀏覽器設備/);
-  assert.doesNotMatch(app, /設備已核准/);
+  assert.match(app, /節點聊天室/);
+  assert.match(app, /chat-shell/);
+  assert.match(app, /onDrop/);
+  assert.match(app, /離線設備已刪除/);
+  assert.doesNotMatch(app, /pairing-code|配對碼|核准新設備|此設備配對碼/);
 });

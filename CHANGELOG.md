@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-19
+
+### Added
+
+- 節點連結與節點密鑰的一鍵匯入／複製流程。
+- 統一設備聊天室、圖片／檔案拖放、設備加入與新內容通知。
+- 管理後台離線設備刪除、最後上線與在線狀態。
+- 安裝完成輸出 IP 節點網址、節點密鑰、Web OTP 與可選來源 IP 白名單。
+
+### Changed
+
+- 一般設備直接使用節點密鑰加入，不再使用管理員帳密、OTP、配對碼、待核准或人工核准。
+- 傳送、接收及傳輸紀錄整合為聊天室；預設廣播給全部設備。
+- 指定設備內容改為設備層級可見，其他設備無法讀取該筆對話。
+
+### Removed
+
+- 第一方介面的配對碼、挑戰 ID、待核准設備與管理員配對操作。
+- 節點設定中的六位數設備驗證碼。
+
 ## [1.0.6] - 2026-07-18
 
 ### Changed
@@ -109,3 +129,5 @@
 [1.0.4]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.4
 [1.0.5]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.5
 [1.0.6]: https://github.com/Honguan/NexDrop/releases/tag/v1.0.6
+
+[2.0.0]: https://github.com/Honguan/NexDrop/releases/tag/v2.0.0

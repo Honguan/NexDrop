@@ -19,14 +19,14 @@ async function initialize() {
   try {
     const status = await directStatus();
     if (!status) throw new Error("NOT_PAIRED");
-    statusElement.textContent = status.pending ? "等待核准" : status.connected ? "擴充功能已配對" : "節點離線";
+    statusElement.textContent = status.connected ? "擴充功能已連接" : "節點離線";
     statusElement.classList.toggle("offline", !status.connected);
     renderTargets(status.devices.map((device) => ({ id: device.id, name: device.displayName, online: Boolean(device.online) })));
     sendButton.disabled = !status.connected;
   } catch {
-    statusElement.textContent = "擴充功能未配對";
+    statusElement.textContent = "擴充功能未連接";
     statusElement.classList.add("offline");
-    targetsElement.innerHTML = '<p class="empty">請先開啟「配對設定」登入節點並核准此擴充功能。</p>';
+    targetsElement.innerHTML = '<p class="empty">請先開啟設定，貼上節點連結與節點密鑰。</p>';
   }
 }
 
@@ -49,7 +49,7 @@ function renderTargets(devices: Array<{ id: string; name: string; online: boolea
     return label;
   });
   targetsElement.replaceChildren(...nodes);
-  if (!nodes.length) targetsElement.innerHTML = '<p class="empty">尚無其他已核准設備</p>';
+  if (!nodes.length) targetsElement.innerHTML = '<p class="empty">尚無其他設備</p>';
 }
 
 async function sendContent() {
@@ -82,6 +82,6 @@ function showResult(message: string, success: boolean) {
 
 function messageFor(code?: string, retryAfterSeconds?: number) {
   if (code === "RATE_LIMITED") return retryAfterSeconds ? `操作太頻繁，請在 ${retryAfterSeconds} 秒後再試。` : "操作太頻繁，請稍後再試。";
-  const messages: Record<string, string> = { TARGET_REQUIRED: "請選擇接收設備。", CONTENT_REQUIRED: "請輸入要傳送的內容。", TARGET_UNAVAILABLE: "接收設備目前不可用。", INVALID_TOKEN: "登入已過期，請重新配對。" };
+  const messages: Record<string, string> = { TARGET_REQUIRED: "請選擇接收設備。", CONTENT_REQUIRED: "請輸入要傳送的內容。", TARGET_UNAVAILABLE: "接收設備目前不可用。", INVALID_TOKEN: "連線已過期，請重新加入節點。" };
   return messages[code ?? ""] ?? "傳送失敗，請檢查節點連線。";
 }

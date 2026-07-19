@@ -120,7 +120,7 @@ func (store *testStore) MarkAdminVerified(_ context.Context, _ string, _ time.Ti
 }
 
 func (store *testStore) CreateDevice(_ context.Context, _ auth.Session, name string, kind device.Type, publicKey []byte, algorithm string) (device.Device, error) {
-	item := device.Device{ID: "device-1", DisplayName: name, Type: kind, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: device.TrustPending}
+	item := device.Device{ID: "device-1", DisplayName: name, Type: kind, PublicKey: publicKey, Algorithm: algorithm, TrustStatus: device.TrustTrusted}
 	store.devices = append(store.devices, item)
 	return item, nil
 }
@@ -538,6 +538,34 @@ func TestAdminRateLimitUsesSessionIdentity(t *testing.T) {
 	response := request("session-a")
 	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
 		t.Fatalf("second session-a status = %d, Retry-After = %q", response.Code, response.Header().Get("Retry-After"))
+	}
+}
+
+func TestNodeKeyEnrollment(t *testing.T) {
+	t.Setenv("NEXDROP_NODE_OWNER", "owner")
+	t.Setenv("NEXDROP_NODE_KEY", "0123456789abcdef0123456789abcdef")
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testStore{credential: auth.Credential{
+		User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
+		PasswordHash: string(passwordHash),
+	}}
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, nil, nil, nil, nil, nil).Routes()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/node/enroll", bytes.NewBufferString(`{"nodeKey":"0123456789abcdef0123456789abcdef"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("enroll status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	invalid := httptest.NewRequest(http.MethodPost, "/api/node/enroll", bytes.NewBufferString(`{"nodeKey":"wrong-wrong-wrong-wrong"}`))
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusUnauthorized || !strings.Contains(invalidResponse.Body.String(), "INVALID_NODE_KEY") {
+		t.Fatalf("invalid enrollment status = %d, body = %s", invalidResponse.Code, invalidResponse.Body.String())
 	}
 }
 

@@ -249,6 +249,14 @@ func (store *Store) CreateDevice(ctx context.Context, session auth.Session, name
 	if command.RowsAffected() == 0 {
 		return device.Device{}, device.ErrForbidden
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO notifications (device_id, notification_type, payload, created_at)
+		SELECT id, 'DEVICE_JOINED', jsonb_build_object('deviceId', $1::text, 'displayName', $2), now()
+		FROM devices
+		WHERE user_id=$3 AND id<>$1 AND trust_status='TRUSTED' AND deleted_at IS NULL
+	`, result.ID, result.DisplayName, session.ID); err != nil {
+		return device.Device{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return device.Device{}, err
 	}
@@ -268,7 +276,7 @@ func (store *Store) ListDevices(ctx context.Context, userID string) ([]device.De
 		JOIN device_keys k ON k.device_id = d.id
 		LEFT JOIN device_lan_identities l ON l.device_id = d.id
 		LEFT JOIN device_connections connection ON connection.device_id = d.id
-		WHERE d.user_id = $1
+		WHERE d.user_id = $1 AND d.deleted_at IS NULL
 		ORDER BY d.created_at
 	`, userID)
 	if err != nil {
@@ -1345,7 +1353,7 @@ func (store *Store) ListTransfers(ctx context.Context, session auth.Session) ([]
 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
 		WHERE t.group_deleted_at IS NULL
 		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $1)
-		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
+		  AND ($2::uuid IS NOT NULL AND (t.sender_device_id = $2 OR target.target_device_id = $2))
 		ORDER BY t.created_at DESC
 	`, session.ID, session.DeviceID)
 	if err != nil {
@@ -1398,7 +1406,7 @@ func (store *Store) ListTransferPage(ctx context.Context, session auth.Session, 
 		LEFT JOIN transfer_targets target ON target.transfer_id = t.id
 		WHERE t.group_deleted_at IS NULL
 		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $1)
-		  AND (t.sender_user_id = $1 OR ($2::uuid IS NOT NULL AND target.target_device_id = $2))
+		  AND ($2::uuid IS NOT NULL AND (t.sender_device_id = $2 OR target.target_device_id = $2))
 		  AND ($3::timestamptz IS NULL OR t.created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR t.created_at <= $4)
 		  AND ($5::text = '' OR t.status = $5)
@@ -1455,12 +1463,12 @@ func (store *Store) getTransfer(ctx context.Context, query querier, session auth
 		LEFT JOIN messages m ON m.transfer_id = t.id
 		WHERE t.id = $1 AND t.group_deleted_at IS NULL
 		  AND NOT EXISTS (SELECT 1 FROM transfer_hidden_users hidden WHERE hidden.transfer_id = t.id AND hidden.user_id = $2)
-		  AND (
-			t.sender_user_id = $2 OR ($3::uuid IS NOT NULL AND EXISTS (
+		  AND ($3::uuid IS NOT NULL AND (
+			t.sender_device_id = $3 OR EXISTS (
 				SELECT 1 FROM transfer_targets access_target
 				WHERE access_target.transfer_id = t.id AND access_target.target_device_id = $3
-			))
-		)
+			)
+		  ))
 	`, transferID, session.ID, session.DeviceID).Scan(
 		&result.ID, &result.BatchID, &result.SenderUserID, &result.SenderDeviceID, &result.TargetType,
 		&groupID, &result.ContentType, &result.Content, &result.Status, &result.CreatedAt, &result.ExpiresAt,
@@ -1478,7 +1486,7 @@ func (store *Store) getTransfer(ctx context.Context, query querier, session auth
 		SELECT target_device_id::text, wrapped_content_key
 		FROM transfer_content_keys
 		WHERE transfer_id = $1 AND ($2 OR target_device_id = $3)
-	`, transferID, result.SenderUserID == session.ID, session.DeviceID)
+	`, transferID, session.DeviceID != nil && result.SenderDeviceID == *session.DeviceID, session.DeviceID)
 	if err != nil {
 		return transfer.Transfer{}, err
 	}

@@ -1,8 +1,8 @@
 import { normalizeNodeURL, nodeURL, SharePayload } from "./protocol.js";
 
 type TokenPair = { accessToken: string; refreshToken: string };
-export type DirectDevice = { id: string; displayName: string; publicKey?: string; trustStatus: "PENDING" | "TRUSTED" | "REVOKED"; online?: boolean; lastSeenAt?: string };
-export type DirectStatus = { connected: boolean; pending: boolean; nodeURL: string; devices: DirectDevice[] };
+export type DirectDevice = { id: string; displayName: string; publicKey?: string; trustStatus: "TRUSTED" | "REVOKED"; online?: boolean; lastSeenAt?: string };
+export type DirectStatus = { connected: boolean; nodeURL: string; devices: DirectDevice[] };
 
 const mediaType = "application/vnd.nexdrop.v1+json";
 const tokenKey = "directTokens";
@@ -13,12 +13,12 @@ export class DirectError extends Error {
   constructor(code: string, public readonly retryAfterSeconds?: number) { super(code); }
 }
 
-export async function pairExtension(node: string, identifier: string, password: string, totp: string, displayName: string) {
+export async function pairExtension(node: string, nodeKey: string, displayName: string) {
   const origin = normalizeNodeURL(node);
   const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
   if (!granted) throw new Error("PERMISSION_DENIED");
-  const tokens = await raw<TokenPair>(origin, "/api/auth/login", { method: "POST", body: JSON.stringify({ identifier, password, totp }) });
-  await chrome.storage.local.set({ [tokenKey]: tokens });
+  const tokens = await raw<TokenPair>(origin, "/api/node/enroll", { method: "POST", body: JSON.stringify({ nodeKey }) });
+  await chrome.storage.local.set({ [tokenKey]: tokens, directNodeKey: nodeKey.trim() });
   await chrome.storage.sync.set({ nodeURL: origin });
   const user = await request<{ id: string }>("/api/account");
   const keys = await ensureDeviceKey();
@@ -34,12 +34,12 @@ export async function pairExtension(node: string, identifier: string, password: 
     await chrome.storage.local.set({ [deviceKey]: id, directUserId: user.id });
   }
   const status = await directStatus();
-  if (!status) throw new Error("PAIR_FAILED");
+  if (!status) throw new Error("ENROLL_FAILED");
   return status;
 }
 
 export async function disconnectExtension() {
-  await chrome.storage.local.remove([tokenKey, deviceKey, keyPairKey, "directUserId"]);
+  await chrome.storage.local.remove([tokenKey, deviceKey, keyPairKey, "directUserId", "directNodeKey"]);
 }
 
 export async function directStatus(): Promise<DirectStatus | null> {
@@ -48,10 +48,9 @@ export async function directStatus(): Promise<DirectStatus | null> {
   const devices = await request<DirectDevice[]>("/api/devices");
   const own = devices.find((item) => item.id === stored[deviceKey]);
   if (!own || own.trustStatus === "REVOKED") return null;
-  if (own.trustStatus === "TRUSTED") await attachSession(own.id);
+  await attachSession(own.id);
   return {
-    connected: own.trustStatus === "TRUSTED",
-    pending: own.trustStatus === "PENDING",
+    connected: true,
     nodeURL: await nodeURL(),
     devices: devices.filter((item) => item.id !== own.id && item.trustStatus === "TRUSTED" && item.publicKey),
   };
