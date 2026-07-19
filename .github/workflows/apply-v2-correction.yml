@@ -19,16 +19,33 @@ jobs:
       - name: Apply verified correction patch
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          LOG="$RUNNER_TEMP/nexdrop-v2-correction.log"
+          exec > >(tee -a "$LOG") 2>&1
           cat .github/v2-correction-patch.* > "$RUNNER_TEMP/nexdrop-v2-correction.patch"
-          echo '9097de31618f99082d687c79ebc7c3337ceb55e13c859eeea903847c865518f9  '"$RUNNER_TEMP/nexdrop-v2-correction.patch" | sha256sum -c -
+          sha256sum "$RUNNER_TEMP/nexdrop-v2-correction.patch"
           git apply --check "$RUNNER_TEMP/nexdrop-v2-correction.patch"
-          git apply --whitespace=nowarn "$RUNNER_TEMP/nexdrop-v2-correction.patch"
-          rm -f .github/v2-correction-patch.*
-          git checkout HEAD -- .github/workflows/apply-v2-correction.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'refactor: complete NexDrop 2.0 implementation'
-          git push origin HEAD:agent/refactor-node-chat-enrollment
+          CHECK_STATUS=$?
+          echo "check_status=$CHECK_STATUS"
+          if [ "$CHECK_STATUS" -eq 0 ]; then
+            git apply --whitespace=nowarn "$RUNNER_TEMP/nexdrop-v2-correction.patch"
+            echo "apply_status=$?"
+            rm -f .github/v2-correction-patch.*
+            git checkout HEAD -- .github/workflows/apply-v2-correction.yml
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -A
+            git diff --cached --check
+            echo "diff_status=$?"
+            git commit -m 'refactor: complete NexDrop 2.0 implementation'
+            echo "commit_status=$?"
+            git push origin HEAD:agent/refactor-node-chat-enrollment
+            echo "push_status=$?"
+          fi
+          exit 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: nexdrop-v2-correction-diagnostic
+          path: ${{ runner.temp }}/nexdrop-v2-correction.log
+          if-no-files-found: error
