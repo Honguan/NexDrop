@@ -26,28 +26,49 @@ jobs:
       - name: Apply reviewed patch
         shell: bash
         run: |
-          set -euo pipefail
-          cat tools/nexdrop-fix.patch.xz.b64.* | base64 --decode | xz -dc | git apply --whitespace=error --exclude=.github/workflows/agent-inspect-android.yml
-          rm -f .github/workflows/agent-inspect-android.yml tools/nexdrop-fix.patch.xz.b64.* tools/nexdrop-fix.ready
-          gofmt -w \
-            cmd/nexdrop/main.go \
-            cmd/nexdrop-desktop-service/main.go \
-            cmd/nexdrop-desktop-service/parent_windows.go \
-            cmd/nexdrop-desktop-service/parent_other.go \
-            internal/api/api.go \
-            internal/api/api_test.go \
-            internal/device/service.go \
-            internal/device/service_test.go \
-            internal/postgres/store.go
-          dart format \
-            client/lib/app_controller.dart \
-            client/lib/core/api_client.dart \
-            client/lib/core/node_join.dart \
-            client/lib/core/platform_share.dart \
-            client/lib/main.dart \
-            client/test/api_client_test.dart \
-            client/test/node_join_test.dart
-          git diff --check
+          set -o pipefail
+          {
+            set -euxo pipefail
+            cat tools/nexdrop-fix.patch.xz.b64.* > /tmp/nexdrop-fix.patch.xz.b64
+            wc -c /tmp/nexdrop-fix.patch.xz.b64
+            sha256sum /tmp/nexdrop-fix.patch.xz.b64
+            base64 --decode /tmp/nexdrop-fix.patch.xz.b64 > /tmp/nexdrop-fix.patch.xz
+            wc -c /tmp/nexdrop-fix.patch.xz
+            sha256sum /tmp/nexdrop-fix.patch.xz
+            xz -t /tmp/nexdrop-fix.patch.xz
+            xz -dc /tmp/nexdrop-fix.patch.xz > /tmp/nexdrop-fix.patch
+            wc -c /tmp/nexdrop-fix.patch
+            sha256sum /tmp/nexdrop-fix.patch
+            git apply --check --whitespace=error --exclude=.github/workflows/agent-inspect-android.yml /tmp/nexdrop-fix.patch
+            git apply --whitespace=error --exclude=.github/workflows/agent-inspect-android.yml /tmp/nexdrop-fix.patch
+            rm -f .github/workflows/agent-inspect-android.yml tools/nexdrop-fix.patch.xz.b64.* tools/nexdrop-fix.ready
+            gofmt -w \
+              cmd/nexdrop/main.go \
+              cmd/nexdrop-desktop-service/main.go \
+              cmd/nexdrop-desktop-service/parent_windows.go \
+              cmd/nexdrop-desktop-service/parent_other.go \
+              internal/api/api.go \
+              internal/api/api_test.go \
+              internal/device/service.go \
+              internal/device/service_test.go \
+              internal/postgres/store.go
+            dart format \
+              client/lib/app_controller.dart \
+              client/lib/core/api_client.dart \
+              client/lib/core/node_join.dart \
+              client/lib/core/platform_share.dart \
+              client/lib/main.dart \
+              client/test/api_client_test.dart \
+              client/test/node_join_test.dart
+            git diff --check
+          } 2>&1 | tee /tmp/nexdrop-apply.log
+      - name: Upload apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexdrop-apply-log
+          path: /tmp/nexdrop-apply.log
+          if-no-files-found: error
       - name: Commit fixes
         shell: bash
         run: |
