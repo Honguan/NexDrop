@@ -1,0 +1,24 @@
+name: Agent inspect Android entrypoint
+
+on:
+  push:
+    branches:
+      - agent/fix-windows-exit-device-join
+    paths:
+      - .github/workflows/agent-inspect-android.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate Android activity
+        shell: bash
+        run: |
+          set -eu
+          find client/android/app/src/main -maxdepth 12 -type f -print | sort
+          echo '--- MAIN ACTIVITY ---'
+          find client/android/app/src/main -type f \( -name 'MainActivity.kt' -o -name 'MainActivity.java' \) -print -exec sed -n '1,260p' {} \;
