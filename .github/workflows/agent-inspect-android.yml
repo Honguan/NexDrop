@@ -1,9 +1,9 @@
 name: Agent apply NexDrop fixes
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/fix-windows-exit-device-join
+      - master
     paths:
       - tools/nexdrop-fix.ready
 
@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
