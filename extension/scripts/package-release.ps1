@@ -19,8 +19,8 @@ function Get-OutputChild([string]$Base, [string]$Name) {
 }
 
 function Test-ExtensionPackage([string]$Root, [string]$Browser, [string]$ExpectedVersion) {
-    $expectedPermissions = @('activeTab', 'contextMenus', 'storage') | Sort-Object
-    $expectedOptionalHosts = @('https://*/*', 'http://localhost/*', 'http://127.0.0.1/*') | Sort-Object
+    $expectedPermissions = @('activeTab', 'contextMenus', 'notifications', 'storage') | Sort-Object
+    $expectedOptionalHosts = @('https://*/*', 'http://*/*') | Sort-Object
     $manifestPath = Join-Path $Root 'manifest.json'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($manifest.manifest_version -ne 3) { throw "$Browser package must use Manifest V3" }
