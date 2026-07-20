@@ -20,20 +20,6 @@ curl() {
 
 uuid() { tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid; }
 token() { jq -er '.accessToken'; }
-totp_code() {
-  TOTP_SECRET="$1" node <<'NODE'
-const crypto = require('node:crypto');
-const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-const bits = [...process.env.TOTP_SECRET].map(character => alphabet.indexOf(character).toString(2).padStart(5, '0')).join('');
-const key = Buffer.from(bits.match(/.{8}/g).map(value => Number.parseInt(value, 2)));
-const counter = Buffer.alloc(8);
-counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
-const digest = crypto.createHmac('sha1', key).update(counter).digest();
-const offset = digest[digest.length - 1] & 15;
-const value = (digest.readUInt32BE(offset) & 0x7fffffff) % 1000000;
-process.stdout.write(String(value).padStart(6, '0'));
-NODE
-}
 api() {
   local access="$1"
   shift
@@ -59,7 +45,6 @@ refresh="$(jq -er '.refreshToken' <<<"$login")"
 admin_tokens="$(curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
   --data "$(jq -nc --arg refreshToken "$refresh" '{refreshToken:$refreshToken}')" "$base_url/api/auth/refresh")"
 admin_token="$(token <<<"$admin_tokens")"
-admin_user_id="$(api "$admin_token" "$base_url/api/account" | jq -er '.id')"
 
 sender="$(api "$admin_token" -H 'Content-Type: application/json' \
   --data "$(jq -nc --arg key "$(openssl rand 32 | base64 -w0)" \
@@ -155,43 +140,6 @@ socket.addEventListener('close', event => {
   process.exit(1);
 });
 NODE
-
-totp_setup="$(api "$admin_token" -H 'Content-Type: application/json' \
-  --data "$(jq -nc --arg password "$admin_password" '{password:$password}')" "$base_url/api/auth/totp/setup")"
-totp_secret="$(jq -er '.secret' <<<"$totp_setup")"
-api "$admin_token" -H 'Content-Type: application/json' \
-  --data "$(jq -nc --arg password "$admin_password" --arg secret "$totp_secret" --arg code "$(totp_code "$totp_secret")" \
-    '{password:$password,secret:$secret,code:$code}')" "$base_url/api/auth/totp/enable" >/dev/null
-api "$admin_token" -X POST -H 'Content-Type: application/json' \
-  --data "$(jq -nc --arg password "$admin_password" --arg totp "$(totp_code "$totp_secret")" '{password:$password,totp:$totp}')" \
-  "$base_url/api/auth/admin-verify" >/dev/null
-isolated_username="integration-$(uuid)"
-invitation="$(api "$admin_token" -H 'Content-Type: application/json' \
-  --data "$(jq -nc --arg username "$isolated_username" --arg email "$isolated_username@example.invalid" \
-    '{username:$username,email:$email,admin:false}')" \
-  "$base_url/api/admin/invitations")"
-isolated_password='Integration-isolated-1234'
-curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
-  --data "$(jq -nc --arg token "$(jq -er '.token' <<<"$invitation")" --arg password "$isolated_password" '{token:$token,password:$password}')" \
-  "$base_url/api/auth/invitations/accept" | jq -e --arg username "$isolated_username" '.username == $username' >/dev/null
-isolated_login="$(curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
-  --data "$(jq -nc --arg identifier "$isolated_username" --arg password "$isolated_password" \
-    '{identifier:$identifier,password:$password}')" "$base_url/api/auth/login")"
-expect_status 404 -H "Accept: $accept" -H "Authorization: Bearer $(token <<<"$isolated_login")" \
-  "$base_url/api/transfers/$text_transfer_id"
-
-api "$admin_token" -X PUT -H 'Content-Type: application/json' --data '{"byteLimit":1,"dailyTransferLimit":1}' \
-  "$base_url/api/admin/quotas/USER/$admin_user_id" | jq -e '.byteLimit == 1' >/dev/null
-audit_page="$(api "$admin_token" "$base_url/api/admin/audit-logs?limit=1")"
-audit_cursor="$(jq -er '.nextCursor' <<<"$audit_page")"
-api "$admin_token" "$base_url/api/admin/audit-logs?limit=1&cursor=$audit_cursor" | jq -e '.items | length >= 1' >/dev/null
-expect_status 400 -H "Accept: $accept" -H "Authorization: Bearer $admin_token" \
-  "$base_url/api/admin/audit-logs?cursor=${audit_cursor}x"
-quota_request="$(jq '.files[0].name="over-quota.bin"' <<<"$file_request")"
-expect_status 507 -H 'Content-Type: application/json' -H "Accept: $accept" \
-  -H "Authorization: Bearer $admin_token" -H "Idempotency-Key: $(uuid)" \
-  --data "$quota_request" "$base_url/api/transfers"
-jq -e '.error.code == "QUOTA_EXCEEDED"' "$tmp_dir/response.json" >/dev/null
 
 api "$admin_token" -X POST "$base_url/api/devices/$target_id/revoke" | jq -e '.trustStatus == "REVOKED"' >/dev/null
 expect_status 401 -H "Accept: $accept" -H "Authorization: Bearer $target_token" "$base_url/api/account"

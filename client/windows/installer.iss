@@ -33,5 +33,11 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 Name: "{group}\NexDrop"; Filename: "{app}\NexDrop.exe"
 Name: "{autodesktop}\NexDrop"; Filename: "{app}\NexDrop.exe"; Tasks: desktopicon
 
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\nexdrop"; ValueType: string; ValueName: ""; ValueData: "URL:NexDrop Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nexdrop"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\nexdrop\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\NexDrop.exe,0"
+Root: HKCU; Subkey: "Software\Classes\nexdrop\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\NexDrop.exe"" ""%1"""
+
 [Tasks]
 Name: "desktopicon"; Description: "建立桌面捷徑"; GroupDescription: "其他工作："; Flags: unchecked

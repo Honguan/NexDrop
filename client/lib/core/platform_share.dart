@@ -6,16 +6,22 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 
 class PlatformSharePayload {
-  const PlatformSharePayload({required this.text, required this.files});
+  const PlatformSharePayload({
+    required this.text,
+    required this.files,
+    this.joinUri,
+  });
 
   factory PlatformSharePayload.fromMap(Map<dynamic, dynamic> value) =>
       PlatformSharePayload(
         text: value['text'] as String? ?? '',
         files: (value['files'] as List<dynamic>? ?? const []).cast<String>(),
+        joinUri: value['joinUri'] as String?,
       );
 
   final String text;
   final List<String> files;
+  final String? joinUri;
 }
 
 class PlatformShareService {
@@ -25,6 +31,7 @@ class PlatformShareService {
   StreamSubscription<dynamic>? _subscription;
   Timer? _windowsTimer;
   bool _readingWindowsQueue = false;
+  Process? _windowsService;
 
   Stream<PlatformSharePayload> get shares => _shares.stream;
 
@@ -85,11 +92,12 @@ class PlatformShareService {
       ),
     );
     if (await service.exists()) {
-      await Process.start(
-        service.path,
-        const [],
-        mode: ProcessStartMode.detached,
-      );
+      final process = await Process.start(service.path, [
+        '--parent-pid=$pid',
+      ], mode: ProcessStartMode.normal);
+      _windowsService = process;
+      unawaited(process.stdout.drain<void>());
+      unawaited(process.stderr.drain<void>());
     }
     _windowsTimer = Timer.periodic(
       const Duration(seconds: 1),
@@ -140,7 +148,19 @@ class PlatformShareService {
 
   Future<void> dispose() async {
     _windowsTimer?.cancel();
+    _windowsTimer = null;
     await _subscription?.cancel();
+    _subscription = null;
+    final service = _windowsService;
+    _windowsService = null;
+    if (service != null) {
+      service.kill();
+      try {
+        await service.exitCode.timeout(const Duration(seconds: 3));
+      } on TimeoutException {
+        service.kill();
+      }
+    }
     await _shares.close();
   }
 }

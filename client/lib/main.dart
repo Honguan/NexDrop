@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
@@ -15,6 +14,7 @@ import 'app_controller.dart';
 import 'core/api_client.dart';
 import 'core/local_database.dart';
 import 'core/models.dart';
+import 'core/node_join.dart';
 import 'core/platform_share.dart';
 
 const _backgroundSyncTask = 'nexdrop.background-sync';
@@ -81,6 +81,8 @@ Future<void> main(List<String> arguments) async {
     );
   }
   final controller = AppController();
+  final initialJoin = NodeJoinConfiguration.fromArguments(arguments);
+  if (initialJoin != null) controller.queueJoin(initialJoin);
   final shareIndex = arguments.indexOf('--share');
   if (shareIndex >= 0 && shareIndex + 1 < arguments.length) {
     controller.queueShare(
@@ -150,6 +152,7 @@ class DesktopLifecycle extends StatefulWidget {
 
 class _DesktopLifecycleState extends State<DesktopLifecycle>
     with WindowListener, TrayListener {
+  bool _exiting = false;
   @override
   void initState() {
     super.initState();
@@ -173,23 +176,33 @@ class _DesktopLifecycleState extends State<DesktopLifecycle>
   }
 
   @override
-  void onWindowClose() => unawaited(windowManager.hide());
+  void onWindowClose() => unawaited(_exit());
 
   @override
   void onWindowMinimize() => unawaited(windowManager.hide());
 
   @override
-  void onTrayIconMouseDown() => unawaited(
-    windowManager.show().then((_) => windowManager.focus()),
-  );
+  void onTrayIconMouseDown() =>
+      unawaited(windowManager.show().then((_) => windowManager.focus()));
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
-    if (menuItem.key == 'show') unawaited(windowManager.show());
-    if (menuItem.key == 'exit') {
-      unawaited(
-        windowManager.setPreventClose(false).then((_) => windowManager.close()),
-      );
+    if (menuItem.key == 'show') {
+      unawaited(windowManager.show().then((_) => windowManager.focus()));
+    }
+    if (menuItem.key == 'exit') unawaited(_exit());
+  }
+
+  Future<void> _exit() async {
+    if (_exiting) return;
+    _exiting = true;
+    try {
+      await windowManager.setPreventClose(false);
+      await widget.controller.shutdown();
+      await trayManager.destroy();
+      await windowManager.destroy();
+    } finally {
+      exit(0);
     }
   }
 
@@ -222,61 +235,132 @@ class _LoginViewState extends State<LoginView> {
   final totp = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applyPendingJoin());
+  }
+
+  @override
+  void didUpdateWidget(covariant LoginView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applyPendingJoin());
+  }
+
+  void _applyPendingJoin() {
+    final join = widget.controller.takePendingJoin();
+    if (join == null || !mounted) return;
+    setState(() {
+      node.text = join.nodeUrl;
+      nodeSecret.text = join.nodeSecret;
+    });
+  }
+
+  Future<void> _pasteJoin() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final join = NodeJoinConfiguration.tryParse(data?.text ?? '');
+    if (join == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('剪貼簿沒有有效的 NexDrop 導入資料')));
+      }
+      return;
+    }
+    widget.controller.queueJoin(join);
+  }
+
+  @override
+  void dispose() {
+    node.dispose();
+    nodeSecret.dispose();
+    identifier.dispose();
+    password.dispose();
+    totp.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => Scaffold(
-    body: Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const _Brand(large: true),
-                const SizedBox(height: 28),
-                TextField(
-                  controller: node,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    labelText: '節點網址',
-                    hintText: 'https://drop.example.com',
-                  ),
-                ),
-                const SizedBox(height: 14),
-                TextField(controller: nodeSecret, obscureText: true, decoration: const InputDecoration(labelText: '節點密鑰')),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: identifier,
-                  decoration: const InputDecoration(labelText: '帳號或電子郵件'),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: password,
-                  obscureText: true,
-                  onSubmitted: (_) => _login(),
-                  decoration: const InputDecoration(labelText: '密碼'),
-                ),
-                const SizedBox(height: 14),
-                TextField(controller: totp, keyboardType: TextInputType.number, maxLength: 6, inputFormatters: [FilteringTextInputFormatter.digitsOnly], decoration: const InputDecoration(labelText: 'OTP 六位數驗證碼')),
-                if (widget.controller.error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Text(
-                      widget.controller.error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
+    body: SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const _Brand(large: true),
+                    const SizedBox(height: 28),
+                    TextField(
+                      controller: node,
+                      keyboardType: TextInputType.url,
+                      decoration: const InputDecoration(
+                        labelText: '節點網址',
+                        hintText: 'https://drop.example.com',
                       ),
                     ),
-                  ),
-                const SizedBox(height: 20),
-                FilledButton(
-                  onPressed: widget.controller.busy ? null : _login,
-                  child: Text(
-                    widget.controller.busy ? '正在安全登入…' : '登入 NexDrop',
-                  ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: nodeSecret,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: '節點密鑰'),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: _pasteJoin,
+                        icon: const Icon(Icons.content_paste_go_rounded),
+                        label: const Text('從剪貼簿一鍵帶入'),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: identifier,
+                      decoration: const InputDecoration(labelText: '帳號或電子郵件'),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: password,
+                      obscureText: true,
+                      onSubmitted: (_) => _login(),
+                      decoration: const InputDecoration(labelText: '密碼'),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: totp,
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: 'OTP 六位數驗證碼',
+                      ),
+                    ),
+                    if (widget.controller.error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(
+                          widget.controller.error!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+                    FilledButton(
+                      onPressed: widget.controller.busy ? null : _login,
+                      child: Text(
+                        widget.controller.busy ? '正在安全登入…' : '登入 NexDrop',
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -286,7 +370,13 @@ class _LoginViewState extends State<LoginView> {
 
   void _login() => unawaited(
     widget.controller
-        .login(node.text, nodeSecret.text, identifier.text, password.text, totp.text)
+        .login(
+          node.text,
+          nodeSecret.text,
+          identifier.text,
+          password.text,
+          totp.text,
+        )
         .catchError((_) {}),
   );
 }
@@ -322,11 +412,15 @@ class _WorkspaceState extends State<Workspace> {
     ];
     final body = Column(
       children: [
-
         if (widget.controller.error != null)
           MaterialBanner(
             content: Text(widget.controller.error!),
-            actions: [TextButton(onPressed: () {}, child: const Text('關閉'))],
+            actions: [
+              TextButton(
+                onPressed: widget.controller.clearError,
+                child: const Text('關閉'),
+              ),
+            ],
           ),
         Expanded(child: pages[selected]),
       ],
@@ -538,10 +632,9 @@ class _SendViewState extends State<SendView> {
   }
 
   void _send() {
-    final recipients =
-        widget.controller.devices
-            .where((device) => selectedDevices.contains(device.id))
-            .toList();
+    final recipients = widget.controller.devices
+        .where((device) => selectedDevices.contains(device.id))
+        .toList();
     unawaited(
       widget.controller
           .send(
@@ -562,7 +655,9 @@ class _SendViewState extends State<SendView> {
                 ..clear()
                 ..addAll(
                   widget.controller.devices
-                      .where((device) => device.trusted && device.publicKey != null)
+                      .where(
+                        (device) => device.trusted && device.publicKey != null,
+                      )
                       .map((device) => device.id),
                 );
               routeMode = 'AUTOMATIC';
@@ -575,7 +670,6 @@ class _SendViewState extends State<SendView> {
           .catchError((_) {}),
     );
   }
-
 }
 
 class ActivityView extends StatefulWidget {
@@ -750,9 +844,9 @@ class _ActivityViewState extends State<ActivityView> {
                 onPressed: () async {
                   await Clipboard.setData(ClipboardData(text: text));
                   if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('已複製訊息')),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已複製訊息')));
                   }
                 },
                 icon: const Icon(Icons.copy_rounded),
@@ -799,8 +893,14 @@ class _ActivityViewState extends State<ActivityView> {
         title: const Text('刪除訊息紀錄'),
         content: const Text('只會從你的紀錄移除；其他設備已保存的副本不會被刪除。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
@@ -833,41 +933,41 @@ class _ActivityViewState extends State<ActivityView> {
 class DevicesView extends StatelessWidget {
   const DevicesView({super.key, required this.controller});
   final AppController controller;
+
   @override
   Widget build(BuildContext context) => _Page(
     title: '設備',
-    subtitle: '設備輸入節點連結與節點密鑰後會直接加入，不再使用配對碼。',
+    subtitle: '新設備開啟導入連結後，會自動帶入節點網址與節點密鑰。',
     child: Card(
-      child: Column(
-        children: [
-          if (controller.currentDevice?.trusted == true)
-            ListTile(
-              leading: const Icon(Icons.qr_code_scanner_rounded),
-              title: const Text('核准新設備'),
-              subtitle: const Text('輸入新設備畫面上自動產生的挑戰 ID 與 6 位數配對碼。'),
-              trailing: FilledButton.tonal(
-                onPressed: () => _showPairDialog(context, controller),
-                child: const Text('輸入配對碼'),
-              ),
+      child: controller.devices.isEmpty
+          ? const Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(child: Text('尚未加入任何設備')),
+            )
+          : Column(
+              children: controller.devices
+                  .map(
+                    (device) => ListTile(
+                      leading: Icon(
+                        device.type == 'ANDROID'
+                            ? Icons.phone_android_rounded
+                            : Icons.computer_rounded,
+                      ),
+                      title: Text(device.displayName),
+                      subtitle: Text(
+                        '${device.type} · ${device.online
+                            ? '在線'
+                            : device.lastSeenAt == null
+                            ? '尚未連線'
+                            : '最後上線 ${_date(device.lastSeenAt!)}'}${device.lanCapable ? ' · LAN' : ''}',
+                      ),
+                      trailing: device.trustStatus == 'REVOKED'
+                          ? const Chip(label: Text('已撤銷'))
+                          : const Icon(Icons.verified_user_rounded),
+                    ),
+                  )
+                  .toList(),
             ),
-          ...controller.devices.map(
-            (device) => ListTile(
-              leading: Icon(
-                device.type == 'ANDROID'
-                    ? Icons.phone_android_rounded
-                    : Icons.computer_rounded,
-              ),
-              title: Text(device.displayName),
-              subtitle: Text(
-                '${device.type} · ${device.online ? '在線' : device.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(device.lastSeenAt!)}'}${device.lanCapable ? ' · LAN' : ''}',
-              ),
-              trailing: device.trustStatus == 'PENDING'
-                  ? const Chip(label: Text('待配對'))
-                  : const Icon(Icons.verified_user_rounded),
-            ),
-          ),
-        ],
-      ),
     ),
   );
 }
@@ -885,14 +985,22 @@ class StatisticsView extends StatelessWidget {
             .map(
               (item) => ListTile(
                 leading: CircleAvatar(
-                  backgroundColor: item.online ? Colors.green.shade100 : Colors.grey.shade200,
-                  child: Icon(item.online ? Icons.wifi_rounded : Icons.wifi_off_rounded),
+                  backgroundColor: item.online
+                      ? Colors.green.shade100
+                      : Colors.grey.shade200,
+                  child: Icon(
+                    item.online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                  ),
                 ),
                 title: Text(item.displayName),
                 subtitle: Text(
                   '傳送 ${item.sentCount} 筆／${_formatBytes(item.sentBytes)} · '
                   '接收 ${item.receivedCount} 筆／${_formatBytes(item.receivedBytes)}\n'
-                  '${item.online ? '目前在線' : item.lastSeenAt == null ? '尚未連線' : '最後上線 ${_date(item.lastSeenAt!)}'}',
+                  '${item.online
+                      ? '目前在線'
+                      : item.lastSeenAt == null
+                      ? '尚未連線'
+                      : '最後上線 ${_date(item.lastSeenAt!)}'}',
                 ),
                 isThreeLine: true,
                 trailing: Text(item.deviceType.replaceFirst('WEB_', '')),
@@ -907,7 +1015,9 @@ class StatisticsView extends StatelessWidget {
 String _formatBytes(int value) {
   if (value < 1024) return '$value B';
   if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
-  if (value < 1024 * 1024 * 1024) return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
+  if (value < 1024 * 1024 * 1024) {
+    return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
   return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
 }
 
@@ -930,6 +1040,22 @@ class SettingsView extends StatelessWidget {
               title: Text(controller.api.node.toString()),
               subtitle: Text(controller.nodeOnline ? '節點在線' : '節點離線'),
             ),
+            if (controller.api.nodeJoinUri case final joinUri?)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.link_rounded),
+                title: const Text('其他設備一鍵加入'),
+                subtitle: const Text('複製後在另一台 Windows 或 Android 設備開啟。'),
+                trailing: const Icon(Icons.copy_rounded),
+                onTap: () async {
+                  await Clipboard.setData(ClipboardData(text: joinUri));
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已複製一鍵加入連結')));
+                  }
+                },
+              ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               secondary: const Icon(Icons.cloud_upload_rounded),
@@ -972,178 +1098,6 @@ class SettingsView extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    ),
-  );
-}
-
-class _PendingBanner extends StatefulWidget {
-  const _PendingBanner({required this.controller});
-  final AppController controller;
-
-  @override
-  State<_PendingBanner> createState() => _PendingBannerState();
-}
-
-class _PendingBannerState extends State<_PendingBanner> {
-  Map<String, dynamic>? pairing;
-  bool loading = false;
-  String? pairingDeviceId;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
-  }
-
-  @override
-  void didUpdateWidget(covariant _PendingBanner oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final nextId = widget.controller.currentDevice?.id;
-    if (nextId != pairingDeviceId) {
-      pairing = null;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
-    }
-  }
-
-  Future<void> _refresh() async {
-    final device = widget.controller.currentDevice;
-    if (device == null || device.trusted || loading) return;
-    setState(() {
-      loading = true;
-      pairingDeviceId = device.id;
-    });
-    try {
-      final result = await widget.controller.createPairingCode(device);
-      if (mounted && pairingDeviceId == device.id) setState(() => pairing = result);
-    } catch (_) {
-      // AppController already exposes an actionable error banner.
-    } finally {
-      if (mounted) setState(() => loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final code = pairing?['code'] as String?;
-    final challengeId = pairing?['id'] as String?;
-    final qrPayload = pairing?['qrPayload'] as String?;
-    return MaterialBanner(
-      leading: const Icon(Icons.phonelink_lock_rounded),
-      content: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('此設備尚待配對，配對碼已由本機自動產生。'),
-          if (loading) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
-          if (code != null && challengeId != null) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 16,
-              runSpacing: 12,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                if (qrPayload != null)
-                  QrImageView(data: qrPayload, size: 128, backgroundColor: Colors.white),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(code, style: Theme.of(context).textTheme.headlineMedium),
-                    SelectableText(challengeId, style: Theme.of(context).textTheme.bodySmall),
-                    const SizedBox(height: 4),
-                    const Text('請在 10 分鐘內，於另一台已信任設備輸入以上資料。'),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ],
-      ),
-      actions: [
-        TextButton(onPressed: loading ? null : _refresh, child: const Text('重新產生')),
-        if (qrPayload != null)
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: qrPayload));
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製配對資料')));
-              }
-            },
-            child: const Text('複製配對資料'),
-          ),
-      ],
-    );
-  }
-}
-
-Future<void> _showPairDialog(
-  BuildContext context,
-  AppController controller,
-) async {
-  final challenge = TextEditingController();
-  final code = TextEditingController();
-  final payload = TextEditingController();
-  String? validationError;
-  await showDialog<void>(
-    context: context,
-    builder: (context) => StatefulBuilder(
-      builder: (context, setDialogState) => AlertDialog(
-        title: const Text('核准新設備'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text('請從待核准設備畫面取得自動產生的配對資料，再於這台已信任設備完成核准。'),
-              const SizedBox(height: 12),
-              TextField(
-                controller: payload,
-                decoration: const InputDecoration(
-                  labelText: '貼上完整配對資料（選填）',
-                  helperText: '可貼上 nexdrop://pair 配對資料，自動帶入下方欄位。',
-                ),
-                onChanged: (value) {
-                  final uri = Uri.tryParse(value.trim());
-                  if (uri?.scheme == 'nexdrop' && uri?.host == 'pair') {
-                    challenge.text = uri!.queryParameters['id'] ?? '';
-                    code.text = uri.queryParameters['code'] ?? '';
-                    setDialogState(() => validationError = null);
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: challenge,
-                decoration: const InputDecoration(labelText: '挑戰 ID'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: code,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                decoration: const InputDecoration(labelText: '6 位數配對碼'),
-              ),
-              if (validationError != null)
-                Text(validationError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-            onPressed: () {
-              final challengeID = challenge.text.trim();
-              final pairingCode = code.text.trim();
-              if (challengeID.isEmpty || !RegExp(r'^\d{6}$').hasMatch(pairingCode)) {
-                setDialogState(() => validationError = '請輸入挑戰 ID 與完整的 6 位數配對碼。');
-                return;
-              }
-              Navigator.pop(context);
-              unawaited(controller.redeemPairingCode(challengeID, pairingCode).catchError((_) {}));
-            },
-            child: const Text('核准設備'),
-          ),
-        ],
       ),
     ),
   );
@@ -1221,7 +1175,9 @@ class _Brand extends StatelessWidget {
 Future<String> _desktopTrayIconPath() async {
   final data = await rootBundle.load('windows/runner/resources/app_icon.ico');
   final directory = await getApplicationSupportDirectory();
-  final file = File('${directory.path}${Platform.pathSeparator}nexdrop-tray.ico');
+  final file = File(
+    '${directory.path}${Platform.pathSeparator}nexdrop-tray.ico',
+  );
   final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
   if (!await file.exists() || await file.length() != bytes.length) {
     await file.writeAsBytes(bytes, flush: true);

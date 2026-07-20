@@ -39,9 +39,30 @@ void main() {
             .singleWhere((header) => header.key.toLowerCase() == 'accept')
             .value;
         expect(accept, 'application/vnd.nexdrop.v1+json');
+        expect(captured.headers['X-NexDrop-Node-Key'], 'node-secret');
         expect(captured.body, contains('"totp":"123456"'));
       });
     }
+
+    test('rejects an empty node key before sending a request', () async {
+      var requested = false;
+      final api = ApiClient(
+        client: MockClient((_) async {
+          requested = true;
+          return http.Response('{}', 200);
+        }),
+      );
+
+      await expectLater(
+        api.login('https://node.example', '   ', 'user', 'password', ''),
+        throwsA(
+          isA<ApiException>()
+              .having((error) => error.code, 'code', 'NODE_KEY_REQUIRED')
+              .having((error) => error.statusCode, 'statusCode', 401),
+        ),
+      );
+      expect(requested, isFalse);
+    });
 
     test('preserves Retry-After and formats a rate limit message', () async {
       final api = ApiClient(
@@ -70,11 +91,7 @@ void main() {
                 'retryAfterSeconds',
                 42,
               )
-              .having(
-                apiExceptionMessage,
-                'message',
-                '操作過於頻繁，請在 42 秒後再試',
-              ),
+              .having(apiExceptionMessage, 'message', '操作過於頻繁，請在 42 秒後再試'),
         ),
       );
     });

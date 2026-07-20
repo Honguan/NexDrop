@@ -26,7 +26,6 @@ import (
 	"nexdrop/internal/maintenance"
 	"nexdrop/internal/monitoring"
 	"nexdrop/internal/operations"
-	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
@@ -79,7 +78,6 @@ func main() {
 
 	authService := auth.NewService(store, 15*time.Minute, 30*24*time.Hour)
 	deviceService := device.NewService(store)
-	pairingService := pairing.NewService(store)
 	groupService := group.NewService(store)
 	transferService := transfer.NewService(store)
 	storagePath := os.Getenv("NEXDROP_STORAGE_PATH")
@@ -119,7 +117,7 @@ func main() {
 		_ = collector.RunOnce(context.Background())
 		collector.Start(context.Background(), 5*time.Second)
 	}()
-	applicationAPI := api.NewWithCursorKey([]byte(cursorSecret), authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
+	applicationAPI := api.NewWithCursorKey([]byte(cursorSecret), authService, deviceService, groupService, transferService, fileService, analyticsService)
 	presenceHub := presence.NewHub(authService, store)
 	webPath := os.Getenv("NEXDROP_WEB_PATH")
 	if webPath == "" {
