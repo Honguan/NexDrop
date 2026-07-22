@@ -153,6 +153,7 @@ jobs:
             -url http://127.0.0.1:8080 \
             -username "$NEXDROP_BOOTSTRAP_ADMIN_USERNAME" \
             -password "$NEXDROP_BOOTSTRAP_ADMIN_PASSWORD" \
+            -node-key "$NEXDROP_NODE_KEY" \
             -setup-scenario -devices 100 -online 50 -transfers 10 \
             -requests 1000 -concurrency 10 -max-p95 500ms \
             -environment "GitHub Actions ubuntu-latest; $(nproc) logical CPUs; ${host_memory} memory" \

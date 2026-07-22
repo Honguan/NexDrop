@@ -30,6 +30,7 @@ type configuration struct {
 	baseURL      string
 	username     string
 	password     string
+	nodeKey      string
 	requests     int
 	concurrency  int
 	maximumP95   time.Duration
@@ -185,6 +186,7 @@ func parseFlags() configuration {
 	flag.StringVar(&config.baseURL, "url", "http://127.0.0.1:8080", "NexDrop Node base URL")
 	flag.StringVar(&config.username, "username", "", "scenario account username")
 	flag.StringVar(&config.password, "password", "", "scenario account password")
+	flag.StringVar(&config.nodeKey, "node-key", os.Getenv("NEXDROP_NODE_KEY"), "node key used to register scenario devices")
 	flag.IntVar(&config.requests, "requests", 1000, "number of requests")
 	flag.IntVar(&config.concurrency, "concurrency", 10, "parallel requests")
 	flag.DurationVar(&config.maximumP95, "max-p95", 500*time.Millisecond, "maximum accepted p95")
@@ -225,7 +227,7 @@ func (client *apiClient) setupScenario(ctx context.Context, config configuration
 		}
 		request := map[string]any{"displayName": fmt.Sprintf("Load device %03d", index+1), "type": "WEB_CHROME", "publicKey": privateKey.PublicKey().Bytes(), "keyAlgorithm": "X25519"}
 		var created deviceResponse
-		if err := client.request(ctx, http.MethodPost, "/api/devices", pair.AccessToken, request, http.StatusCreated, &created); err != nil {
+		if err := client.requestWithHeaders(ctx, http.MethodPost, "/api/devices", pair.AccessToken, request, nodeKeyHeaders(config.nodeKey), http.StatusCreated, &created); err != nil {
 			return scenarioState{}, fmt.Errorf("create device %d: %w", index+1, err)
 		}
 		devices = append(devices, loadDevice{id: created.ID, token: pair.AccessToken})
@@ -429,6 +431,13 @@ func (connection *presenceConnection) close() {
 
 func (client *apiClient) request(ctx context.Context, method, path, token string, body any, expected int, output any) error {
 	return client.requestWithHeaders(ctx, method, path, token, body, nil, expected, output)
+}
+
+func nodeKeyHeaders(nodeKey string) map[string]string {
+	if strings.TrimSpace(nodeKey) == "" {
+		return nil
+	}
+	return map[string]string{"X-NexDrop-Node-Key": nodeKey}
 }
 
 func (client *apiClient) requestWithHeaders(ctx context.Context, method, path, token string, body any, headers map[string]string, expected int, output any) error {

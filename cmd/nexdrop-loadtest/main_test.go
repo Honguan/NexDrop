@@ -56,3 +56,13 @@ func TestLatencyTargetIsStrict(t *testing.T) {
 		t.Fatal("failed request should fail acceptance")
 	}
 }
+
+func TestNodeKeyHeaders(t *testing.T) {
+	if headers := nodeKeyHeaders("  "); headers != nil {
+		t.Fatalf("empty node key headers = %#v", headers)
+	}
+	const nodeKey = "test-node-key"
+	if got := nodeKeyHeaders(nodeKey)["X-NexDrop-Node-Key"]; got != nodeKey {
+		t.Fatalf("node key header = %q", got)
+	}
+}

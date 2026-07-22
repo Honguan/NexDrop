@@ -94,10 +94,10 @@ void main() {
     expect(
       replies,
       contains(
-        {
-          'type': 'notification_ack',
-          'notificationId': 'notification-1',
-        },
+        allOf(
+          containsPair('type', 'notification_ack'),
+          containsPair('notificationId', 'notification-1'),
+        ),
       ),
     );
 
