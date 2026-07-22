@@ -4,7 +4,7 @@
 
 NexDrop is a self-hosted hybrid transfer platform for multiple devices. It prefers direct LAN transfer and falls back to private Node storage when peers cannot connect directly. Supported clients include Windows 10/11, Android, Web, Chrome, and Edge.
 
-The current version is **2.0.3**. Core capabilities include node-key onboarding, end-to-end encrypted text and file transfer, resumable chunks, real-time device presence, and per-device statistics. Node administration is intentionally provided through deployment commands instead of a Web administration console.
+The current version is **2.0.4**. Core capabilities include node-key onboarding, end-to-end encrypted text and file transfer, resumable chunks, real-time device presence, and per-device statistics. Node administration is intentionally provided through deployment commands instead of a Web administration console.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ Safe defaults are documented in [.env.example](.env.example); see the [configura
 ./deploy/nexdrop backup --output /var/lib/nexdrop/backups/manual.tar.gz
 ./deploy/nexdrop cleanup --limit 100
 ./deploy/nexdrop update
-# Pin a version: ./deploy/nexdrop update 2.0.3
+# Pin a version: ./deploy/nexdrop update 2.0.4
 ```
 
 ## Security and releases

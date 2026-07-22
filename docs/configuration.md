@@ -6,7 +6,7 @@
 |---|---:|---|---|
 | `POSTGRES_PASSWORD` | Yes | Randomized by install | At least 16 characters; supports letters, digits, and `. _ ~ ! @ % + , : / -`; the password is not embedded in the database URL |
 | `NEXDROP_CURSOR_SECRET` | Yes | None | At least 32 characters; signs history cursors and must remain stable across upgrades |
-| `NEXDROP_IMAGE` | No | `ghcr.io/honguan/nexdrop:2.0.3` | Fully qualified Node image tag |
+| `NEXDROP_IMAGE` | No | `ghcr.io/honguan/nexdrop:2.0.4` | Fully qualified Node image tag |
 | `NEXDROP_DOMAIN` | Yes | `localhost` | Caddy HTTPS host name |
 | `NEXDROP_DATABASE_URL` | Yes in container | Set by Compose | PostgreSQL URL without a password |
 | `NEXDROP_DATABASE_PASSWORD` | Yes in container | Set by Compose | PostgreSQL password passed separately so special characters are not parsed as URL syntax |
