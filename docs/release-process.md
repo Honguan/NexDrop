@@ -1,10 +1,39 @@
 # 發布流程
 
-1. 更新 `VERSION`、各套件版本、CHANGELOG、Release Notes 與相容性資訊。
-2. 確認 integration、server、web、extension、flutter、docker、security、docs 全部通過。
-3. 建立不可變 `v<VERSION>` Tag；推送 Tag 後自動執行 Release Workflow。
-4. Workflow 建置 Node amd64/arm64、Windows EXE/ZIP、Android APK、Chrome/Edge ZIP 與 GHCR 多架構映像。
-5. 驗證 SHA-256、SBOM、Artifact Attestation、容器映像與各平台產物後，發布草稿 Release。
+## 一鍵發布
+
+在 GitHub Actions 開啟 `release-package`，選擇 `patch`、`minor` 或 `major`，填寫更新摘要後按下 **Run workflow**。流程會自動：
+
+1. 同步 `VERSION`、所有套件版本、Windows 資源版本、CHANGELOG 與 Release Notes。
+2. 建立或沿用唯一的 `release/v<版本>` PR。
+3. 主動執行 integration、server、web、extension、flutter、docker、security、docs 必要檢查。
+4. 必要時以 rebase 更新落後的版本分支；所有必要檢查成功後才自動 squash merge。
+5. 從最新 `master` 建立不可變 `v<版本>` Tag，執行並等待 `release` Workflow 完成。
+
+若任何必要檢查失敗，流程會保留版本 PR 及檢查紀錄，不建立 Tag。修正同一個 PR 後重新執行 `release-package` 即可續跑；不會建立重複 PR。若版本 PR 在檢查期間再次落後 `master`，流程最多自動同步並重驗三次。
+
+若版本 PR 已合併但 Tag 或 Release 尚未完成，重新執行會偵測目前 `VERSION` 尚未發布，直接從同一個 `master` Commit 恢復 Tag 與 Release，不會再遞增版本。
+
+## 本機準備版本
+
+需要先在本機檢查或自訂版本時可執行：
+
+```powershell
+./scripts/prepare-release.ps1 -Bump patch -Summary '本版更新摘要'
+./scripts/check-docs.ps1
+```
+
+提交版本 PR 後，既有 `publish-on-version` 流程仍會在 `VERSION` 合併至 `master` 時建立 Tag 並啟動正式發布，作為一鍵流程以外的相容入口。
+
+## 依賴更新 PR
+
+Dependabot 每週一 03:00（Asia/Taipei）把 Go、Web、Extension、Flutter 與 GitHub Actions 的一般版本更新合併為一個 `nexdrop-dependencies` PR。該 PR 會自動 rebase，且只有在全部必要檢查成功後才透過 GitHub Auto-merge 整合；工作流不再依任一個 `check_suite` 成功事件直接合併。
+
+GitHub 目前只支援跨生態系統合併一般版本更新，緊急安全更新仍可能由 Dependabot 建立獨立 PR。這類 PR 不應為了維持數量而關閉；完成安全修補後，下一輪一般更新仍只會有一個整合 PR。
+
+## 正式產物
+
+Release Workflow 建置 Node amd64/arm64、Windows EXE/ZIP、Android APK、Chrome/Edge ZIP 與 GHCR 多架構映像，並驗證 SHA-256、SBOM、Artifact Attestation、容器映像與各平台產物後建立 Release。
 
 正式 Tag 不得重寫。修補版本應建立新的 PATCH Tag。容器正式部署建議固定完整版本；`latest` 僅供一般使用者方便。
 
