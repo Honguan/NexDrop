@@ -1,37 +1,39 @@
-# NexDrop 1.0.0 發布就緒證據
+# NexDrop 1.0.0 release-readiness evidence
 
-本文件記錄 `1.0.0` 的驗證狀態。所有必要 CI 通過，且正式產物可由 Commit、Tag、雜湊與 Attestation 追溯後，即可建立 Stable Release。
+[繁體中文](release-readiness-v1.0.0.zh-TW.md)
 
-## 已通過
+This document records the validation state for `1.0.0`. A stable release can be created after all required CI succeeds and every formal artifact is traceable through its commit, tag, checksum, and attestation.
 
-| 項目 | 證據 |
+## Passed
+
+| Item | Evidence |
 | --- | --- |
-| 交付變更合併 | PR #15 的必要檢查全部成功，並合併為 Commit `47c56fc3262cbe658d191fe6a7f6a9b81b977e20` |
-| 產品版本與文件一致性 | PR #16 docs job 已對照 `VERSION` 驗證 Web、Extension、Flutter、CHANGELOG 與 Release Notes |
-| Go 後端 | `server-ci` 已執行格式、vet、單元測試、race test 與 build |
-| Web | `web-ci` 已執行鎖定安裝、lint、typecheck、單元測試與 production build |
-| Extension | `extension-ci` 已驗證 Chrome／Edge Manifest V3、權限、秘密掃描與個別 ZIP 封裝 |
-| Flutter 基線 | Ubuntu 已通過 analyze、test 與 Android Debug build；Windows 已通過 analyze、test 與 Windows Release build |
-| PostgreSQL 與端對端資料流 | `integration-test` 已驗證 migration、登入、設備、傳輸、續傳、WebSocket、權限、清理、重啟與故障恢復 |
-| 容器與安全基線 | 已驗證容器建置、健康檢查、相依掃描、秘密掃描、SBOM 與授權檢查 |
-| 文件 | `docs` 已驗證 Markdown、相對連結、版本及套件 manifest |
+| Delivery changes merged | Every required check for PR #15 succeeded; it merged as commit `47c56fc3262cbe658d191fe6a7f6a9b81b977e20` |
+| Product and documentation versions | The PR #16 docs job compared `VERSION` with Web, Extension, Flutter, CHANGELOG, and release notes |
+| Go Node | `server-ci` ran formatting, vet, unit tests, race tests, and build |
+| Web | `web-ci` ran locked installation, lint, typecheck, unit tests, and production build |
+| Extension | `extension-ci` verified separate Chrome and Edge Manifest V3 packages, permissions, secret scans, and ZIP archives |
+| Flutter baseline | Ubuntu passed analyze, test, and Android Debug build; Windows passed analyze, test, and Windows Release build |
+| PostgreSQL and end-to-end data flow | `integration-test` verified migrations, login, devices, transfers, resume, WebSocket, authorization, cleanup, restart, and recovery |
+| Container and security baseline | Container builds, health checks, dependency scans, secret scans, SBOM, and license checks passed |
+| Documentation | `docs` verified Markdown, relative links, versions, and package manifests |
 
-## 發布條件
+## Release conditions
 
-| 項目 | 完成條件 |
+| Item | Completion condition |
 | --- | --- |
-| Git Tag | 在 `master` 建立不可變 `v1.0.0` Tag |
-| Release Workflow | Tag 推送後，所有建置工作成功 |
-| Release 完整性 | 產生並重算 SHA-256、SPDX SBOM 與 Artifact Attestation |
-| 容器 | 推送 `1.0.0`、`1.0`、`latest` 並記錄映像 digest |
-| 草稿 Release | 檢查產物名稱、雜湊、Commit 與 Tag 後公開 |
+| Git tag | Create immutable tag `v1.0.0` on `master` |
+| Release workflow | Every build job succeeds after the tag is pushed |
+| Release integrity | Generate and recompute SHA-256, SPDX SBOM, and Artifact Attestation |
+| Container | Push `1.0.0`, `1.0`, and `latest`, and record the image digest |
+| Draft release | Verify artifact names, checksums, commit, and tag before publishing |
 
-## 簽章說明
+## Signing notes
 
-Android keystore 與 Windows PFX 不再是發布阻塞條件：
+An Android keystore and Windows PFX are not release blockers:
 
-- 已設定六項 Secrets：建立並驗證簽章版本。
-- 未設定 Secrets：Android 建立具 v1/v2 臨時簽章的可安裝 APK，Windows 建立未簽章 EXE 與 ZIP；Release Notes 必須標示 Android 後續更新可能需先移除舊版，或 Windows 可能出現 SmartScreen 警告。
-- GHCR 映像仍以 GitHub OIDC、Cosign、Artifact Attestation、SBOM 與 SHA-256 驗證。
+- With all six secrets configured, create and verify the formally signed artifacts.
+- Without those secrets, Android creates an installable APK with a temporary v1/v2 signature and Windows creates unsigned EXE and ZIP packages. Release notes must warn that a later Android update can require uninstalling the older build, or that Windows can display SmartScreen.
+- GHCR images still use GitHub OIDC, Cosign, Artifact Attestation, SBOM, and SHA-256 verification.
 
-因此，個人維護者不需要外部審查者，也可以建立 `v1.0.0` Tag 並完成發布。平台程式碼簽章可在日後取得憑證時補上，並以新的 PATCH 版本重新發布。
+Therefore, a personal maintainer can create tag `v1.0.0` and complete the release without an external reviewer. Formal platform signing can be added later and published in a new PATCH release.

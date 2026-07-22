@@ -24,7 +24,9 @@ jobs:
           grep -q '"version": "'"${version}"'"' extension/package.json
           grep -q '^version: '"${version}"'+' client/pubspec.yaml
           grep -q "## \[${version}\]" CHANGELOG.md
+          grep -q "## \[${version}\]" CHANGELOG.zh-TW.md
           test -f "docs/release-notes-v${version}.md"
+          test -f "docs/release-notes-v${version}.zh-TW.md"
           echo "value=${version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
@@ -210,8 +212,10 @@ jobs:
       - name: 建立實際發布說明
         run: |
           cp 'docs/release-notes-v${{ needs.validate.outputs.version }}.md' release-notes.md
+          printf '\n---\n\n' >> release-notes.md
+          cat 'docs/release-notes-v${{ needs.validate.outputs.version }}.zh-TW.md' >> release-notes.md
           if test '${{ needs.android.outputs.formal_signing }}' != true; then
-            printf '\n## Android 安裝與更新提醒\n\n此 APK 使用臨時簽章，可在 Samsung J6 等 Android 8 裝置安裝。由於後續版本的臨時簽章可能不同，更新時可能需要先移除舊版；要直接覆蓋更新，維護者應設定固定的 Android 正式簽章 Secrets。\n' >> release-notes.md
+            printf '\n## Android installation and updates\n\nThis APK uses a temporary certificate and can be installed on Android 8 devices such as the Samsung J6. A later temporary certificate can differ, requiring the previous APK to be removed before updating. Maintainers must configure persistent Android signing secrets to support in-place updates.\n\n## Android 安裝與更新提醒\n\n此 APK 使用臨時簽章，可在 Samsung J6 等 Android 8 裝置安裝。由於後續版本的臨時簽章可能不同，更新時可能需要先移除舊版；要直接覆蓋更新，維護者應設定固定的 Android 正式簽章 Secrets。\n' >> release-notes.md
           fi
       - env: {GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}
         run: gh release create '${{ github.ref_name }}' release-assets/* --verify-tag --title 'NexDrop ${{ needs.validate.outputs.version }}' --notes-file release-notes.md

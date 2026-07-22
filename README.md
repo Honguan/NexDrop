@@ -1,16 +1,18 @@
 # NexDrop
 
-NexDrop 是可自行架設的混合式多裝置傳輸平台。它會優先在區網直接傳輸，無法直連時改由私有 Node 暫存，支援 Windows 10/11、Android、Web、Chrome 與 Edge。
+[繁體中文](README.zh-TW.md)
 
-目前版本為 **2.0.3**。主要能力包含節點密鑰快速加入、端對端加密文字與檔案、分段續傳、即時設備狀態與逐設備統計。節點維運改由部署命令執行，不再提供 Web 管理後台。
+NexDrop is a self-hosted hybrid transfer platform for multiple devices. It prefers direct LAN transfer and falls back to private Node storage when peers cannot connect directly. Supported clients include Windows 10/11, Android, Web, Chrome, and Edge.
 
-## 架構
+The current version is **2.0.4**. Core capabilities include node-key onboarding, end-to-end encrypted text and file transfer, resumable chunks, real-time device presence, and per-device statistics. Node administration is intentionally provided through deployment commands instead of a Web administration console.
 
-Go 模組化單體提供 API、WebSocket 與傳輸任務服務；PostgreSQL 保存狀態；Flutter 共用 Windows/Android 用戶端；React 提供 Web UI；Manifest V3 擴充功能可獨立配對為一台設備。詳見 [架構文件](docs/architecture.md)。
+## Architecture
 
-## 快速部署 Linux Node
+A modular Go monolith provides the HTTP interface, WebSocket presence, and transfer workers. PostgreSQL stores durable state. A shared Flutter client targets Windows and Android, React powers the Web client, and the Manifest V3 extension registers as an independent device. See the [architecture guide](docs/architecture.md).
 
-需求：Docker Engine 24+、Docker Compose v2、可解析至主機的網域名稱。
+## Quick Linux Node deployment
+
+Requirements: Docker Engine 24+, Docker Compose v2, and a domain name that resolves to the host.
 
 ```bash
 git clone https://github.com/Honguan/NexDrop.git
@@ -19,11 +21,11 @@ cd NexDrop
 docker compose ps
 ```
 
-安裝精靈會自動取得 Docker 所需的管理員權限，說明網域與密碼條件，並產生 PostgreSQL 密碼、游標秘密及管理員密碼。畫面會顯示全部預設值，讓你接受、逐項修改或重新隨機產生；`.env` 會維持為原執行使用者可讀的 `600` 權限。自動化環境可使用 `./deploy/nexdrop install --non-interactive`。
+The installer obtains the required Docker privileges, explains every domain and password rule, and generates PostgreSQL, cursor, and administrator secrets. It displays all generated defaults so the operator can accept, edit, or regenerate them. The resulting `.env` remains readable only by the invoking user with mode `600`. Automated environments can use `./deploy/nexdrop install --non-interactive`.
 
-預設由 Caddy 開放 `80/tcp`、`443/tcp`、`443/udp`；Node 僅在 Compose 網路使用 `8080/tcp`。本機原始碼映像可用 `docker compose build --pull nexdrop` 建置。
+Caddy exposes `80/tcp`, `443/tcp`, and `443/udp` by default. The Node uses `8080/tcp` only inside the Compose network. Build a local source image with `docker compose build --pull nexdrop`.
 
-## 開發與建置
+## Development
 
 ```bash
 go test ./...
@@ -33,18 +35,19 @@ cd ../extension && npm ci && npm test && npm run build
 cd ../client && flutter analyze && flutter test
 ```
 
-- Node 與命令列：[cmd/README.md](cmd/README.md)
-- Windows／Android：[client/README.md](client/README.md)
-- Web：[web/README.md](web/README.md)
-- Extension：[extension/README.md](extension/README.md)
-- 部署管理：[deploy/README.md](deploy/README.md)
+- Node and command line: [cmd/README.md](cmd/README.md)
+- Windows and Android: [client/README.md](client/README.md)
+- Web: [web/README.md](web/README.md)
+- Browser extension: [extension/README.md](extension/README.md)
+- Deployment operations: [deploy/README.md](deploy/README.md)
 
-## 設定與管理
+## Configuration and operations
 
-設定範例位於 [.env.example](.env.example)，完整說明見 [設定文件](docs/configuration.md)。常用命令：
+Safe defaults are documented in [.env.example](.env.example); see the [configuration guide](docs/configuration.md) for every setting. Common commands:
 
 ```bash
 ./deploy/nexdrop status
+./deploy/nexdrop info
 ./deploy/nexdrop credentials
 ./deploy/nexdrop configure
 ./deploy/nexdrop configure-secrets
@@ -53,17 +56,17 @@ cd ../client && flutter analyze && flutter test
 ./deploy/nexdrop backup --output /var/lib/nexdrop/backups/manual.tar.gz
 ./deploy/nexdrop cleanup --limit 100
 ./deploy/nexdrop update
-# 或鎖定版本：./deploy/nexdrop update 2.0.3
+# Pin a version: ./deploy/nexdrop update 2.0.4
 ```
 
-## 安全與發布
+## Security and releases
 
-正式環境必須使用 HTTPS、強密碼及固定完整映像版本，不可提交 `.env`、Token、私鑰、keystore 或簽章憑證。弱點請依 [SECURITY.md](SECURITY.md) 私下回報。
+Production deployments must use HTTPS, strong passwords, and fully pinned image versions. Never commit `.env`, tokens, private keys, keystores, or signing certificates. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
-正式產物與 SHA-256 位於 [GitHub Releases](https://github.com/Honguan/NexDrop/releases)。維護者可在 GitHub Actions 執行 `release-package`，由單一流程建立版本 PR、通過必要檢查、自動整合、建立不可變 Tag 並等待正式產物完成。變更、升級、依賴 PR 規則及故障續跑方式請見 [CHANGELOG.md](CHANGELOG.md) 與 [發布流程](docs/release-process.md)。
+Official artifacts and SHA-256 checksums are published on [GitHub Releases](https://github.com/Honguan/NexDrop/releases). Maintainers can run `release-package` in GitHub Actions to create a version PR, execute required checks, merge it, create an immutable tag, and wait for the release artifacts. See [CHANGELOG.md](CHANGELOG.md) and the [release process](docs/release-process.md).
 
-## 文件
+## Documentation
 
-[文件索引](docs/README.md)包含部署、API、安全、資料模型、協議與故障排除。參與開發前請閱讀 [CONTRIBUTING.md](CONTRIBUTING.md) 與 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+The [documentation index](docs/README.md) links deployment, interface, security, data model, protocol, and troubleshooting guides. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before contributing.
 
-本專案採 [MIT License](LICENSE)。
+NexDrop is available under the [MIT License](LICENSE).

@@ -1,6 +1,8 @@
-# Node 與命令列
+# Node and command-line programs
 
-`cmd/nexdrop` 是 Linux Node；`cmd/nexdrop-desktop-service` 提供 Windows 本機整合；`cmd/nexdrop-bridge` 是瀏覽器 Native Messaging 主機。需求為 Go 1.26.5+。
+[繁體中文](README.zh-TW.md)
+
+`cmd/nexdrop` is the Linux Node, `cmd/nexdrop-desktop-service` provides Windows local integration, and `cmd/nexdrop-bridge` is the browser Native Messaging host. Development requires Go 1.26.5+.
 
 ```bash
 go build ./cmd/nexdrop
@@ -8,4 +10,4 @@ go test ./cmd/... ./internal/...
 NEXDROP_DATABASE_URL='postgres://...' go run ./cmd/nexdrop serve
 ```
 
-Node 支援 `version`、`status`、`doctor`、`backup`、`restore`、`cleanup`、`reset-password`。服務模式依賴 PostgreSQL、migration、檔案儲存目錄及已建置 Web 靜態檔；產物預設位於目前目錄或 `bin/`。
+The Node provides `version`, `status`, `doctor`, `backup`, `restore`, `cleanup`, and `reset-password`. Server mode requires PostgreSQL, migrations, a writable file-storage directory, and built Web assets. Local artifacts are written to the current directory or `bin/` unless a build script selects another destination.

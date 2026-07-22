@@ -1,8 +1,10 @@
-# NexDrop Android 用戶端
+# NexDrop for Android
 
-Android 用戶端使用 Flutter，application ID 為 `io.github.honguan.nexdrop`。
+[繁體中文](README.zh-TW.md)
 
-## 開發建置
+The Flutter Android client uses application ID `io.github.honguan.nexdrop`.
+
+## Development build
 
 ```powershell
 cd client
@@ -12,12 +14,12 @@ flutter test
 flutter build apk --debug
 ```
 
-正式建置建議由受保護的 GitHub Environment Secrets 產生 `android/key.properties` 與固定 keystore，再執行：
+For a stable release identity, use protected GitHub Environment secrets to generate `android/key.properties` and a persistent keystore, then run:
 
 ```powershell
 flutter build apk --release
 ```
 
-Release 不會回退使用 debug key。官方 Workflow 未設定正式 Secrets 時會建立有效期限 30 天的臨時 keystore，產生同時具 v1/v2 簽章的可安裝 APK；這能修正 Samsung J6 的「應用程式套件無效」，但下一版可能需要先移除舊版。固定 keystore 才能讓 Android 直接覆蓋更新，金鑰遺失後無法用同一 application ID 更新既有安裝。
+Release builds never fall back to the debug key. When formal secrets are absent, the official workflow creates a temporary 30-day keystore and produces an installable APK with v1 and v2 signatures. This fixes the "invalid application package" failure on devices such as the Samsung J6, but a later temporary key can require uninstalling the previous build. Only a persistent keystore supports in-place updates; losing it prevents future updates under the same application ID.
 
-最低版本沿用 Flutter 專案設定，包含 Samsung J6 的 Android 8。產物為 `build/app/outputs/flutter-apk/app-release.apk`；發布前必須使用 `apksigner verify --verbose --print-certs` 驗證 v1/v2 簽章與憑證。Android 建置機需預先接受 Flutter 所需 Android SDK 與 NDK 授權。
+The configured minimum Android version includes Android 8 devices such as the Samsung J6. The artifact is `build/app/outputs/flutter-apk/app-release.apk`. Before publishing, verify signatures and certificates with `apksigner verify --verbose --print-certs`. Build machines must accept all Android SDK and NDK licenses required by Flutter.

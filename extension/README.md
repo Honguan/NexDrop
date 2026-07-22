@@ -1,17 +1,19 @@
-# NexDrop Extension
+# NexDrop browser extension
 
-支援 Chrome 與 Edge 的 Manifest V3 擴充套件。擴充功能與 Windows 桌面程式是不同設備，兩者必須各自向 NexDrop 節點配對。
+[繁體中文](README.zh-TW.md)
 
-## 配對與使用
+The Manifest V3 extension supports Chrome and Edge. It is an independent NexDrop device, not an alias for the Windows desktop client, and therefore keeps its own identity and session.
 
-1. 開啟擴充功能的「配對設定」，填入 HTTPS 節點網址、設備名稱、帳號與密碼；啟用 TOTP 時也要填六位數驗證碼。
-2. 同意只針對該節點的網站存取權限。擴充功能會在本機建立 X25519 金鑰並登記為獨立設備。
-3. 同一帳號登入同一 Linux 節點時會自動信任；只有既有待配對或跨節點情境才需要在「設備」頁核准。
-4. 在小視窗輸入文字；接收設備預設全選，可自行取消，並可決定是否附上目前分頁網址。
+## Pairing and daily use
 
-登入權杖與裝置私鑰只保存在擴充功能的本機儲存區。中斷配對後，仍應到 NexDrop Web 撤銷不再使用的設備紀錄。
+1. Open **Pairing settings** and enter the HTTPS Node URL, device name, account, and password. Enter the six-digit verification code when TOTP is enabled.
+2. Grant host access only for that Node. The extension creates a local X25519 key and registers an independent device.
+3. Devices under the same account and Linux Node are trusted automatically. Only an existing pending device or a cross-node scenario requires approval from the **Devices** view.
+4. Enter text in the popup, keep or remove the current tab URL, and select the receiving devices. Trusted devices are selected by default. Unsent text is kept locally, and `Ctrl/Command + Enter` sends without reaching for the button.
 
-## 建置
+Tokens and the device private key remain in extension-local storage. Disconnecting locally does not remove the server record; revoke devices that are no longer used from NexDrop Web.
+
+## Build
 
 ```powershell
 npm ci
@@ -21,6 +23,6 @@ npm test
 npm run build
 ```
 
-在瀏覽器擴充功能頁開啟開發人員模式，載入 `dist` 目錄。正式 Chrome／Edge ZIP 使用 `npm run package` 輸出至根目錄 `dist/`，套件不包含 `.env`、Token 或憑證。
+Enable developer mode on the browser extensions page and load `dist/`. Run `npm run package` for separate Chrome and Edge archives under the repository `dist/` directory. Packages exclude `.env`, tokens, and certificates.
 
-新版擴充功能不要求 Native Messaging 或通知權限，也不需要桌面程式保持連線。
+The current extension does not request Native Messaging or notification permissions and does not depend on a running desktop client.

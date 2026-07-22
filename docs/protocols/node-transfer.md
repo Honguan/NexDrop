@@ -1,3 +1,5 @@
-# Node 傳輸協議
+# Node transfer protocol
 
-Node 透過 HTTPS API 建立任務、上傳加密分段、完成組裝並由目標下載。新版變更操作帶 Idempotency-Key；分段以索引與 SHA-256 去重。Node 強制配額、到期與權限，磁碟不足時拒絕新 Node 檔案，但不阻止文字與 LAN 直傳。
+[繁體中文](node-transfer.zh-TW.md)
+
+The Node creates tasks, accepts encrypted chunks, completes assembly, and serves target downloads through HTTPS. Versioned mutations include an `Idempotency-Key`; chunk index and SHA-256 provide deduplication. The Node enforces quotas, expiration, and authorization. Insufficient disk space rejects new Node-hosted files without blocking text or direct LAN transfer.

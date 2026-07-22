@@ -1,9 +1,11 @@
-# ADR-003：用戶端內容加密
+# ADR-003: Client-side content encryption
 
-狀態：已接受
+[繁體中文](003-client-encryption.zh-TW.md)
 
-背景：自架 Node 不應取得私傳及群組內容明文。
+Status: Accepted
 
-決策：內容在來源端以 AES-256-GCM 加密，內容金鑰以每設備 X25519/HKDF 金鑰包裝。
+Context: A self-hosted Node must not receive plaintext private or group content.
 
-影響：Node 只保存密文；遺失設備私鑰無法由 Node 恢復內容。
+Decision: Encrypt content at the source with AES-256-GCM. Wrap the content key independently for every device through X25519 and HKDF.
+
+Consequences: The Node stores only ciphertext. It cannot recover content after a device private key is lost.

@@ -10,7 +10,12 @@ on:
         type: choice
         options: [patch, minor, major]
       summary:
-        description: 本版更新摘要
+        description: Release summary
+        required: true
+        default: Maintenance and dependency updates
+        type: string
+      summary_zh_tw:
+        description: 繁體中文更新摘要
         required: true
         default: 維護與依賴更新
         type: string
@@ -89,6 +94,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUMMARY: ${{ inputs.summary }}
+          SUMMARY_ZH_TW: ${{ inputs.summary_zh_tw }}
           VERSION: ${{ steps.version.outputs.value }}
         shell: bash
         run: |
@@ -102,7 +108,7 @@ jobs:
             git switch --create "$branch" --track "origin/$branch"
             test "$(tr -d '\r\n' < VERSION)" = "$VERSION"
           else
-            pwsh -NoProfile -File ./scripts/prepare-release.ps1 -Version "$VERSION" -Summary "$SUMMARY"
+            pwsh -NoProfile -File ./scripts/prepare-release.ps1 -Version "$VERSION" -Summary "$SUMMARY" -SummaryZhTW "$SUMMARY_ZH_TW"
             git switch --create "$branch"
             git add --all
             git commit -m "chore: release v${VERSION}"

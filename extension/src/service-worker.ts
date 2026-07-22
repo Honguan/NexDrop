@@ -9,7 +9,9 @@ const menuItems: Array<chrome.contextMenus.CreateProperties> = [
 ];
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.removeAll(() => menuItems.forEach((item) => chrome.contextMenus.create(item)));
+  chrome.contextMenus.removeAll(() =>
+    menuItems.forEach((item) => chrome.contextMenus.create(item)),
+  );
   void maintainPresence();
 });
 
@@ -48,31 +50,61 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (payload) void openWebShare(payload);
 });
 
-chrome.runtime.onMessage.addListener((message: { type?: string; payload?: SharePayload }, _sender, respond) => {
-  if (message.type === "presence_reconnect") {
-    presenceEnabled = true;
-    void maintainPresence();
-    respond({ ok: true });
-    return false;
-  }
-  if (message.type === "presence_disconnect") {
-    presenceEnabled = false;
-    if (heartbeat) clearInterval(heartbeat);
-    if (reconnect) clearTimeout(reconnect);
-    presence?.close();
-    presence = null;
-    respond({ ok: true });
-    return false;
-  }
-  if (message.type !== "share" || !message.payload) return false;
-  sendDirect(message.payload).then(() => respond({ ok: true })).catch((error: unknown) => respond({ ok: false, error: error instanceof Error ? error.message : "SEND_FAILED", retryAfterSeconds: error instanceof DirectError ? error.retryAfterSeconds : undefined }));
-  return true;
-});
+chrome.runtime.onMessage.addListener(
+  (
+    message: { type?: string; payload?: SharePayload },
+    _sender,
+    respond,
+  ) => {
+    if (message.type === "presence_reconnect") {
+      presenceEnabled = true;
+      void maintainPresence();
+      respond({ ok: true });
+      return false;
+    }
+    if (message.type === "presence_disconnect") {
+      presenceEnabled = false;
+      if (heartbeat) clearInterval(heartbeat);
+      if (reconnect) clearTimeout(reconnect);
+      presence?.close();
+      presence = null;
+      respond({ ok: true });
+      return false;
+    }
+    if (message.type !== "share" || !message.payload) return false;
+    sendDirect(message.payload)
+      .then(() => respond({ ok: true }))
+      .catch((error: unknown) =>
+        respond({
+          ok: false,
+          error: error instanceof Error ? error.message : "SEND_FAILED",
+          retryAfterSeconds:
+            error instanceof DirectError
+              ? error.retryAfterSeconds
+              : undefined,
+        }),
+      );
+    return true;
+  },
+);
 
 function payloadFromMenu(info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab): SharePayload | null {
-  if (info.menuItemId === "nexdrop-selection") return { kind: "SELECTION", text: info.selectionText, title: tab?.title, url: tab?.url };
-  if (info.menuItemId === "nexdrop-link") return { kind: "LINK", url: info.linkUrl, title: tab?.title };
-  if (info.menuItemId === "nexdrop-image") return { kind: "IMAGE", url: info.srcUrl, title: tab?.title };
-  if (info.menuItemId === "nexdrop-page") return { kind: "PAGE", url: tab?.url, title: tab?.title };
+  if (info.menuItemId === "nexdrop-selection") {
+    return {
+      kind: "SELECTION",
+      text: info.selectionText,
+      title: tab?.title,
+      url: tab?.url,
+    };
+  }
+  if (info.menuItemId === "nexdrop-link") {
+    return { kind: "LINK", url: info.linkUrl, title: tab?.title };
+  }
+  if (info.menuItemId === "nexdrop-image") {
+    return { kind: "IMAGE", url: info.srcUrl, title: tab?.title };
+  }
+  if (info.menuItemId === "nexdrop-page") {
+    return { kind: "PAGE", url: tab?.url, title: tab?.title };
+  }
   return null;
 }

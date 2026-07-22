@@ -24,6 +24,7 @@ jobs:
       NEXDROP_TEST_DATABASE_URL: postgres://nexdrop:test-only-password@127.0.0.1:5432/nexdrop_test?sslmode=disable
       NEXDROP_DATABASE_URL: postgres://nexdrop:test-only-password@127.0.0.1:5432/nexdrop_test?sslmode=disable
       NEXDROP_CURSOR_SECRET: integration-test-only-cursor-secret-32-bytes
+      NEXDROP_NODE_KEY: integration-test-only-node-key-32-bytes
       NEXDROP_STORAGE_PATH: /tmp/nexdrop-storage
       NEXDROP_WEB_PATH: web/dist
       NEXDROP_MIGRATIONS_PATH: migrations
@@ -152,6 +153,7 @@ jobs:
             -url http://127.0.0.1:8080 \
             -username "$NEXDROP_BOOTSTRAP_ADMIN_USERNAME" \
             -password "$NEXDROP_BOOTSTRAP_ADMIN_PASSWORD" \
+            -node-key "$NEXDROP_NODE_KEY" \
             -setup-scenario -devices 100 -online 50 -transfers 10 \
             -requests 1000 -concurrency 10 -max-p95 500ms \
             -environment "GitHub Actions ubuntu-latest; $(nproc) logical CPUs; ${host_memory} memory" \
@@ -165,6 +167,7 @@ jobs:
           test "$ready_status" = 503
           unavailable_device_name="Must-not-persist-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           unavailable_write=$(curl --max-time 10 --silent --output /dev/null --write-out '%{http_code}' -H "Authorization: Bearer $recovery_token" \
+            -H "X-NexDrop-Node-Key: $NEXDROP_NODE_KEY" \
             -H 'Content-Type: application/json' --data "$(jq -nc --arg name "$unavailable_device_name" \
               '{displayName:$name,type:"WEB_CHROME",publicKey:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",keyAlgorithm:"X25519"}')" \
             http://127.0.0.1:8080/api/devices || true)

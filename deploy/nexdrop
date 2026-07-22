@@ -11,11 +11,11 @@ fi
 
 ensure_administrator_access() {
     case "$command" in
-        credentials)
+        credentials|info)
             [ -r .env ] && return
             if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
                 echo "需要管理員權限以讀取既有 .env，現在將透過 sudo 顯示設定。"
-                exec sudo -- "$ROOT/deploy/nexdrop" credentials "$@"
+                exec sudo -- "$ROOT/deploy/nexdrop" "$command" "$@"
             fi
             echo "無法讀取 .env；請確認檔案權限或以 sudo 執行此命令。" >&2
             exit 1
@@ -42,7 +42,7 @@ preserve_env_owner() {
 }
 
 env_value() {
-    sed -n "s/^$1=//p" .env | tail -n 1
+    sed -n "s/^$1=//p" .env | tail -n 1 | tr -d '\r'
 }
 
 set_env_value() {
@@ -172,7 +172,7 @@ validate_public_configuration() {
 
 create_default_env() {
     umask 077
-    cp .env.example .env
+    tr -d '\r' <.env.example >.env
     preserve_env_owner
     regenerate_install_secrets
 }
@@ -347,6 +347,19 @@ EOF
   節點密鑰：$(env_value NEXDROP_NODE_KEY)
   Web OTP 密鑰：$(env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)
 EOF
+}
+
+show_info() {
+    ensure_env
+    cat <<EOF
+NexDrop 節點資訊：
+  節點網址：https://$(env_value NEXDROP_DOMAIN)
+  設定映像：$(env_value NEXDROP_IMAGE)
+  Bootstrap 管理員：$(env_value NEXDROP_BOOTSTRAP_ADMIN_USERNAME) <$(env_value NEXDROP_BOOTSTRAP_ADMIN_EMAIL)>
+  設定檔：$ROOT/.env
+  本機原始碼版本：$(cat "$ROOT/VERSION")
+EOF
+    echo "秘密已隱藏；只有明確執行 credentials --show-secrets 才會顯示。"
 }
 
 verify_database_credentials() {
@@ -531,6 +544,13 @@ case "$command" in
         fi
         show_credentials "${1:-}"
         ;;
+    info)
+        if [ "$#" -ne 0 ]; then
+            echo "usage: nexdrop info" >&2
+            exit 2
+        fi
+        show_info
+        ;;
     status) docker compose ps ;;
     logs) docker compose logs "$@" ;;
     backup) docker compose run --rm nexdrop backup "$@" ;;
@@ -555,7 +575,7 @@ case "$command" in
         fi
         ;;
     *)
-        echo "usage: nexdrop {install|configure|configure-secrets|credentials [--show-secrets]|update [VERSION]|status|logs|backup|restore|cleanup|doctor|reset-password|uninstall}" >&2
+        echo "usage: nexdrop {install|configure|configure-secrets|credentials [--show-secrets]|info|update [VERSION]|status|logs|backup|restore|cleanup|doctor|reset-password|uninstall}" >&2
         exit 2
         ;;
 esac

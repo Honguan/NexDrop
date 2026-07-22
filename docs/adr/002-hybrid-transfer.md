@@ -1,9 +1,11 @@
-# ADR-002：LAN 優先的混合路徑
+# ADR-002: LAN-first hybrid routing
 
-狀態：已接受
+[繁體中文](002-hybrid-transfer.zh-TW.md)
 
-背景：同網段應避免 Node 中繼，但離線與跨網路仍需可靠交付。
+Status: Accepted
 
-決策：路徑選擇優先 TLS LAN 直傳，否則使用 Node 暫存；大型檔案可等待 LAN。
+Context: Devices on the same network should avoid Node relay, while offline and cross-network delivery must remain reliable.
 
-影響：用戶端需維護發現、來源檔與重試狀態；每個目標可有不同路徑。
+Decision: Prefer direct TLS LAN transfer, then fall back to Node storage. Large files can wait for LAN availability.
+
+Consequences: Clients maintain discovery, source-file, and retry state. Each target can use a different route.

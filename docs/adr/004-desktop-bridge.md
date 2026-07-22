@@ -1,9 +1,11 @@
-# ADR-004：Web 與桌面橋接
+# ADR-004: Web and desktop bridge
 
-狀態：已接受
+[繁體中文](004-desktop-bridge.zh-TW.md)
 
-背景：瀏覽器擴充功能需要把頁面內容交給已登入的桌面用戶端。
+Status: Superseded by [ADR-005](005-independent-extension.md)
 
-決策：Extension 透過 Native Messaging 呼叫 `nexdrop-bridge`，再連到只監聽本機且使用短期權杖的桌面服務。
+Context: The original browser extension handed page content to an authenticated desktop client.
 
-影響：安裝時需為 Chrome/Edge 個別註冊原生主機；橋接檔與權杖不得對其他使用者開放。
+Decision: The original extension called `nexdrop-bridge` through Native Messaging. The bridge connected to a desktop process that listened only locally and required a short-lived token.
+
+Consequences: That design required separate native-host registration for Chrome and Edge. The current extension no longer uses this bridge.

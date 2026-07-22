@@ -2,21 +2,16 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"nexdrop/internal/analytics"
@@ -52,59 +47,6 @@ func NewWithCursorKey(cursorKey []byte, authService *auth.Service, deviceService
 		cursorKey:  append([]byte(nil), cursorKey...),
 		nodeKey:    strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY")),
 	}
-}
-
-type rateWindow struct {
-	count int
-	reset time.Time
-}
-
-type fixedWindowLimiter struct {
-	mu      sync.Mutex
-	limit   int
-	windows map[string]rateWindow
-}
-
-func newFixedWindowLimiter(limit int) *fixedWindowLimiter {
-	return &fixedWindowLimiter{limit: limit, windows: make(map[string]rateWindow)}
-}
-
-func (limiter *fixedWindowLimiter) allow(key string, now time.Time) (bool, time.Duration) {
-	limiter.mu.Lock()
-	defer limiter.mu.Unlock()
-	window := limiter.windows[key]
-	if window.reset.IsZero() || !now.Before(window.reset) {
-		window = rateWindow{reset: now.Add(time.Minute)}
-	}
-	window.count++
-	limiter.windows[key] = window
-	return window.count <= limiter.limit, time.Until(window.reset)
-}
-
-func rateLimit(name string, fallback int) int {
-	value, err := strconv.Atoi(os.Getenv(name))
-	if err != nil || value < 1 {
-		return fallback
-	}
-	return value
-}
-
-func rateLimitKey(r *http.Request, identity string) string {
-	host := r.RemoteAddr
-	if value, _, err := net.SplitHostPort(host); err == nil {
-		host = value
-	}
-	return host + "|" + strings.ToLower(strings.TrimSpace(identity))
-}
-
-func enforceRateLimit(w http.ResponseWriter, r *http.Request, limiter *fixedWindowLimiter, identity string) bool {
-	allowed, retryAfter := limiter.allow(rateLimitKey(r, identity), time.Now().UTC())
-	if allowed {
-		return true
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter.Seconds()))))
-	writeError(w, http.StatusTooManyRequests, "RATE_LIMITED")
-	return false
 }
 
 func (api *API) nodeKeyRequired(next http.Handler) http.Handler {
@@ -167,60 +109,6 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/statistics/groups", api.statisticsGroups)
 	mux.HandleFunc("GET /api/statistics/node", api.statisticsNode)
 	return apiContract(mux)
-}
-
-const versionMediaType = "application/vnd.nexdrop.v1+json"
-
-type contractResponseWriter struct {
-	http.ResponseWriter
-	requestID string
-	versioned bool
-	status    int
-	errorCode string
-}
-
-func (writer *contractResponseWriter) WriteHeader(status int) {
-	writer.status = status
-	writer.ResponseWriter.WriteHeader(status)
-}
-
-func (writer *contractResponseWriter) Write(data []byte) (int, error) {
-	if writer.status == 0 {
-		writer.WriteHeader(http.StatusOK)
-	}
-	return writer.ResponseWriter.Write(data)
-}
-
-func apiContract(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := newRequestID()
-		w.Header().Set("X-Request-ID", requestID)
-		w.Header().Set("X-NexDrop-API-Version", version.APIVersion)
-		writer := &contractResponseWriter{ResponseWriter: w, requestID: requestID, versioned: strings.Contains(r.Header.Get("Accept"), versionMediaType)}
-		started := time.Now()
-		next.ServeHTTP(writer, r)
-		status := writer.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		attributes := []any{"module", "api", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "error_code", writer.errorCode, "duration_ms", time.Since(started).Milliseconds()}
-		if strings.HasPrefix(r.URL.Path, "/api/transfers/") {
-			if transferID := r.PathValue("id"); transferID != "" {
-				attributes = append(attributes, "transfer_id", transferID)
-			}
-		}
-		slog.Info("API request", attributes...)
-	})
-}
-
-func newRequestID() string {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return fmt.Sprintf("request-%d", time.Now().UnixNano())
-	}
-	value[6] = (value[6] & 0x0f) | 0x40
-	value[8] = (value[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }
 
 func (api *API) version(w http.ResponseWriter, _ *http.Request) {
@@ -942,144 +830,4 @@ func (api *API) authenticate(w http.ResponseWriter, r *http.Request) (auth.Sessi
 		return auth.Session{}, false
 	}
 	return session, true
-}
-
-func decodeJSON(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
-}
-
-func requireIdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if !strings.Contains(r.Header.Get("Accept"), versionMediaType) {
-		return "", true
-	}
-	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if !validUUID(key) {
-		writeError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED")
-		return "", false
-	}
-	return key, true
-}
-
-func validUUID(value string) bool {
-	compact := strings.ReplaceAll(value, "-", "")
-	decoded, err := hex.DecodeString(compact)
-	return err == nil && len(decoded) == 16 && len(value) == 36
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	contentType := "application/json; charset=utf-8"
-	if writer, ok := w.(*contractResponseWriter); ok && writer.versioned {
-		contentType = versionMediaType + "; charset=utf-8"
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
-}
-
-func writeError(w http.ResponseWriter, status int, code string) {
-	if writer, ok := w.(*contractResponseWriter); ok {
-		writer.errorCode = code
-	}
-	if writer, ok := w.(*contractResponseWriter); ok && writer.versioned {
-		writeJSON(w, status, map[string]any{"error": map[string]any{
-			"code": code, "message": errorMessage(code), "request_id": writer.requestID, "details": map[string]any{},
-		}})
-		return
-	}
-	writeJSON(w, status, map[string]string{"error": code})
-}
-
-func errorMessage(code string) string {
-	switch code {
-	case "INTERNAL_ERROR":
-		return "The server could not complete the request."
-	case "RATE_LIMITED":
-		return "Too many requests. Wait for the Retry-After interval before retrying."
-	}
-	return "The request could not be completed (" + code + ")."
-}
-
-func writeDeviceError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, device.ErrInvalid):
-		writeError(w, http.StatusBadRequest, "INVALID_DEVICE")
-	case errors.Is(err, device.ErrNotFound):
-		writeError(w, http.StatusNotFound, "DEVICE_NOT_FOUND")
-	case errors.Is(err, device.ErrForbidden):
-		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
-	default:
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
-	}
-}
-
-func writeGroupError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, group.ErrInvalid):
-		writeError(w, http.StatusBadRequest, "INVALID_GROUP_REQUEST")
-	case errors.Is(err, group.ErrNotFound):
-		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND")
-	case errors.Is(err, group.ErrForbidden):
-		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
-	case errors.Is(err, group.ErrConflict):
-		writeError(w, http.StatusConflict, "GROUP_CONFLICT")
-	default:
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
-	}
-}
-
-func writeTransferError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, transfer.ErrInvalid):
-		writeError(w, http.StatusBadRequest, "INVALID_TRANSFER")
-	case errors.Is(err, transfer.ErrNotFound):
-		writeError(w, http.StatusNotFound, "TRANSFER_NOT_FOUND")
-	case errors.Is(err, transfer.ErrForbidden):
-		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
-	case errors.Is(err, transfer.ErrFileTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE")
-	case errors.Is(err, transfer.ErrQuotaExceeded):
-		writeError(w, http.StatusInsufficientStorage, "QUOTA_EXCEEDED")
-	case errors.Is(err, transfer.ErrStorageFull):
-		writeError(w, http.StatusInsufficientStorage, "STORAGE_FULL")
-	case errors.Is(err, transfer.ErrConflict):
-		writeError(w, http.StatusConflict, "TRANSFER_STATE_CONFLICT")
-	case errors.Is(err, transfer.ErrIdempotencyConflict):
-		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
-	default:
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
-	}
-}
-
-func writeFileError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, filetransfer.ErrInvalid):
-		writeError(w, http.StatusBadRequest, "INVALID_FILE_OPERATION")
-	case errors.Is(err, filetransfer.ErrNotFound):
-		writeError(w, http.StatusNotFound, "FILE_NOT_FOUND")
-	case errors.Is(err, filetransfer.ErrForbidden):
-		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
-	case errors.Is(err, filetransfer.ErrConflict):
-		writeError(w, http.StatusConflict, "FILE_CONFLICT")
-	case errors.Is(err, filetransfer.ErrHash):
-		writeError(w, http.StatusUnprocessableEntity, "HASH_MISMATCH")
-	case errors.Is(err, filetransfer.ErrIncomplete):
-		writeError(w, http.StatusConflict, "FILE_INCOMPLETE")
-	default:
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
-	}
-}
-
-func writeAnalyticsError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, analytics.ErrInvalid):
-		writeError(w, http.StatusBadRequest, "INVALID_ANALYTICS_REQUEST")
-	case errors.Is(err, analytics.ErrForbidden):
-		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
-	case errors.Is(err, analytics.ErrConflict):
-		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
-	default:
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
-	}
 }

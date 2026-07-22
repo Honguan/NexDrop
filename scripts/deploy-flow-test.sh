@@ -7,7 +7,7 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 
 mkdir -p "$WORK/deploy" "$WORK/bin"
 cp "$ROOT/deploy/nexdrop" "$WORK/deploy/nexdrop"
-cp "$ROOT/.env.example" "$ROOT/compose.yaml" "$WORK/"
+cp "$ROOT/.env.example" "$ROOT/compose.yaml" "$ROOT/VERSION" "$WORK/"
 cat >"$WORK/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$DOCKER_LOG"
@@ -101,6 +101,12 @@ printf 'a\n' | ./deploy/nexdrop install
 grep -q "Bootstrap 初始密碼：$admin_password" "$WORK/credentials.out"
 grep -q "節點密鑰：$node_key" "$WORK/credentials.out"
 grep -q "Web OTP 密鑰：$totp_secret" "$WORK/credentials.out"
+./deploy/nexdrop info >"$WORK/info.out"
+grep -q '節點網址：https://localhost' "$WORK/info.out"
+grep -q '設定映像：ghcr.io/honguan/nexdrop:1.2.3' "$WORK/info.out"
+grep -q 'Bootstrap 管理員：admin <admin@example.com>' "$WORK/info.out"
+! grep -q "$postgres_password" "$WORK/info.out"
+! grep -q "$cursor_secret" "$WORK/info.out"
 
 old_postgres_password=$(value POSTGRES_PASSWORD)
 old_cursor_secret=$(value NEXDROP_CURSOR_SECRET)
