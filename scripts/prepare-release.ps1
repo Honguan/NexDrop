@@ -3,6 +3,7 @@ param(
     [string]$Bump = 'patch',
     [string]$Version = '',
     [string]$Summary = 'Maintenance and dependency updates',
+    [string]$SummaryZhTW = 'Maintenance and dependency updates',
     [string]$RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$CheckOnly
 )
@@ -119,10 +120,15 @@ Assert-Contains 'client/windows/runner/Runner.rc' "`"$currentVersion`""
 Assert-Contains 'CHANGELOG.md' '## [Unreleased]'
 Assert-Contains 'docs/release-notes-template.md' '{{VERSION}}'
 Assert-Contains 'docs/release-notes-template.md' '{{SUMMARY}}'
+Assert-Contains 'docs/release-notes-template.zh-TW.md' '{{VERSION}}'
+Assert-Contains 'docs/release-notes-template.zh-TW.md' '{{SUMMARY}}'
 
 $releaseNotesPath = "docs/release-notes-v$nextVersion.md"
-if (Test-Path -LiteralPath (Join-Path $RepositoryRoot $releaseNotesPath)) {
-    throw "Release notes already exist: $releaseNotesPath"
+$releaseNotesZhTWPath = "docs/release-notes-v$nextVersion.zh-TW.md"
+foreach ($path in @($releaseNotesPath, $releaseNotesZhTWPath)) {
+    if (Test-Path -LiteralPath (Join-Path $RepositoryRoot $path)) {
+        throw "Release notes already exist: $path"
+    }
 }
 
 if ($CheckOnly) {
@@ -133,6 +139,10 @@ if ($CheckOnly) {
 $summaryLine = ($Summary.Trim() -replace '[\r\n]+', ' ')
 if ([string]::IsNullOrWhiteSpace($summaryLine)) {
     throw 'Summary must not be empty'
+}
+$summaryZhTWLine = ($SummaryZhTW.Trim() -replace '[\r\n]+', ' ')
+if ([string]::IsNullOrWhiteSpace($summaryZhTWLine)) {
+    throw 'Traditional Chinese summary must not be empty'
 }
 
 foreach ($relativePath in $versionFiles) {
@@ -163,5 +173,11 @@ if ($releaseNotes.Contains('{{VERSION}}') -or $releaseNotes.Contains('{{SUMMARY}
     throw 'Release notes template contains unresolved placeholders'
 }
 Write-RepositoryText $releaseNotesPath ($releaseNotes + "`n")
+
+$releaseNotesZhTW = (Read-RepositoryText 'docs/release-notes-template.zh-TW.md').Replace('{{VERSION}}', $nextVersion).Replace('{{SUMMARY}}', $summaryZhTWLine)
+if ($releaseNotesZhTW.Contains('{{VERSION}}') -or $releaseNotesZhTW.Contains('{{SUMMARY}}')) {
+    throw 'Traditional Chinese release notes template contains unresolved placeholders'
+}
+Write-RepositoryText $releaseNotesZhTWPath ($releaseNotesZhTW + "`n")
 
 Write-Output "Prepared NexDrop $nextVersion (build $nextBuild)."

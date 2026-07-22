@@ -1,39 +1,42 @@
-# API v1
+# HTTP interface v1
 
-基礎路徑為 `/api`，時間使用 UTC RFC 3339，資源 ID 使用 UUID。所有回應包含：
+[繁體中文](api.zh-TW.md)
+
+The base path is `/api`. Times use UTC RFC 3339 and resource IDs use UUIDs. Every response includes:
 
 ```text
 X-Request-ID: <UUID>
 X-NexDrop-API-Version: 1
 ```
 
-第一方用戶端送出 `Accept: application/vnd.nexdrop.v1+json`。新版錯誤格式：
+First-party clients send `Accept: application/vnd.nexdrop.v1+json`. Versioned errors use:
 
 ```json
 {"error":{"code":"INVALID_TOKEN","message":"...","request_id":"...","details":{}}}
 ```
 
-未協商媒體型別的 1.x 舊用戶端仍取得 `{"error":"INVALID_TOKEN"}`。
+Legacy 1.x clients that do not negotiate the media type continue to receive `{"error":"INVALID_TOKEN"}`.
 
-遇到 `RATE_LIMITED` 時，新版錯誤訊息會要求依 `Retry-After` 回應標頭等待後再試；用戶端不得立即連續重送。
+When the Node returns `RATE_LIMITED`, versioned clients wait for the `Retry-After` response header instead of immediately resending the request.
 
-建立傳輸、上傳分段、完成檔案、同步統計、回報進度及已讀須送 `Idempotency-Key: <UUID>`。相同 key 與內容會重播原結果；不同內容回傳 `IDEMPOTENCY_CONFLICT`。
+Creating a transfer, uploading a chunk, completing a file, synchronizing metrics, reporting progress, and marking content read require `Idempotency-Key: <UUID>`. Reusing a key with the same request replays the original result. Reusing it with different content returns `IDEMPOTENCY_CONFLICT`.
 
+Cursor-based lists use:
 
 ```json
 {"items":[],"nextCursor":"<opaque signed cursor>"}
 ```
 
-游標以 HMAC 綁定 UTC 建立時間與穩定 UUID 排序鍵；用戶端不得解析或修改，簽章不符會回傳 `INVALID_PAGE`。管理端失敗列表的 `status` 篩選目標狀態，稽核列表則以 `status` 篩選稽核動作。
+The HMAC-protected cursor binds a UTC creation time to a stable UUID ordering key. Clients must neither parse nor modify it. An invalid signature returns `INVALID_PAGE`. The administration failure list applies `status` to target state; the audit list applies it to the audit action.
 
-主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、API、協議、最低用戶端與建置 Commit。
+Primary resources include auth, account, devices, groups, transfers, files, metrics, statistics, and admin. `GET /api/version` returns product, interface, protocol, minimum-client, and build-commit versions.
 
-## 裝置狀態與信任
+## Device state and trust
 
-已驗證帳號向目前 Linux 節點呼叫 `POST /api/devices` 時，節點會將該裝置直接建立為 `TRUSTED`，並把目前工作階段連結至新裝置。`PENDING`、配對碼及核准端點保留給既有待配對資料與 1.x 相容流程；第一方用戶端不會在同一節點重複要求配對碼。
+When an authenticated account calls `POST /api/devices` against its current Linux Node, the Node creates that device as `TRUSTED` and links the current session to it. `PENDING`, pairing codes, and approval endpoints remain for existing pending records and 1.x compatibility. First-party clients do not request another pairing code on the same Node.
 
-`GET /api/devices` 在既有欄位之外回傳 `online` 與可選的 `lastSeenAt`。`online` 代表裝置仍有未中斷連線，且最近 45 秒內送出過心跳；用戶端應以此欄位顯示即時狀態，不應只依 `trustStatus` 推斷在線狀態。
+Alongside existing fields, `GET /api/devices` returns `online` and an optional `lastSeenAt`. `online` means the device still has an open connection and sent a heartbeat within the previous 45 seconds. Clients use this value for live presence and do not infer presence from `trustStatus`.
 
-`GET /api/statistics/devices` 每台裝置回傳 `deviceType`、`trustStatus`、`online`、可選的 `lastSeenAt`，以及傳送／接收筆數、位元組與平均速率。`GET /api/statistics/node` 仍接受 `from`、`to` 時間範圍；第一方介面只查詢最近兩分鐘並顯示最新節點取樣。節點資源每 5 秒取樣，高頻樣本保留 31 天。
+`GET /api/statistics/devices` returns `deviceType`, `trustStatus`, `online`, optional `lastSeenAt`, sent and received counts, byte totals, and average rates for each device. `GET /api/statistics/node` still accepts `from` and `to`; first-party views query only the latest two minutes and display the newest Node sample. Node resources are sampled every five seconds and high-frequency samples are retained for 31 days.
 
-群組 API 在 1.x 保留供舊版用戶端相容使用，但新版第一方 Web、Windows、Android 與擴充功能不再提供群組傳送入口。
+Group endpoints remain available in 1.x for older clients, but current first-party Web, Windows, Android, and extension clients no longer expose group-transfer entry points.

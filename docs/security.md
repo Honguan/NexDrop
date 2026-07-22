@@ -1,11 +1,13 @@
-# 安全設計
+# Security design
 
-- 密碼以 bcrypt 保存；Access Token 短效，Refresh Token 可撤銷且每次更新都輪替。
-- 管理介面要求管理員身分、近期密碼驗證與 TOTP。
-- 登入、配對、管理端點採固定窗口限制；超額回傳 429 與 `Retry-After`。
-- 內容使用 AES-256-GCM，每台目標設備以 X25519/HKDF 包裝內容金鑰。
-- Node 重新驗證所有權限、配額、檔名與檔案路徑；不信任用戶端角色欄位。
-- JSON 日誌只含 UTC、層級、模組、request/transfer ID、狀態與錯誤碼，不記錄密碼、Token、私鑰或內容。
-- 正式產物須通過 CodeQL、相依掃描、checksum、attestation 與簽章驗證。
+[繁體中文](security.zh-TW.md)
 
-威脅回報方式見根目錄 SECURITY 文件。Node 私鑰、設備私鑰、keystore、PFX、資料庫備份與 `.env` 不得進入 Workflow artifact 或快取。
+- Passwords are stored with bcrypt. Access tokens are short-lived; refresh tokens are revocable and rotate on every refresh.
+- Administrative actions require an administrator identity, recent password verification, and TOTP.
+- Login, pairing, and administration endpoints use fixed-window limits. Exceeded limits return HTTP 429 and `Retry-After`.
+- Content uses AES-256-GCM, with the content key wrapped independently for every receiving device through X25519 and HKDF.
+- The Node revalidates ownership, quotas, filenames, and file paths. It never trusts client-supplied role fields.
+- JSON logs contain only UTC time, level, module, request or transfer ID, status, and error code. They exclude passwords, tokens, private keys, and content.
+- Release artifacts must pass CodeQL, dependency scans, checksum verification, attestations, and applicable signature checks.
+
+See the root [SECURITY policy](../SECURITY.md) for vulnerability reporting. Node private keys, device private keys, keystores, PFX files, database backups, and `.env` must never enter workflow artifacts or caches.

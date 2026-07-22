@@ -15,4 +15,4 @@
 - Protocols: [LAN discovery](protocols/lan-discovery.md), [LAN transfer](protocols/lan-transfer.md), [Node transfer](protocols/node-transfer.md)
 - Architecture decisions: [ADR index](adr/README.md)
 
-The landing pages are English-first. Existing detailed guides remain authoritative while their paired Traditional Chinese and English editions are migrated incrementally.
+Current guides are English-first and provide a paired Traditional Chinese edition. Historical release notes remain unchanged as immutable release records.

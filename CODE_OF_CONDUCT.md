@@ -1,7 +1,9 @@
-# 行為準則
+# Code of conduct
 
-NexDrop 社群承諾提供不因年齡、身心狀態、族群、性別、經驗、國籍、外貌、宗教或性傾向而受騷擾的合作環境。
+[繁體中文](CODE_OF_CONDUCT.zh-TW.md)
 
-參與者應尊重不同觀點、提供具體建設性回饋、承擔錯誤並以專案最佳利益為優先。侮辱、威脅、騷擾、未經同意揭露私人資訊及其他不當行為均不被接受。
+The NexDrop community is committed to a collaborative environment free from harassment based on age, disability, ethnicity, gender, experience, nationality, appearance, religion, or sexual orientation.
 
-請透過專案維護者的 GitHub 私人聯絡管道回報。維護者可移除內容、警告或暫停參與資格，並會盡力保護回報者隱私。
+Participants respect different perspectives, give concrete and constructive feedback, acknowledge mistakes, and prioritize the project's best interests. Insults, threats, harassment, non-consensual disclosure of private information, and other abusive conduct are not accepted.
+
+Report incidents through a private GitHub contact channel for the project maintainers. Maintainers can remove content, issue warnings, or suspend participation, and will make a reasonable effort to protect reporter privacy.

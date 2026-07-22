@@ -1,15 +1,17 @@
-# 故障排除
+# Troubleshooting
 
-1. 執行 `docker compose config`、`docker compose ps`、`./deploy/nexdrop doctor`。
-2. 使用 `./deploy/nexdrop logs nexdrop` 依 request ID 或 transfer ID 搜尋，不要公開完整日誌中的環境資訊。
-3. `/healthz` 失敗表示程序不可用；`/readyz` 失敗通常是 PostgreSQL 連線或 migration 問題。
-4. 上傳被拒絕時檢查單檔、使用者、群組、每日與節點磁碟配額。
-5. LAN 無法直傳時檢查同網段、用戶端在線、防火牆、mDNS/UDP 與 AP isolation；Node 後援不應受影響。
-6. `RATE_LIMITED` 請依 `Retry-After` 等待，不要持續重送。
-7. SHA-256 不符時刪除本次未完成分段並由來源檔重新建立任務；來源檔變更不可沿用舊任務。
-8. `invalid admin request` 表示 bootstrap 管理員名稱、電子郵件或密碼未同時設定或不符長度；執行 `./deploy/nexdrop configure` 後重新建立 Node。
-9. `password authentication failed for user "nexdrop"` 表示 `.env` 與既有 PostgreSQL volume 的密碼不同。未存資料的新安裝可執行 `docker compose down --volumes` 後重新安裝；已有資料時不可刪除 volume，應先備份並由資料庫管理員同步修改 `nexdrop` 角色密碼。
-10. PostgreSQL URL 解析失敗時先確認使用新版 Compose 設定：`NEXDROP_DATABASE_URL` 不含密碼，原始密碼由 `NEXDROP_DATABASE_PASSWORD` 傳入。密碼驗證失敗時不要反覆修改 `.env`；既有資料庫須先同步角色密碼。
-11. Android 顯示「應用程式套件無效」時，先用 `apksigner verify --verbose` 檢查 APK。NexDrop 發布 APK 必須具 v1/v2 簽章並包含 `armeabi-v7a`；若同一 application ID 已安裝不同簽章版本，須先備份本機資料並移除舊版，或改用原本的固定簽章重新建置。
+[繁體中文](troubleshooting.zh-TW.md)
 
-升級失敗先保留資料卷與備份，不要執行 `docker compose down --volumes`。
+1. Run `docker compose config`, `docker compose ps`, and `./deploy/nexdrop doctor`.
+2. Use `./deploy/nexdrop logs nexdrop` and search by request ID or transfer ID. Do not publish complete logs containing environment details.
+3. A failed `/healthz` means the process is unavailable. A failed `/readyz` usually indicates PostgreSQL connectivity or migration trouble.
+4. If an upload is rejected, inspect per-file, user, group, daily, and Node disk quotas.
+5. If direct LAN transfer fails, inspect the subnet, client presence, firewall, mDNS or UDP, and access-point isolation. Node fallback should remain available.
+6. For `RATE_LIMITED`, wait for `Retry-After` instead of repeatedly resending.
+7. After a SHA-256 mismatch, remove the unfinished chunks and create a new task from the source file. A changed source file cannot reuse the old task.
+8. `invalid admin request` means the bootstrap administrator username, email, or password is missing or invalid. Run `./deploy/nexdrop configure`, then recreate the Node container.
+9. `password authentication failed for user "nexdrop"` means `.env` does not match the existing PostgreSQL volume. A new installation with no stored data can run `docker compose down --volumes` and reinstall. If data exists, never delete the volume; back it up and have a database administrator update the `nexdrop` role password.
+10. If PostgreSQL URL parsing fails, confirm that the current Compose configuration keeps `NEXDROP_DATABASE_URL` free of passwords and passes the raw value through `NEXDROP_DATABASE_PASSWORD`. Do not repeatedly edit `.env` after authentication failures; synchronize the role password in the existing database first.
+11. If Android reports an invalid application package, run `apksigner verify --verbose` against the APK. NexDrop release APKs require v1/v2 signatures and `armeabi-v7a`. If the same application ID is already installed with another certificate, back up local data and remove the older build, or rebuild with its original persistent signing key.
+
+After an upgrade failure, preserve all data volumes and backups. Never run `docker compose down --volumes` as a recovery shortcut.
