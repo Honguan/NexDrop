@@ -1,6 +1,6 @@
 # NexDrop 2.0.4
 
-[繁體中文](release-notes-v2.0.4.zh-TW.md)
+[Traditional Chinese](release-notes-v2.0.4.zh-TW.md)
 
 Improves bilingual documentation, API and realtime boundaries, extension productivity, Flutter send and connection reliability, deployment diagnostics, and Go 1.26 security automation.
 

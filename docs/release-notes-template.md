@@ -1,6 +1,6 @@
 # NexDrop {{VERSION}}
 
-[繁體中文](release-notes-v{{VERSION}}.zh-TW.md)
+[Traditional Chinese](release-notes-v{{VERSION}}.zh-TW.md)
 
 {{SUMMARY}}
 
