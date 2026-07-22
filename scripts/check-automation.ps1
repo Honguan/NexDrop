@@ -58,6 +58,22 @@ foreach ($workflow in $requiredWorkflows) {
     }
 }
 
+$securityWorkflow = Read-RepoFile '.github/workflows/security.yml'
+foreach ($required in @('govulncheck@v1.6.0', 'go-licenses@v1.0.0', 'License is not on the approved list')) {
+    if (-not $securityWorkflow.Contains($required)) {
+        throw "Security workflow is missing: $required"
+    }
+}
+
+$integrationWorkflow = Read-RepoFile '.github/workflows/integration-test.yml'
+$integrationSmoke = Read-RepoFile 'scripts/integration-smoke.sh'
+if (-not $integrationWorkflow.Contains('NEXDROP_NODE_KEY: integration-test-only')) {
+    throw 'Integration workflow must test with a Node key'
+}
+if (-not $integrationSmoke.Contains('X-NexDrop-Node-Key: $node_key')) {
+    throw 'Integration smoke test must send the Node key'
+}
+
 $releasePackage = Read-RepoFile '.github/workflows/release-package.yml'
 foreach ($required in @(
     'scripts/prepare-release.ps1',
