@@ -18,6 +18,8 @@ The shared Flutter client officially supports Windows 10/11 and Android.
 - Platform-secure storage on Android and Windows
 - Local SQLite history, drafts, pending LAN tasks, and statistics queue
 
+The send workspace and the shared refreshable page shell are isolated UI modules. This keeps file selection, keyboard shortcuts, and refresh behavior independently testable without coupling them to application startup.
+
 ## Requirements and development
 
 Use Flutter stable with either the Windows 10/11 development tools or an Android SDK. Application settings belong in platform-secure storage and must not be embedded in source code.
