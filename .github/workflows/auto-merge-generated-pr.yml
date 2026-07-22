@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           case "$PR_AUTHOR" in
-            dependabot[bot]|github-actions[bot]) ;;
+            "dependabot[bot]"|"github-actions[bot]") ;;
             *) echo "Not a trusted generated PR author: $PR_AUTHOR"; exit 0 ;;
           esac
           if test "$PR_DRAFT" = true; then
