@@ -55,14 +55,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod}
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: {node-version: 24}
       - run: npm audit --omit=dev --audit-level=high
         working-directory: web
       - run: npm audit --omit=dev --audit-level=high
         working-directory: extension
-      - run: go run github.com/google/go-licenses@v1.6.0 check ./... --disallowed_types=forbidden,restricted
+      - name: Verify Go dependency licenses
+        shell: bash
+        run: |
+          report=$(mktemp)
+          trap 'rm -f -- "$report"' EXIT
+          go run github.com/google/go-licenses@v1.0.0 check ./...
+          go run github.com/google/go-licenses@v1.0.0 csv ./... > "$report"
+          awk -F, '
+            NF != 3 || $3 !~ /^(Apache-2.0|BSD-2-Clause|BSD-3-Clause|ISC|MIT|OpenSSL)$/ {
+              print "License is not on the approved list: " $0 > "/dev/stderr"
+              denied = 1
+            }
+            END { exit denied }
+          ' "$report"
   dart:
     name: security-dart
     needs: changes
