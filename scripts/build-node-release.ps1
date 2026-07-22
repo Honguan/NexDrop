@@ -35,7 +35,7 @@ try {
 			$env:CGO_ENABLED = '0'
 			$env:GOOS = 'linux'
 			$env:GOARCH = $architecture
-			go build -trimpath -ldflags "-s -w -X nexdrop/internal/version.ProductVersion=$Version -X nexdrop/internal/version.BuildCommit=$Commit" -o (Join-Path $stage 'nexdrop') ./cmd/nexdrop
+			go build -trimpath -ldflags "-s -w -X main.version=$Version -X nexdrop/internal/version.ProductVersion=$Version -X nexdrop/internal/version.BuildCommit=$Commit" -o (Join-Path $stage 'nexdrop') ./cmd/nexdrop
 			if ($LASTEXITCODE -ne 0) { throw "Node $architecture build failed" }
 			Copy-Item -Recurse migrations (Join-Path $stage 'migrations')
 			tar -czf $temporaryArchive -C $work $packageName

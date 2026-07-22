@@ -320,27 +320,6 @@ func (store *Store) DeleteDevice(ctx context.Context, userID, deviceID string) e
 	return nil
 }
 
-func (store *Store) ApproveDevice(ctx context.Context, session auth.Session, deviceID string) (device.Device, error) {
-	result, err := scanDevice(store.pool.QueryRow(ctx, `
-		UPDATE devices d SET trust_status = 'TRUSTED'
-		FROM device_keys k
-		WHERE d.id = $1 AND k.device_id = d.id AND d.revoked_at IS NULL
-		  AND ($2 OR EXISTS (
-		      SELECT 1 FROM user_sessions s
-		      JOIN devices actor ON actor.id = s.device_id
-		      WHERE s.id = $3 AND s.revoked_at IS NULL
-		        AND actor.user_id = d.user_id
-		        AND actor.trust_status = 'TRUSTED' AND actor.revoked_at IS NULL
-		  ))
-		RETURNING d.id::text, d.display_name, d.device_type, k.public_key, k.key_algorithm,
-		          d.trust_status, d.revoked_at, d.created_at
-	`, deviceID, session.Admin, session.SessionID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return device.Device{}, device.ErrForbidden
-	}
-	return result, err
-}
-
 func (store *Store) RevokeDevice(ctx context.Context, session auth.Session, deviceID string, now time.Time) (device.Device, error) {
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {
@@ -378,15 +357,13 @@ func (store *Store) CreatePairingCode(ctx context.Context, session auth.Session,
 		SELECT target.id, $2, $3, $4, $5
 		FROM devices target
 		WHERE target.id = $1 AND target.trust_status = 'PENDING' AND target.revoked_at IS NULL
-		  AND ($6 OR EXISTS (
+		  AND EXISTS (
 		      SELECT 1 FROM user_sessions s
-		      JOIN devices actor ON actor.id = s.device_id
-		      WHERE s.id = $2 AND s.revoked_at IS NULL
-		        AND actor.user_id = target.user_id
-		        AND actor.trust_status = 'TRUSTED' AND actor.revoked_at IS NULL
-		  ))
+		      WHERE s.id = $2 AND s.device_id = target.id
+		        AND s.revoked_at IS NULL
+		  )
 		RETURNING id::text
-	`, deviceID, session.SessionID, codeHash, expiresAt, now, session.Admin).Scan(&id)
+	`, deviceID, session.SessionID, codeHash, expiresAt, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", device.ErrForbidden
 	}
@@ -408,18 +385,21 @@ func (store *Store) RedeemPairingCode(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var sessionOwnsDevice bool
+	var actorUserID string
 	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM user_sessions
-			WHERE id = $1 AND device_id = $2 AND revoked_at IS NULL
-		)
-	`, session.SessionID, deviceID).Scan(&sessionOwnsDevice)
+		SELECT actor.user_id::text
+		FROM user_sessions s
+		JOIN devices actor ON actor.id = s.device_id
+		WHERE s.id = $1 AND actor.id = $2
+		  AND s.revoked_at IS NULL
+		  AND actor.trust_status = 'TRUSTED'
+		  AND actor.revoked_at IS NULL
+	`, session.SessionID, deviceID).Scan(&actorUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return device.Device{}, device.ErrForbidden
+	}
 	if err != nil {
 		return device.Device{}, err
-	}
-	if !sessionOwnsDevice {
-		return device.Device{}, device.ErrForbidden
 	}
 
 	var targetDeviceID string
@@ -427,12 +407,16 @@ func (store *Store) RedeemPairingCode(
 	var attemptCount int
 	var expiresAt time.Time
 	var usedAt *time.Time
+	var targetTrustStatus device.TrustStatus
 	err = tx.QueryRow(ctx, `
-		SELECT target_device_id::text, code_hash, attempt_count, expires_at, used_at
-		FROM device_pairing_codes
-		WHERE id = $1 AND target_device_id = $2
-		FOR UPDATE
-	`, challengeID, deviceID).Scan(&targetDeviceID, &storedHash, &attemptCount, &expiresAt, &usedAt)
+		SELECT code.target_device_id::text, code.code_hash, code.attempt_count, code.expires_at, code.used_at, target.trust_status
+		FROM device_pairing_codes code
+		JOIN devices target ON target.id = code.target_device_id
+		WHERE code.id = $1
+		  AND target.user_id = $2
+		  AND target.revoked_at IS NULL
+		FOR UPDATE OF code
+	`, challengeID, actorUserID).Scan(&targetDeviceID, &storedHash, &attemptCount, &expiresAt, &usedAt, &targetTrustStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return device.Device{}, pairing.ErrInvalidCode
 	}
@@ -441,6 +425,9 @@ func (store *Store) RedeemPairingCode(
 	}
 	if usedAt != nil {
 		return device.Device{}, pairing.ErrUsed
+	}
+	if targetTrustStatus != device.TrustPending {
+		return device.Device{}, pairing.ErrInvalidCode
 	}
 	if !expiresAt.After(now) {
 		return device.Device{}, pairing.ErrExpired

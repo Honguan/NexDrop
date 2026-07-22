@@ -1,0 +1,46 @@
+name: publish-on-version
+
+on:
+  push:
+    branches: [master]
+    paths: [VERSION]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Validate version metadata
+        id: version
+        shell: bash
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          test -n "$version"
+          grep -q '"version": "'"$version"'"' web/package.json
+          grep -q '"version": "'"$version"'"' extension/package.json
+          grep -q '^version: '"$version"'+' client/pubspec.yaml
+          grep -q "## \[$version\]" CHANGELOG.md
+          test -f "docs/release-notes-v${version}.md"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Create release tag and start release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          tag="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "${tag} already exists; skipping."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "NexDrop ${VERSION}"
+          git push origin "$tag"
+          gh workflow run release.yml --ref "$tag"

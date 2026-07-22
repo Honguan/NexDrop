@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,44 +19,38 @@ import (
 	"sync"
 	"time"
 
-	"nexdrop/internal/admin"
 	"nexdrop/internal/analytics"
 	"nexdrop/internal/auth"
 	"nexdrop/internal/device"
 	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
-	"nexdrop/internal/pairing"
 	"nexdrop/internal/transfer"
 	"nexdrop/internal/version"
 )
 
 type API struct {
-	auth         *auth.Service
-	devices      *device.Service
-	pairing      *pairing.Service
-	groups       *group.Service
-	transfers    *transfer.Service
-	files        *filetransfer.Service
-	analytics    *analytics.Service
-	admin        *admin.Service
-	loginLimit   *fixedWindowLimiter
-	pairingLimit *fixedWindowLimiter
-	adminLimit   *fixedWindowLimiter
-	cursorKey    []byte
+	auth       *auth.Service
+	devices    *device.Service
+	groups     *group.Service
+	transfers  *transfer.Service
+	files      *filetransfer.Service
+	analytics  *analytics.Service
+	loginLimit *fixedWindowLimiter
+	cursorKey  []byte
+	nodeKey    string
 }
 
-func New(authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
-	return NewWithCursorKey([]byte("nexdrop-development-cursor-key"), authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
+func New(authService *auth.Service, deviceService *device.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service) *API {
+	return NewWithCursorKey([]byte("nexdrop-development-cursor-key"), authService, deviceService, groupService, transferService, fileService, analyticsService)
 }
 
-func NewWithCursorKey(cursorKey []byte, authService *auth.Service, deviceService *device.Service, pairingService *pairing.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service, adminService *admin.Service) *API {
+func NewWithCursorKey(cursorKey []byte, authService *auth.Service, deviceService *device.Service, groupService *group.Service, transferService *transfer.Service, fileService *filetransfer.Service, analyticsService *analytics.Service) *API {
 	return &API{
-		auth: authService, devices: deviceService, pairing: pairingService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService, admin: adminService,
-		loginLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE", 10)),
-		pairingLimit: newFixedWindowLimiter(rateLimit("NEXDROP_PAIRING_RATE_LIMIT_PER_MINUTE", 10)),
-		adminLimit:   newFixedWindowLimiter(rateLimit("NEXDROP_ADMIN_RATE_LIMIT_PER_MINUTE", 30)),
-		cursorKey:    append([]byte(nil), cursorKey...),
+		auth: authService, devices: deviceService, groups: groupService, transfers: transferService, files: fileService, analytics: analyticsService,
+		loginLimit: newFixedWindowLimiter(rateLimit("NEXDROP_LOGIN_RATE_LIMIT_PER_MINUTE", 10)),
+		cursorKey:  append([]byte(nil), cursorKey...),
+		nodeKey:    strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY")),
 	}
 }
 
@@ -112,14 +107,15 @@ func enforceRateLimit(w http.ResponseWriter, r *http.Request, limiter *fixedWind
 	return false
 }
 
-func (api *API) adminRateLimited(next http.Handler) http.Handler {
+func (api *API) nodeKeyRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		identity := "anonymous"
-		if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
-			digest := sha256.Sum256([]byte(authorization))
-			identity = hex.EncodeToString(digest[:])
+		if api.nodeKey == "" {
+			next.ServeHTTP(w, r)
+			return
 		}
-		if !enforceRateLimit(w, r, api.adminLimit, identity) {
+		provided := strings.TrimSpace(r.Header.Get("X-NexDrop-Node-Key"))
+		if len(provided) != len(api.nodeKey) || subtle.ConstantTimeCompare([]byte(provided), []byte(api.nodeKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "NODE_KEY_REQUIRED")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -128,7 +124,6 @@ func (api *API) adminRateLimited(next http.Handler) http.Handler {
 
 func (api *API) Routes() http.Handler {
 	mux := http.NewServeMux()
-	adminMux := http.NewServeMux()
 	mux.HandleFunc("GET /api/version", api.version)
 	mux.HandleFunc("POST /api/auth/login", api.login)
 	mux.HandleFunc("POST /api/auth/refresh", api.refresh)
@@ -136,19 +131,15 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/totp/setup", api.setupTOTP)
 	mux.HandleFunc("POST /api/auth/totp/enable", api.enableTOTP)
 	mux.HandleFunc("POST /api/auth/admin-verify", api.verifyAdmin)
-	mux.HandleFunc("POST /api/auth/invitations/accept", api.acceptInvitation)
 	mux.HandleFunc("GET /api/account", api.account)
-	mux.HandleFunc("POST /api/devices", api.createDevice)
+	mux.Handle("POST /api/devices", api.nodeKeyRequired(http.HandlerFunc(api.createDevice)))
 	mux.HandleFunc("GET /api/devices", api.listDevices)
 	mux.HandleFunc("PATCH /api/devices/{id}", api.renameDevice)
 	mux.HandleFunc("DELETE /api/devices/{id}", api.deleteDevice)
-	mux.HandleFunc("POST /api/devices/{id}/approve", api.approveDevice)
 	mux.HandleFunc("POST /api/devices/{id}/revoke", api.revokeDevice)
 	mux.HandleFunc("POST /api/devices/{id}/session-challenge", api.createDeviceSessionChallenge)
 	mux.HandleFunc("POST /api/devices/{id}/attach-session", api.attachDeviceSession)
 	mux.HandleFunc("PUT /api/devices/{id}/lan-identity", api.registerDeviceLANIdentity)
-	mux.HandleFunc("POST /api/devices/{id}/pairing-code", api.createPairingCode)
-	mux.HandleFunc("POST /api/devices/{id}/pair", api.redeemPairingCode)
 	mux.HandleFunc("POST /api/groups", api.createGroup)
 	mux.HandleFunc("GET /api/groups", api.listGroups)
 	mux.HandleFunc("GET /api/groups/{id}", api.getGroup)
@@ -175,23 +166,6 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/statistics/devices", api.statisticsDevices)
 	mux.HandleFunc("GET /api/statistics/groups", api.statisticsGroups)
 	mux.HandleFunc("GET /api/statistics/node", api.statisticsNode)
-	adminMux.HandleFunc("GET /api/admin/users", api.adminUsers)
-	adminMux.HandleFunc("POST /api/admin/users", api.createAdminUser)
-	adminMux.HandleFunc("POST /api/admin/invitations", api.createAdminInvitation)
-	adminMux.HandleFunc("DELETE /api/admin/users/{id}", api.disableAdminUser)
-	adminMux.HandleFunc("POST /api/admin/users/{id}/reset-password", api.resetAdminPassword)
-	adminMux.HandleFunc("GET /api/admin/devices", api.adminDevices)
-	adminMux.HandleFunc("POST /api/admin/devices/{id}/revoke", api.revokeAdminDevice)
-	adminMux.HandleFunc("GET /api/admin/groups", api.adminGroups)
-	adminMux.HandleFunc("DELETE /api/admin/groups/{id}", api.deleteAdminGroup)
-	adminMux.HandleFunc("GET /api/admin/settings", api.adminSettings)
-	adminMux.HandleFunc("PUT /api/admin/settings", api.updateAdminSettings)
-	adminMux.HandleFunc("PUT /api/admin/quotas/{ownerType}/{ownerId}", api.setAdminQuota)
-	adminMux.HandleFunc("GET /api/admin/storage", api.adminStorage)
-	adminMux.HandleFunc("GET /api/admin/failures", api.adminFailures)
-	adminMux.HandleFunc("GET /api/admin/audit-logs", api.adminAuditLogs)
-	adminMux.HandleFunc("DELETE /api/admin/group-transfers/{id}", api.deleteAdminGroupContent)
-	mux.Handle("/api/admin/", api.adminRateLimited(adminMux))
 	return apiContract(mux)
 }
 
@@ -454,19 +428,6 @@ func (api *API) deleteDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (api *API) approveDevice(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
-	if !ok {
-		return
-	}
-	result, err := api.devices.Approve(r.Context(), session, r.PathValue("id"))
-	if err != nil {
-		writeDeviceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
 func (api *API) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	session, ok := api.authenticate(w, r)
 	if !ok {
@@ -475,46 +436,6 @@ func (api *API) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	result, err := api.devices.Revoke(r.Context(), session, r.PathValue("id"))
 	if err != nil {
 		writeDeviceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
-func (api *API) createPairingCode(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
-	if !ok {
-		return
-	}
-	if !enforceRateLimit(w, r, api.pairingLimit, session.SessionID) {
-		return
-	}
-	challenge, err := api.pairing.Create(r.Context(), session, r.PathValue("id"))
-	if err != nil {
-		writePairingError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, challenge)
-}
-
-func (api *API) redeemPairingCode(w http.ResponseWriter, r *http.Request) {
-	session, ok := api.authenticate(w, r)
-	if !ok {
-		return
-	}
-	var request struct {
-		ChallengeID string `json:"challengeId"`
-		Code        string `json:"code"`
-	}
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
-		return
-	}
-	if !enforceRateLimit(w, r, api.pairingLimit, request.ChallengeID) {
-		return
-	}
-	result, err := api.pairing.Redeem(r.Context(), session, r.PathValue("id"), request.ChallengeID, request.Code)
-	if err != nil {
-		writePairingError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -1090,21 +1011,6 @@ func writeDeviceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
-	}
-}
-
-func writePairingError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, pairing.ErrInvalidCode):
-		writeError(w, http.StatusBadRequest, "PAIRING_CODE_INVALID")
-	case errors.Is(err, pairing.ErrExpired):
-		writeError(w, http.StatusGone, "PAIRING_CODE_EXPIRED")
-	case errors.Is(err, pairing.ErrUsed):
-		writeError(w, http.StatusConflict, "PAIRING_CODE_USED")
-	case errors.Is(err, pairing.ErrLocked):
-		writeError(w, http.StatusTooManyRequests, "PAIRING_CODE_LOCKED")
-	default:
-		writeDeviceError(w, err)
 	}
 }
 

@@ -33,10 +33,6 @@ func (*fakeStore) RenameDevice(_ context.Context, _, id, name string) (Device, e
 
 func (*fakeStore) DeleteDevice(context.Context, string, string) error { return nil }
 
-func (*fakeStore) ApproveDevice(_ context.Context, _ auth.Session, id string) (Device, error) {
-	return Device{ID: id, TrustStatus: TrustTrusted}, nil
-}
-
 func (*fakeStore) RevokeDevice(_ context.Context, _ auth.Session, id string, now time.Time) (Device, error) {
 	return Device{ID: id, TrustStatus: TrustRevoked, RevokedAt: &now}, nil
 }
@@ -101,10 +97,6 @@ func TestDeviceLifecycle(t *testing.T) {
 	renamed, err := service.Rename(context.Background(), session, "device-1", "Phone")
 	if err != nil || renamed.DisplayName != "Phone" {
 		t.Fatalf("Rename() = %+v, %v", renamed, err)
-	}
-	approved, err := service.Approve(context.Background(), session, "device-1")
-	if err != nil || approved.TrustStatus != TrustTrusted {
-		t.Fatalf("Approve() = %+v, %v", approved, err)
 	}
 	revoked, err := service.Revoke(context.Background(), session, "device-1")
 	if err != nil || revoked.TrustStatus != TrustRevoked || revoked.RevokedAt == nil {

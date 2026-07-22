@@ -30,6 +30,7 @@ String apiExceptionMessage(ApiException error) {
   return {
         'INVALID_REQUEST': '請確認所有必填欄位與格式',
         'INVALID_CREDENTIALS': '帳號或密碼不正確',
+        'NODE_KEY_REQUIRED': '節點密鑰不正確或尚未設定',
         'PERMISSION_DENIED': '你沒有執行此操作的權限',
         'INVALID_TOKEN': '登入已失效，請重新登入',
         'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
@@ -45,7 +46,8 @@ class ApiClient {
 
   static const protocolVersion = '1.1';
   static const clientVersion = 'nexdrop-v1.1';
-  static const _nodeKey = 'nexdrop.node_url';
+  static const _nodeUrlKey = 'nexdrop.node_url';
+  static const _nodeSecretKey = 'nexdrop.node_secret';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
   static const _accept = 'application/vnd.nexdrop.v1+json';
@@ -54,32 +56,60 @@ class ApiClient {
   final http.Client _client;
   final FlutterSecureStorage _storage;
   Uri? _node;
+  String? _nodeSecret;
   String? _accessToken;
   String? _refreshToken;
   Future<bool>? _refreshing;
 
   Uri? get node => _node;
   bool get authenticated => _accessToken != null;
+  String? get nodeJoinUri {
+    final node = _node;
+    final secret = _nodeSecret?.trim() ?? '';
+    if (node == null || secret.isEmpty) return null;
+    return Uri(
+      scheme: 'nexdrop',
+      host: 'join',
+      queryParameters: {'node': node.toString(), 'key': secret},
+    ).toString();
+  }
 
   Future<bool> restore() async {
-    final node = await _storage.read(key: _nodeKey);
+    final node = await _storage.read(key: _nodeUrlKey);
+    _nodeSecret = await _storage.read(key: _nodeSecretKey);
     _accessToken = await _storage.read(key: _accessKey);
     _refreshToken = await _storage.read(key: _refreshKey);
     if (node == null) return false;
     _node = validateNodeUrl(node);
-    return _accessToken != null && _refreshToken != null;
+    return _accessToken != null &&
+        _refreshToken != null &&
+        _nodeSecret?.trim().isNotEmpty == true;
   }
 
   Future<UserAccount> login(
     String nodeUrl,
+    String nodeSecret,
     String identifier,
     String password,
+    String totp,
   ) async {
     _node = validateNodeUrl(nodeUrl);
+    _nodeSecret = nodeSecret.trim();
+    if (_nodeSecret!.isEmpty) {
+      throw const ApiException('NODE_KEY_REQUIRED', 401);
+    }
     final response = await _client.post(
       _uri('/api/auth/login'),
-      headers: const {'Content-Type': 'application/json', 'Accept': _accept},
-      body: jsonEncode({'identifier': identifier.trim(), 'password': password}),
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': _accept,
+        'X-NexDrop-Node-Key': _nodeSecret!,
+      },
+      body: jsonEncode({
+        'identifier': identifier.trim(),
+        'password': password,
+        'totp': totp.trim(),
+      }),
     );
     if (response.statusCode != HttpStatus.ok) throw _error(response);
     await _saveTokens(jsonDecode(response.body) as Map<String, dynamic>);
@@ -109,7 +139,9 @@ class ApiClient {
 
   Future<List<DeviceStatistic>> deviceStatistics() async =>
       ((await getJson('/api/statistics/devices')) as List<dynamic>)
-          .map((value) => DeviceStatistic.fromJson(value as Map<String, dynamic>))
+          .map(
+            (value) => DeviceStatistic.fromJson(value as Map<String, dynamic>),
+          )
           .toList();
 
   Future<List<GroupSummary>> groups() async =>
@@ -121,10 +153,8 @@ class ApiClient {
     final response =
         await getJson('/api/transfers?limit=100') as Map<String, dynamic>;
     return (response['items'] as List<dynamic>)
-          .map(
-            (value) => TransferSummary.fromJson(value as Map<String, dynamic>),
-          )
-          .toList();
+        .map((value) => TransferSummary.fromJson(value as Map<String, dynamic>))
+        .toList();
   }
 
   Future<dynamic> getJson(String path) => _request(path, method: 'GET');
@@ -248,7 +278,10 @@ class ApiClient {
         if (_refreshToken == null) return false;
         final response = await _client.post(
           _uri('/api/auth/refresh'),
-          headers: const {'Content-Type': 'application/json', 'Accept': _accept},
+          headers: const {
+            'Content-Type': 'application/json',
+            'Accept': _accept,
+          },
           body: jsonEncode({'refreshToken': _refreshToken}),
         );
         if (response.statusCode != HttpStatus.ok) throw _error(response);
@@ -267,6 +300,8 @@ class ApiClient {
   Map<String, String> _headers([Map<String, String>? extra]) => {
     'Authorization': 'Bearer $_accessToken',
     'Accept': _accept,
+    if (_nodeSecret?.trim().isNotEmpty == true)
+      'X-NexDrop-Node-Key': _nodeSecret!.trim(),
     ...?extra,
   };
 
@@ -279,7 +314,8 @@ class ApiClient {
     _accessToken = json['accessToken'] as String;
     _refreshToken = json['refreshToken'] as String;
     await Future.wait([
-      _storage.write(key: _nodeKey, value: _node.toString()),
+      _storage.write(key: _nodeUrlKey, value: _node.toString()),
+      _storage.write(key: _nodeSecretKey, value: _nodeSecret),
       _storage.write(key: _accessKey, value: _accessToken),
       _storage.write(key: _refreshKey, value: _refreshToken),
     ]);
@@ -304,33 +340,30 @@ class ApiClient {
             : (error as Map<String, dynamic>?)?['code'] as String? ??
                   'REQUEST_FAILED',
         response.statusCode,
-        retryAfterSeconds: int.tryParse(
-          response.headers['retry-after'] ?? '',
-        ),
+        retryAfterSeconds: int.tryParse(response.headers['retry-after'] ?? ''),
       );
     } catch (_) {
       return ApiException(
         'REQUEST_FAILED',
         response.statusCode,
-        retryAfterSeconds: int.tryParse(
-          response.headers['retry-after'] ?? '',
-        ),
+        retryAfterSeconds: int.tryParse(response.headers['retry-after'] ?? ''),
       );
     }
   }
 
   static Uri validateNodeUrl(String value) {
     final uri = Uri.parse(value.trim());
+    final address = InternetAddress.tryParse(uri.host);
     final localDevelopment =
         uri.scheme == 'http' &&
-        (uri.host == '127.0.0.1' || uri.host == 'localhost');
+        (uri.host == '127.0.0.1' || uri.host == 'localhost' || address != null);
     if ((!localDevelopment && uri.scheme != 'https') ||
         !uri.hasAuthority ||
         uri.userInfo.isNotEmpty ||
         uri.pathSegments.isNotEmpty ||
         uri.hasQuery ||
         uri.hasFragment) {
-      throw const FormatException('請輸入有效的 HTTPS 節點網址');
+      throw const FormatException('請輸入有效的 HTTPS 網址或 HTTP IP 節點網址');
     }
     return uri;
   }

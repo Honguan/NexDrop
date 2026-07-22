@@ -10,10 +10,10 @@ test("第一方 Web 預設全選設備、提供複製刪除並移除群組入口
   assert.doesNotMatch(app, /id: "groups"/);
 });
 
-test("Web 會定期刷新設備、傳輸與即時節點狀態", async () => {
+test("Web 會定期刷新設備與傳輸並維持即時狀態", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /window\.setInterval\(.*reload/s);
   assert.match(app, /item\.online/);
-  assert.match(app, /最後更新/);
-  assert.match(app, /settingsInitialized\.current/);
+  assert.match(app, /socket\.onmessage/);
+  assert.doesNotMatch(app, /\/api\/admin\//);
 });

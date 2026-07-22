@@ -9,6 +9,7 @@ import 'core/crypto_service.dart';
 import 'core/local_database.dart';
 import 'core/lan_service.dart';
 import 'core/models.dart';
+import 'core/node_join.dart';
 import 'core/platform_share.dart';
 import 'core/transfer_service.dart';
 
@@ -34,7 +35,14 @@ class AppController extends ChangeNotifier {
       (incoming) => unawaited(_acceptIncomingLan(incoming)),
     );
     _shareSubscription = platformShare.shares.listen((share) {
-      _pendingShare = share;
+      final join = share.joinUri == null
+          ? null
+          : NodeJoinConfiguration.tryParse(share.joinUri!);
+      if (join != null) {
+        _pendingJoin = join;
+      } else {
+        _pendingShare = share;
+      }
       notifyListeners();
     });
   }
@@ -49,6 +57,7 @@ class AppController extends ChangeNotifier {
   StreamSubscription<LanIncomingTransfer>? _incomingLanSubscription;
   StreamSubscription<PlatformSharePayload>? _shareSubscription;
   PlatformSharePayload? _pendingShare;
+  NodeJoinConfiguration? _pendingJoin;
   UserAccount? account;
   Device? currentDevice;
   List<Device> devices = const [];
@@ -66,6 +75,7 @@ class AppController extends ChangeNotifier {
   StreamSubscription<dynamic>? _socketSubscription;
   Timer? _heartbeat;
   Timer? _reconnect;
+  bool _closed = false;
 
   Future<void> initialize() async {
     try {
@@ -76,7 +86,7 @@ class AppController extends ChangeNotifier {
       receiveDirectory = await database.setting('receive_directory');
       waitingLanTasks = await database.waitingLanTasks();
       transfers = await database.localTransfers();
-      if (await api.restore()) {
+      if (_pendingJoin == null && await api.restore()) {
         account = await api.account();
         await _synchronize();
       }
@@ -95,6 +105,17 @@ class AppController extends ChangeNotifier {
     return value;
   }
 
+  NodeJoinConfiguration? takePendingJoin() {
+    final value = _pendingJoin;
+    _pendingJoin = null;
+    return value;
+  }
+
+  void queueJoin(NodeJoinConfiguration join) {
+    _pendingJoin = join;
+    notifyListeners();
+  }
+
   Future<void> _updateDesktopStatus() => platformShare.updateDesktopStatus({
     'online': account != null,
     'nodeOnline': nodeOnline,
@@ -108,10 +129,27 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> login(String node, String identifier, String password) async {
+  Future<void> login(
+    String node,
+    String nodeSecret,
+    String identifier,
+    String password,
+    String totp,
+  ) async {
     await _run(() async {
-      account = await api.login(node, identifier, password);
-      await _synchronize();
+      try {
+        account = await api.login(node, nodeSecret, identifier, password, totp);
+        await _synchronize();
+      } catch (_) {
+        account = null;
+        currentDevice = null;
+        try {
+          await api.logout();
+        } catch (_) {
+          // Local credentials are cleared before the remote logout request.
+        }
+        rethrow;
+      }
     });
   }
 
@@ -126,6 +164,11 @@ class AppController extends ChangeNotifier {
     transfers = const [];
     waitingLanTasks = const [];
     await _updateDesktopStatus();
+    notifyListeners();
+  }
+
+  void clearError() {
+    error = null;
     notifyListeners();
   }
 
@@ -254,11 +297,6 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> approve(Device device) => _run(() async {
-    await api.sendJson('/api/devices/${device.id}/approve', 'POST');
-    await reload();
-  });
-
   Future<String> readText(TransferSummary transfer) async {
     if (account == null || currentDevice == null) {
       throw StateError('尚未登入設備');
@@ -306,7 +344,10 @@ class AppController extends ChangeNotifier {
         if (nodeOnline) {
           await reload();
         } else {
-          _replaceTransferStatus(transfer, paused ? 'PAUSED' : 'TRANSFERRING_LAN');
+          _replaceTransferStatus(
+            transfer,
+            paused ? 'PAUSED' : 'TRANSFERRING_LAN',
+          );
         }
       });
 
@@ -370,26 +411,6 @@ class AppController extends ChangeNotifier {
         await transfersService.retryWaitingLan();
       });
 
-  Future<Map<String, dynamic>> createPairingCode(Device device) async {
-    late Map<String, dynamic> result;
-    await _run(
-      () async => result =
-          await api.sendJson('/api/devices/${device.id}/pairing-code', 'POST')
-              as Map<String, dynamic>,
-    );
-    return result;
-  }
-
-  Future<void> redeemPairingCode(String challengeId, String code) =>
-      _run(() async {
-        if (currentDevice == null) return;
-        await api.sendJson('/api/devices/${currentDevice!.id}/pair', 'POST', {
-          'challengeId': challengeId.trim(),
-          'code': code.trim(),
-        });
-        await reload();
-      });
-
   Future<void> _synchronize() async {
     final session = await transfersService.synchronizeDevice(account!);
     currentDevice = session.device;
@@ -399,7 +420,9 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _connect() async {
+    if (_closed) return;
     await _disconnect();
+    if (_closed) return;
     if (currentDevice?.trusted != true) return;
     try {
       _socket = await api.connectWebSocket();
@@ -441,6 +464,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _scheduleReconnect() {
+    if (_closed) return;
     nodeOnline = false;
     unawaited(_updateDesktopStatus());
     _heartbeat?.cancel();
@@ -553,16 +577,28 @@ class AppController extends ChangeNotifier {
     return reason.toString();
   }
 
+  Future<void> shutdown() async {
+    if (_closed) return;
+    _closed = true;
+    _reconnect?.cancel();
+    _heartbeat?.cancel();
+    await _socketSubscription?.cancel();
+    _socketSubscription = null;
+    await _socket?.sink.close();
+    _socket = null;
+    nodeOnline = false;
+    await _lanSubscription?.cancel();
+    await _incomingLanSubscription?.cancel();
+    await _shareSubscription?.cancel();
+    await lan.dispose();
+    await platformShare.dispose();
+    await database.close();
+    api.close();
+  }
+
   @override
   void dispose() {
-    unawaited(_disconnect());
-    unawaited(_lanSubscription?.cancel());
-    unawaited(_incomingLanSubscription?.cancel());
-    unawaited(_shareSubscription?.cancel());
-    unawaited(lan.dispose());
-    unawaited(platformShare.dispose());
-    unawaited(database.close());
-    api.close();
+    unawaited(shutdown());
     super.dispose();
   }
 }

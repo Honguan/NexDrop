@@ -26,17 +26,15 @@ import (
 	"nexdrop/internal/maintenance"
 	"nexdrop/internal/monitoring"
 	"nexdrop/internal/operations"
-	"nexdrop/internal/pairing"
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
-	buildversion "nexdrop/internal/version"
 	"nexdrop/internal/webui"
 )
 
 const defaultAddress = ":8080"
 
-var version = buildversion.ProductVersion
+var version = "development"
 
 type healthResponse struct {
 	Status  string `json:"status"`
@@ -80,7 +78,6 @@ func main() {
 
 	authService := auth.NewService(store, 15*time.Minute, 30*24*time.Hour)
 	deviceService := device.NewService(store)
-	pairingService := pairing.NewService(store)
 	groupService := group.NewService(store)
 	transferService := transfer.NewService(store)
 	storagePath := os.Getenv("NEXDROP_STORAGE_PATH")
@@ -96,6 +93,17 @@ func main() {
 	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
 		fatal("bootstrap administrator", err)
 	}
+	if secret := strings.TrimSpace(os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET")); secret != "" {
+		credential, err := store.CredentialByIdentifier(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"))
+		if err != nil {
+			fatal("load bootstrap administrator", err)
+		}
+		if !credential.TOTPEnabled {
+			if err := store.SetTOTPSecret(context.Background(), credential.ID, secret); err != nil {
+				fatal("bootstrap administrator OTP", err)
+			}
+		}
+	}
 	cleaner, err := maintenance.NewCleaner(store, storagePath)
 	if err != nil {
 		fatal("configure cleanup worker", err)
@@ -109,7 +117,7 @@ func main() {
 		_ = collector.RunOnce(context.Background())
 		collector.Start(context.Background(), 5*time.Second)
 	}()
-	applicationAPI := api.NewWithCursorKey([]byte(cursorSecret), authService, deviceService, pairingService, groupService, transferService, fileService, analyticsService, adminService)
+	applicationAPI := api.NewWithCursorKey([]byte(cursorSecret), authService, deviceService, groupService, transferService, fileService, analyticsService)
 	presenceHub := presence.NewHub(authService, store)
 	webPath := os.Getenv("NEXDROP_WEB_PATH")
 	if webPath == "" {

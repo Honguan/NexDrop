@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -58,12 +59,16 @@ func (status desktopStatus) Status(_ context.Context) (json.RawMessage, error) {
 }
 
 func main() {
+	parentPID := flag.Uint("parent-pid", 0, "desktop application process ID")
+	flag.Parse()
 	slog.SetDefault(slog.New(logging.NewJSONHandler(os.Stderr, slog.LevelInfo)))
 	root := os.Getenv("LOCALAPPDATA")
 	if root == "" {
 		fatal(errors.New("LOCALAPPDATA is required"))
 	}
 	root = filepath.Join(root, "NexDrop")
+	defer os.Remove(filepath.Join(root, "bridge.json"))
+	defer os.Remove(filepath.Join(root, "status.json"))
 	origin := os.Getenv("NEXDROP_WEB_ORIGIN")
 	if origin == "" {
 		origin = "http://localhost:8080"
@@ -91,6 +96,12 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if *parentPID > 0 {
+		go func() {
+			<-parentExitSignal(uint32(*parentPID))
+			cancel()
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)

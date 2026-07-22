@@ -1,15 +1,17 @@
 services:
   nexdrop:
-    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:1.0.5}"
+    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:2.0.0}"
     build:
       context: .
       args:
-        VERSION: "1.0.5"
+        VERSION: "2.0.0"
     environment:
       NEXDROP_HTTP_ADDRESS: ":8080"
       NEXDROP_DATABASE_URL: "postgres://nexdrop@postgres:5432/nexdrop?sslmode=disable"
       NEXDROP_DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
       NEXDROP_CURSOR_SECRET: "${NEXDROP_CURSOR_SECRET}"
+      NEXDROP_NODE_KEY: "${NEXDROP_NODE_KEY}"
+      NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET: "${NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET:-}"
       NEXDROP_STORAGE_PATH: "/var/lib/nexdrop"
       NEXDROP_WEB_PATH: "/usr/share/nexdrop/web"
       NEXDROP_MIGRATIONS_PATH: "/usr/share/nexdrop/migrations"

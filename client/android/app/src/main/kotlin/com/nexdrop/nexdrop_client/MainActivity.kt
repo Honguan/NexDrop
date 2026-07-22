@@ -64,7 +64,11 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun extractShare(intent: Intent?): Map<String, Any>? {
-        if (intent == null || (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE)) return null
+        if (intent == null) return null
+        if (intent.action == Intent.ACTION_VIEW && intent.data?.scheme == "nexdrop" && intent.data?.host == "join") {
+            return mapOf("text" to "", "files" to emptyList<String>(), "joinUri" to intent.dataString.orEmpty())
+        }
+        if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return null
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
         val uris = linkedSetOf<Uri>()
         if (intent.action == Intent.ACTION_SEND) {

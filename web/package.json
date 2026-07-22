@@ -1,14 +1,6 @@
 {
   "name": "nexdrop-web",
-<<<<<<< ours
-<<<<<<< ours
-  "version": "1.0.5",
-=======
-  "version": "2.0.2",
->>>>>>> theirs
-=======
-  "version": "2.0.2",
->>>>>>> theirs
+  "version": "2.0.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,13 +11,13 @@
 	"test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "react": "19.2.7",
+    "react": "19.2.8",
     "react-dom": "19.2.7"
   },
   "devDependencies": {
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.3",
+    "@vitejs/plugin-react": "6.0.4",
     "typescript": "7.0.2",
     "vite": "8.1.5"
   }

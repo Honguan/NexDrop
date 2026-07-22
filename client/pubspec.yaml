@@ -16,15 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-<<<<<<< ours
-<<<<<<< ours
-version: 1.0.5+6
-=======
-version: 2.0.2+10
->>>>>>> theirs
-=======
-version: 2.0.2+10
->>>>>>> theirs
+version: 2.0.1+9
 
 environment:
   sdk: ^3.12.2
@@ -54,13 +46,12 @@ dependencies:
   window_manager: ^0.5.2
   tray_manager: ^0.5.3
   workmanager: ^0.9.0+3
-  flutter_local_notifications: ^22.0.1
+  flutter_local_notifications: ^22.1.0
   multicast_dns: ^0.3.3+1
   path: ^1.9.1
   crypto: ^3.0.7
   basic_utils: ^5.8.2
   bonsoir: ^7.1.4
-  qr_flutter: ^4.1.0
   desktop_drop: ^0.7.1
 
 dev_dependencies:
@@ -70,12 +61,12 @@ dev_dependencies:
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
-  # package. See that file for information about deactivating specific lint
-  # rules and activating additional ones.
+  # package. See that file for information about activating specific lints
+  # or disabling lint rules.
   flutter_lints: ^6.0.0
 
 # For information on the generic Dart part of this file, see the
-# following page: https://dart.dev/tools/pub/pubspec
+# following page: https://dart.dev/tools/pubspec
 
 # The following section is specific to Flutter packages.
 flutter:
@@ -84,6 +75,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - windows/runner/resources/app_icon.ico
 
   # To add assets to your application, add an assets section, like this:
   # assets:
@@ -94,7 +87,7 @@ flutter:
   # https://flutter.dev/to/resolution-aware-images
 
   # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/to/asset-from-package
+  # https://flutter.dev/to/assets-and-images/#from-packages
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
@@ -114,4 +107,4 @@ flutter:
   #         weight: 700
   #
   # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
+  # see https://flutter.dev/to/custom-fonts/#from-packages

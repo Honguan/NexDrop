@@ -1,18 +1,10 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AdminDevice,
-  AdminFailure,
-  AdminUser,
   APIError,
-  AuditLog,
   DailyTransfer,
   Device,
   DeviceStatistic,
-  Invitation,
-  NodeMetric,
-  NodeSettings,
   Overview,
-  StorageOverview,
   Transfer,
   User,
   api,
@@ -21,7 +13,7 @@ import {
 import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 import { rateLimitMessage } from "./errors";
 
-type View = "send" | "activity" | "devices" | "analytics" | "admin";
+type View = "chat" | "devices" | "analytics";
 type SharedContent = { content: string; groupId: string };
 const pausedTransfers = new Set<string>();
 const cancelledTransfers = new Set<string>();
@@ -32,8 +24,7 @@ async function waitWhilePaused(transferId: string) {
 }
 
 const navItems: Array<{ id: View; label: string; glyph: string }> = [
-  { id: "send", label: "傳送", glyph: "↗" },
-  { id: "activity", label: "傳輸紀錄", glyph: "◷" },
+  { id: "chat", label: "聊天室", glyph: "◉" },
   { id: "devices", label: "設備", glyph: "▣" },
   { id: "analytics", label: "統計", glyph: "▥" },
 ];
@@ -72,31 +63,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   const [needsTOTP, setNeedsTOTP] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [invitationToken, setInvitationToken] = useState(() => new URLSearchParams(location.search).get("invite") ?? "");
-  const [invitationPassword, setInvitationPassword] = useState({ password: "", confirmation: "" });
-  const [invitationAccepted, setInvitationAccepted] = useState(false);
-
-  async function acceptInvitation(event: FormEvent) {
-    event.preventDefault();
-    if (invitationPassword.password !== invitationPassword.confirmation) {
-      setError("兩次輸入的密碼不一致");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const accepted = await api.acceptInvitation(invitationToken, invitationPassword.password);
-      history.replaceState(null, "", location.pathname);
-      setIdentifier(accepted.username);
-      setInvitationToken("");
-      setInvitationAccepted(true);
-    } catch (reason) {
-      setError(messageFor(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -113,13 +79,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
       setBusy(false);
     }
   }
-
-  if (invitationToken) return (
-    <main className="login-page">
-      <section className="login-story"><Brand /><div className="story-copy"><p className="eyebrow">ACCOUNT INVITATION</p><h1>完成你的<br />NexDrop 帳號。</h1><p>設定專屬密碼後，即可登入私人傳輸節點。</p></div></section>
-      <section className="login-panel"><form className="login-card" onSubmit={acceptInvitation}><div><p className="eyebrow">INVITATION</p><h2>接受帳號邀請</h2><p className="muted">邀請連結僅能使用一次，並會在七天後失效。</p></div><label>設定密碼<input type="password" autoComplete="new-password" minLength={12} value={invitationPassword.password} onChange={(event) => setInvitationPassword({ ...invitationPassword, password: event.target.value })} required /></label><label>再次輸入密碼<input type="password" autoComplete="new-password" minLength={12} value={invitationPassword.confirmation} onChange={(event) => setInvitationPassword({ ...invitationPassword, confirmation: event.target.value })} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary large" disabled={busy}>{busy ? "正在建立帳號…" : "接受邀請"}</button></form></section>
-    </main>
-  );
 
   return (
     <main className="login-page">
@@ -164,7 +123,6 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
             <input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={totp} onChange={(event) => setTotp(event.target.value)} required />
           </label>}
           {error && <p className="form-error" role="alert">{error}</p>}
-          {invitationAccepted && <p className="muted" role="status">邀請已接受，請使用新密碼登入。</p>}
           <button className="primary large" disabled={busy}>{busy ? "正在連線…" : "安全登入"}</button>
           <p className="login-foot">登入即表示裝置將透過 HTTPS 連線至此節點。</p>
         </form>
@@ -174,7 +132,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
 }
 
 function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [view, setView] = useState<View>("send");
+  const [view, setView] = useState<View>("chat");
   const [devices, setDevices] = useState<Device[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -230,6 +188,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
         if (message.type === "heartbeat_ack") reload().catch(() => undefined);
         if (message.type === "notification" && message.notification) {
           socket?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
+          if ("Notification" in window) {
+            if (Notification.permission === "granted") new Notification("NexDrop", { body: "收到新的訊息或資料" });
+            else if (Notification.permission === "default") void Notification.requestPermission();
+          }
           reload().catch(() => undefined);
         }
       };
@@ -253,14 +215,12 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     onLogout();
   }
 
-  const navigation = user.admin ? [...navItems, { id: "admin" as View, label: "管理後台", glyph: "◆" }] : navItems;
+  const navigation = navItems;
   const content = loading ? <PanelLoader /> : (() => {
     switch (view) {
-      case "send": return <SendView user={user} devices={devices} initialShare={sharedContent} onTransferCreated={(transfer) => { setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)]); setView("activity"); }} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
-      case "activity": return <ActivityView user={user} devices={devices} transfers={transfers} reload={reload} />;
+      case "chat": return <ChatView user={user} devices={devices} transfers={transfers} initialShare={sharedContent} reload={reload} onTransferCreated={(transfer) => setTransfers((current) => [transfer, ...current.filter((item) => item.id !== transfer.id)])} onSent={async () => { await reload(); setSharedContent({ content: "", groupId: "" }); }} notify={setNotice} />;
       case "devices": return <DevicesView user={user} devices={devices} reload={reload} notify={setNotice} />;
-      case "analytics": return <AnalyticsView user={user} />;
-      case "admin": return <AdminView user={user} notify={setNotice} />;
+      case "analytics": return <AnalyticsView />;
     }
   })();
 
@@ -291,6 +251,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       </nav>
     </div>
   );
+}
+
+function ChatView({ user, devices, transfers, initialShare, reload, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; transfers: Transfer[]; initialShare: SharedContent; reload: () => Promise<void>; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
+  return <section className="chat-layout"><SendView user={user} devices={devices} initialShare={initialShare} onTransferCreated={onTransferCreated} onSent={onSent} notify={notify} /><ActivityView user={user} devices={devices} transfers={transfers} reload={reload} /></section>;
 }
 
 function SendView({ user, devices, initialShare, onTransferCreated, onSent, notify }: { user: User; devices: Device[]; initialShare: SharedContent; onTransferCreated: (transfer: Transfer) => void; onSent: () => Promise<void>; notify: (value: string) => void }) {
@@ -364,11 +328,11 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
     <section className="page send-page">
       <PageHeading eyebrow="QUICK DROP" title="今天要傳送什麼？" description="選擇信任設備，NexDrop 會自動判斷區網或節點路徑。" />
       <div className="send-grid">
-        <form className="composer card" onSubmit={send}>
+        <form className="composer card" onSubmit={send} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const dropped = Array.from(event.dataTransfer.files); if (dropped.length) { setFiles(dropped); setContent(""); } }}>
           <div className="card-title"><span className="step">01</span><div><h3>輸入內容或選擇檔案</h3><p>內容會在瀏覽器內先加密</p></div></div>
           <textarea value={content} onChange={(event) => { setContent(event.target.value); if (event.target.value) setFiles([]); }} placeholder="貼上文字、網址或想傳給另一台設備的內容…" maxLength={100000} />
           {!files.length && <label className="check"><input type="checkbox" checked={notification} onChange={(event) => setNotification(event.target.checked)} /> 一般通知訊息</label>}
-          <label className="file-input"><input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); if (event.target.files?.length) setContent(""); }} /><span>＋ 選擇檔案</span><small>{files.length ? `${files.length} 個檔案 · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}` : "圖片與一般檔案皆可"}</small></label>
+          <label className="file-input"><input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); if (event.target.files?.length) setContent(""); }} /><span>＋ 選擇檔案</span><small>{files.length ? `${files.length} 個檔案 · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}` : "可選擇或拖放圖片與一般檔案"}</small></label>
           <div className="composer-meta"><span>{files.length ? "檔名與內容皆加密" : `${content.length.toLocaleString()} 字元`}</span><span className="secure-pill">● 端對端加密</span></div>
           <div className="divider" />
           <div className="card-title"><span className="step">02</span><div><h3>選擇目的地</h3><p>{trusted.length ? `${trusted.length} 台信任設備可用` : "尚無信任設備"}</p></div></div>
@@ -378,7 +342,7 @@ function SendView({ user, devices, initialShare, onTransferCreated, onSent, noti
                 <DeviceGlyph type={item.type} /><span><strong>{item.displayName}</strong><small>{labelDeviceType(item.type)}</small></span><i>{selected.includes(item.id) ? "✓" : "+"}</i>
               </button>
             ))}
-            {!trusted.length && <Empty text={user.admin ? "前往「設備」建立並核准這個瀏覽器" : "請由管理員核准這個瀏覽器設備"} />}
+            {!trusted.length && <Empty text="請先在「設備」輸入節點密鑰並登記此設備" />}
           </div>
           <button className="primary send-button" disabled={busy || (!content.trim() && files.length === 0) || selected.length === 0}>{busy ? "正在加密與上傳…" : <>傳送給 {selected.length} 台設備 <span>↗</span></>}</button>
         </form>
@@ -485,43 +449,34 @@ function ActivityView({ user, devices, transfers, reload }: { user: User; device
 
 function DevicesView({ user, devices, reload, notify }: { user: User; devices: Device[]; reload: () => Promise<void>; notify: (value: string) => void }) {
   const [busy, setBusy] = useState(false);
+  const [nodeKey, setNodeKey] = useState(api.nodeKey());
   const localDevice = devices.find((item) => item.id === deviceID(user.id));
   const registered = Boolean(localDevice && localDevice.trustStatus !== "REVOKED");
+  function importSettings(value: string) {
+    const trimmed = value.trim();
+    try { const parsed = new URL(trimmed); const key = parsed.searchParams.get("key") ?? ""; if (parsed.protocol === "nexdrop:" && parsed.hostname === "join" && key) setNodeKey(key); else setNodeKey(trimmed); } catch { setNodeKey(trimmed); }
+  }
   async function register() {
-    setBusy(true);
+    api.setNodeKey(nodeKey); setBusy(true);
     try {
       const keys = await ensureDeviceKey(user.id);
-      const created = await api.send<Device>("/api/devices", "POST", {
-        displayName: browserName(), type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME",
-        publicKey: keys.publicKey, keyAlgorithm: "X25519",
-      });
-      rememberDevice(user.id, created.id);
-      await reload();
-      notify(created.trustStatus === "TRUSTED" ? "此瀏覽器已由同一節點自動信任" : "已建立此瀏覽器設備，請完成配對");
+      const created = await api.send<Device>("/api/devices", "POST", { displayName: browserName(), type: navigator.userAgent.includes("Edg/") ? "WEB_EDGE" : "WEB_CHROME", publicKey: keys.publicKey, keyAlgorithm: "X25519" });
+      rememberDevice(user.id, created.id); await reload(); notify("設備已使用節點密鑰加入");
     } catch (reason) { notify(messageFor(reason)); } finally { setBusy(false); }
   }
-  async function approve(id: string) {
-    try { await api.send(`/api/devices/${id}/approve`, "POST"); await reload(); notify("設備已核准"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function revoke(id: string) {
-    try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  return (
-    <section className="page">
-      <PageHeading eyebrow="TRUSTED DEVICES" title="設備" description="只有核准且持有私鑰的設備能解開傳輸內容。" action={<button className="primary" onClick={register} disabled={busy || registered}>{busy ? "建立中…" : registered ? "此瀏覽器已登記" : "+ 登記此瀏覽器"}</button>} />
-      <div className="cards-grid devices-grid">
-        {devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions">{user.admin && item.trustStatus === "PENDING" && <button className="secondary" onClick={() => approve(item.id)}>核准</button>}{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}
-        {!devices.length && <Empty text="尚未登記任何設備" />}
-      </div>
-    </section>
-  );
+  async function revoke(id: string) { try { await api.send(`/api/devices/${id}/revoke`, "POST"); await reload(); notify("設備已撤銷"); } catch (reason) { notify(messageFor(reason)); } }
+  const importValue = `nexdrop://join?node=${encodeURIComponent(location.origin)}&key=${encodeURIComponent(nodeKey)}`;
+  return <section className="page">
+    <PageHeading eyebrow="NODE DEVICES" title="設備" description="設備只需要節點連結與節點密鑰即可加入；同一節點不再使用配對碼。" action={<button className="primary" onClick={register} disabled={busy || registered || !nodeKey.trim()}>{busy ? "加入中…" : registered ? "此瀏覽器已加入" : "+ 加入此瀏覽器"}</button>} />
+    <div className="card settings-form"><div className="list-title"><div><p className="eyebrow">NODE IMPORT</p><h3>節點連結與密鑰</h3></div><button className="secondary" type="button" onClick={() => navigator.clipboard.writeText(importValue)}>一鍵複製導入</button></div><label>節點連結<input readOnly value={location.origin} /></label><label>節點密鑰<input type="password" value={nodeKey} onChange={(event) => importSettings(event.target.value)} placeholder="貼上節點密鑰或完整 nexdrop://join 資料" /></label><label>完整導入資料<input value={importValue} onChange={(event) => importSettings(event.target.value)} onFocus={(event) => event.currentTarget.select()} /></label></div>
+    <div className="cards-grid devices-grid">{devices.map((item) => <article className="device-card card" key={item.id}><div className="device-top"><DeviceGlyph type={item.type} /><Status value={item.online ? "ONLINE" : "OFFLINE"} /></div><h3>{item.displayName}</h3><p>{labelDeviceType(item.type)} · {item.online ? "目前在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</p><div className="device-actions"><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revoke(item.id)}>撤銷</button>}</div></article>)}{!devices.length && <Empty text="尚未加入任何設備" />}</div>
+  </section>;
 }
 
-function AnalyticsView({ user }: { user: User }) {
+function AnalyticsView() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [deviceStats, setDeviceStats] = useState<DeviceStatistic[]>([]);
-  const [nodeStats, setNodeStats] = useState<NodeMetric[]>([]);
   const [error, setError] = useState("");
   const [range, setRange] = useState({ preset: "7", from: "", to: "" });
   const load = useCallback(async () => {
@@ -530,141 +485,28 @@ function AnalyticsView({ user }: { user: User }) {
       ? `${endpoint}?${new URLSearchParams({ from: new Date(`${range.from}T00:00:00`).toISOString(), to: new Date(`${range.to}T23:59:59.999`).toISOString() })}`
       : statisticsPath(endpoint, Number(range.preset));
     try {
-      const [nextOverview, nextDaily, nextDevices, nextNode] = await Promise.all([
+      const [nextOverview, nextDaily, nextDevices] = await Promise.all([
         api.get<Overview>(path("/api/statistics/overview")), api.get<DailyTransfer[]>(path("/api/statistics/transfers")),
         api.get<DeviceStatistic[]>(path("/api/statistics/devices")),
-        user.admin ? api.get<NodeMetric[]>(currentNodeStatisticsPath()) : Promise.resolve([]),
       ]);
-      setOverview(nextOverview); setDaily(nextDaily); setDeviceStats(nextDevices); setNodeStats(nextNode);
+      setOverview(nextOverview); setDaily(nextDaily); setDeviceStats(nextDevices);
     } catch (reason) { setError(messageFor(reason)); }
-  }, [range, user.admin]);
+  }, [range]);
   useEffect(() => {
     void load();
     const refresh = window.setInterval(() => void load(), 5000);
     return () => window.clearInterval(refresh);
   }, [load]);
   const peak = Math.max(1, ...daily.map((item) => item.totalBytes));
-  const latestNode = nodeStats.at(-1);
   return (
     <section className="page">
       <PageHeading eyebrow="TRANSFER ANALYTICS" title="傳輸統計" description="掌握流量、成功率與實際使用的傳輸路徑。" action={<div className="admin-tabs"><select value={range.preset} onChange={(event) => setRange({ ...range, preset: event.target.value })}><option value="1">24 小時</option><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option><option value="custom">自訂</option></select>{range.preset === "custom" && <><input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })} /><input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })} /></>}</div>} />
       {!!daily.length && <div className="card audit-list"><div className="list-title"><h3>每日傳輸明細</h3><span>{daily.length} 天</span></div>{daily.map((item) => <article key={item.date}><span className="audit-mark">▥</span><p><strong>{item.date} · {item.count} 次</strong><small>總計 {formatBytes(item.totalBytes)} · LAN {formatBytes(item.lanBytes)} · 節點 {formatBytes(item.nodeBytes)}</small></p><Status value={item.failed ? "FAILED" : "DELIVERED"} /></article>)}</div>}
       {!!deviceStats.length && <div className="card audit-list"><div className="list-title"><h3>每台設備狀態與傳輸用量</h3><span>{deviceStats.filter((item) => item.online).length}／{deviceStats.length} 台在線</span></div>{deviceStats.map((item) => <article key={item.deviceId}><DeviceGlyph type={item.deviceType} /><p><strong>{item.displayName}</strong><small>{labelDeviceType(item.deviceType)} · 傳送 {item.sentCount} 筆／{formatBytes(item.sentBytes)} · 接收 {item.receivedCount} 筆／{formatBytes(item.receivedBytes)} · {item.online ? "即時在線" : item.lastSeenAt ? `最後上線 ${formatDate(item.lastSeenAt)}` : "尚未連線"}</small></p><Status value={item.online ? "ONLINE" : "OFFLINE"} /></article>)}</div>}
-      {error ? <Empty text={error} /> : !overview ? <PanelLoader /> : <><div className="metric-grid"><Metric label="傳輸任務" value={overview.transferCount.toLocaleString()} note="選定期間" /><Metric label="傳輸容量" value={formatBytes(overview.totalBytes)} note="全部設備" /><Metric label="成功交付" value={overview.succeeded.toLocaleString()} note={`${successRate(overview)}% 成功率`} /><Metric label="失敗" value={overview.failed.toLocaleString()} note="可於紀錄中追蹤" danger={overview.failed > 0} /></div><div className="admin-layout"><div className="card route-summary"><div><p className="eyebrow">DAILY TREND</p><h3>每日流量</h3></div>{daily.map((item) => <div className="route-bar" key={item.date}><span>{item.date.slice(5)}</span><i><b style={{ width: `${Math.max(2, item.totalBytes / peak * 100)}%` }} /></i><strong>{formatBytes(item.totalBytes)}</strong></div>)}{!daily.length && <Empty text="尚無每日資料" />}</div><div className="card route-summary"><div><p className="eyebrow">ROUTE MIX</p><h3>傳輸路徑分布</h3></div>{Object.entries(overview.routeCounts ?? {}).map(([route, count]) => <div className="route-bar" key={route}><span>{route}</span><i><b style={{ width: `${Math.max(4, (count / Math.max(overview.transferCount, 1)) * 100)}%` }} /></i><strong>{count}</strong></div>)}{!Object.keys(overview.routeCounts ?? {}).length && <Empty text="尚無足夠資料" />}</div></div>{latestNode && <div className="metric-grid"><Metric label="節點狀態" value="在線" note={`最後更新 ${formatDate(latestNode.recordedAt)}`} /><Metric label="在線設備" value={latestNode.onlineDevices.toLocaleString()} note={`${latestNode.activeTransfers} 筆進行中`} /><Metric label="節點儲存" value={formatBytes(latestNode.diskBytes)} note={`快取 ${formatBytes(latestNode.cacheBytes)}`} /><Metric label="節點流量" value={formatBytes(latestNode.networkUploadBytes + latestNode.networkDownloadBytes)} note={`上傳 ${formatBytes(latestNode.networkUploadBytes)}`} /></div>}</>}
+      {error ? <Empty text={error} /> : !overview ? <PanelLoader /> : <><div className="metric-grid"><Metric label="傳輸任務" value={overview.transferCount.toLocaleString()} note="選定期間" /><Metric label="傳輸容量" value={formatBytes(overview.totalBytes)} note="全部設備" /><Metric label="成功交付" value={overview.succeeded.toLocaleString()} note={`${successRate(overview)}% 成功率`} /><Metric label="失敗" value={overview.failed.toLocaleString()} note="可於紀錄中追蹤" danger={overview.failed > 0} /></div><div className="admin-layout"><div className="card route-summary"><div><p className="eyebrow">DAILY TREND</p><h3>每日流量</h3></div>{daily.map((item) => <div className="route-bar" key={item.date}><span>{item.date.slice(5)}</span><i><b style={{ width: `${Math.max(2, item.totalBytes / peak * 100)}%` }} /></i><strong>{formatBytes(item.totalBytes)}</strong></div>)}{!daily.length && <Empty text="尚無每日資料" />}</div><div className="card route-summary"><div><p className="eyebrow">ROUTE MIX</p><h3>傳輸路徑分布</h3></div>{Object.entries(overview.routeCounts ?? {}).map(([route, count]) => <div className="route-bar" key={route}><span>{route}</span><i><b style={{ width: `${Math.max(4, (count / Math.max(overview.transferCount, 1)) * 100)}%` }} /></i><strong>{count}</strong></div>)}{!Object.keys(overview.routeCounts ?? {}).length && <Empty text="尚無足夠資料" />}</div></div></>}
     </section>
   );
 }
-
-function AdminView({ user, notify }: { user: User; notify: (value: string) => void }) {
-  const [users, setUsers] = useState<AdminUser[]>([]);
-  const [adminDevices, setAdminDevices] = useState<AdminDevice[]>([]);
-  const [storage, setStorage] = useState<StorageOverview | null>(null);
-  const [settings, setSettings] = useState<NodeSettings | null>(null);
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [failures, setFailures] = useState<AdminFailure[]>([]);
-  const [nodeMetrics, setNodeMetrics] = useState<NodeMetric[]>([]);
-  const [tab, setTab] = useState<"users" | "resources" | "node" | "audit">("users");
-  const [newUser, setNewUser] = useState({ username: "", email: "", password: "", admin: false });
-  const [inviteMode, setInviteMode] = useState(false);
-  const [invitationLink, setInvitationLink] = useState("");
-  const [verified, setVerified] = useState(false);
-  const [totpReady, setTOTPReady] = useState(user.totpEnabled);
-  const [verification, setVerification] = useState({ password: "", code: "" });
-  const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
-  const settingsInitialized = useRef(false);
-
-  const load = useCallback(async () => {
-    const [nextUsers, nextDevices, nextStorage, nextSettings, nextLogs, nextFailures, nextNodeMetrics] = await Promise.all([
-      loadAdminPages<AdminUser>("/api/admin/users"), loadAdminPages<AdminDevice>("/api/admin/devices"),
-      api.get<StorageOverview>("/api/admin/storage"),
-      api.get<NodeSettings>("/api/admin/settings"), api.get<AuditLog[]>("/api/admin/audit-logs"),
-      api.get<AdminFailure[]>("/api/admin/failures"), api.get<NodeMetric[]>(currentNodeStatisticsPath()),
-    ]);
-    setUsers(nextUsers); setAdminDevices(nextDevices); setStorage(nextStorage); if (!settingsInitialized.current) { settingsInitialized.current = true; setSettings(nextSettings); } setLogs(nextLogs); setFailures(nextFailures); setNodeMetrics(nextNodeMetrics);
-  }, []);
-  useEffect(() => {
-    if (!verified) return;
-    load().catch((reason) => notify(messageFor(reason)));
-    const refresh = window.setInterval(() => load().catch(() => undefined), 5000);
-    return () => window.clearInterval(refresh);
-  }, [load, notify, verified]);
-  async function beginSetup(event: FormEvent) {
-    event.preventDefault();
-    try { setSetup(await api.send<{ secret: string; uri: string }>("/api/auth/totp/setup", "POST", { password: verification.password })); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function enableTOTP(event: FormEvent) {
-    event.preventDefault();
-    if (!setup) return;
-    try { await api.send("/api/auth/totp/enable", "POST", { password: verification.password, secret: setup.secret, code: verification.code }); setTOTPReady(true); setSetup(null); setVerification({ ...verification, code: "" }); notify("TOTP 已啟用"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function verify(event: FormEvent) {
-    event.preventDefault();
-    try { await api.send("/api/auth/admin-verify", "POST", { password: verification.password, totp: verification.code }); setVerified(true); setVerification({ password: "", code: "" }); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function createUser(event: FormEvent) {
-    event.preventDefault();
-    try {
-      if (inviteMode) {
-        const invitation = await api.send<Invitation>("/api/admin/invitations", "POST", { username: newUser.username, email: newUser.email, admin: newUser.admin });
-        setInvitationLink(`${location.origin}${location.pathname}?invite=${encodeURIComponent(invitation.token)}`);
-        notify("一次性邀請連結已建立");
-      } else {
-        await api.send("/api/admin/users", "POST", newUser);
-        setInvitationLink("");
-        await load();
-        notify("使用者帳號已建立");
-      }
-      setNewUser({ username: "", email: "", password: "", admin: false });
-    } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function disable(id: string) {
-    try { await api.send(`/api/admin/users/${id}`, "DELETE"); await load(); notify("使用者已停用"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function revokeDevice(id: string) {
-    if (!confirm("確定要撤銷此裝置並登出其工作階段？")) return;
-    try { await api.send(`/api/admin/devices/${id}/revoke`, "POST"); await load(); notify("裝置已撤銷"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  async function saveSettings(event: FormEvent) {
-    event.preventDefault();
-    if (!settings) return;
-    try { setSettings(await api.send<NodeSettings>("/api/admin/settings", "PUT", settings)); notify("節點設定已更新"); } catch (reason) { notify(messageFor(reason)); }
-  }
-  return (
-    <section className="page admin-page">
-      <PageHeading eyebrow="NODE CONTROL" title="管理後台" description="集中管理帳號、容量、節點限制與稽核事件。" />
-      {!totpReady && <form className="card create-user" onSubmit={setup ? enableTOTP : beginSetup}><h3>啟用雙因素驗證</h3><p className="muted">管理後台必須使用密碼與 TOTP 驗證。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label>{setup && <><label>TOTP 密鑰<input readOnly value={setup.secret} /></label><small>請將密鑰加入驗證器後輸入六位數驗證碼。</small><label>驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label></>}<button className="primary">{setup ? "確認並啟用" : "產生 TOTP 密鑰"}</button></form>}
-      {totpReady && !verified && <form className="card create-user" onSubmit={verify}><h3>重新驗證管理員</h3><p className="muted">驗證效力為 15 分鐘。</p><label>目前密碼<input type="password" autoComplete="current-password" value={verification.password} onChange={(event) => setVerification({ ...verification, password: event.target.value })} required /></label><label>六位數驗證碼<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" value={verification.code} onChange={(event) => setVerification({ ...verification, code: event.target.value })} required /></label><button className="primary">解鎖管理後台</button></form>}
-      {verified && <>
-      {nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="磁碟" value={formatBytes(nodeMetrics.at(-1)!.diskBytes)} note="檔案系統" /><Metric label="快取" value={formatBytes(nodeMetrics.at(-1)!.cacheBytes)} note="節點快取" /><Metric label="網路" value={formatBytes(nodeMetrics.at(-1)!.networkUploadBytes + nodeMetrics.at(-1)!.networkDownloadBytes)} note="上傳與下載" /><Metric label="在線／傳輸" value={`${nodeMetrics.at(-1)!.onlineDevices}／${nodeMetrics.at(-1)!.activeTransfers}`} note="即時工作" /></div>}
-      <div className="card audit-list"><div className="list-title"><h3>傳輸失敗紀錄</h3><span>{failures.length} 筆</span></div>{failures.map((item) => <article key={`${item.transferId}:${item.targetDeviceId}`}><span className="audit-mark">!</span><p><strong>{item.errorCode || "TRANSFER_FAILED"}</strong><small>{item.transferId.slice(0, 8)} · {item.targetDeviceId.slice(0, 8)}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!failures.length && <Empty text="目前沒有傳輸失敗紀錄" />}</div>
-      <div className="card settings-form"><div className="list-title"><div><p className="eyebrow">OPERATIONS</p><h3>節點維運</h3></div><span>主機管理指令</span></div><div className="settings-grid"><label>立即清理<code>deploy/nexdrop cleanup</code></label><label>建立備份<code>deploy/nexdrop backup --include-files</code></label><label>還原備份<code>deploy/nexdrop restore --file ... --confirm</code></label><label>安全更新<code>deploy/nexdrop update</code></label></div><small>備份、還原與更新須在節點主機執行，避免將 Docker 管理權限暴露給 Web 程序。</small></div>
-      {settings && <div className="card settings-form"><h3>帳號建立政策</h3><label className="check"><input type="checkbox" checked={settings.publicRegistrationEnabled} onChange={(event) => setSettings({ ...settings, publicRegistrationEnabled: event.target.checked })} /> 公開註冊開關（第一版預設關閉）</label><small>變更後請在「節點與儲存」按下儲存設定；關閉時僅允許管理員建立或邀請帳號。</small></div>}
-      <div className="admin-tabs"><button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>使用者</button><button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>裝置</button><button className={tab === "node" ? "active" : ""} onClick={() => setTab("node")}>節點與儲存</button><button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>稽核與失敗（{failures.length}）</button></div>
-      {tab === "users" && <div className="admin-layout"><form className="card create-user" onSubmit={createUser}><h3>{inviteMode ? "邀請使用者" : "建立使用者"}</h3><label className="check"><input type="checkbox" checked={inviteMode} onChange={(event) => { setInviteMode(event.target.checked); setInvitationLink(""); }} /> 由受邀者自行設定密碼</label><label>使用者名稱<input value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} required /></label><label>電子郵件<input type="email" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} required /></label>{!inviteMode && <label>初始密碼<input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} minLength={12} required /></label>}<label className="check"><input type="checkbox" checked={newUser.admin} onChange={(event) => setNewUser({ ...newUser, admin: event.target.checked })} /> 管理員權限</label><button className="primary">{inviteMode ? "建立邀請連結" : "建立帳號"}</button>{invitationLink && <label>一次性邀請連結<input readOnly value={invitationLink} onFocus={(event) => event.currentTarget.select()} /><small>連結七天內有效，接受後立即失效。</small></label>}</form><div className="card user-list"><div className="list-title"><h3>所有使用者</h3><span>{users.length} 人</span></div>{users.map((item) => <article key={item.id}><span className="avatar small">{item.username[0]?.toUpperCase()}</span><p><strong>{item.username}</strong><small>{item.email}</small></p><Status value={item.disabledAt ? "DISABLED" : item.admin ? "ADMIN" : "ACTIVE"} />{!item.disabledAt && <button className="text-danger" onClick={() => disable(item.id)}>停用</button>}</article>)}</div></div>}
-      {tab === "resources" && <div className="card user-list"><div className="list-title"><h3>所有裝置</h3><span>{adminDevices.length} 台</span></div>{adminDevices.map((item) => <article key={item.id}><span className="avatar small">{item.displayName[0]?.toUpperCase()}</span><p><strong>{item.displayName}</strong><small>{item.ownerUsername} · {item.type}</small></p><Status value={item.trustStatus} />{item.trustStatus !== "REVOKED" && <button className="text-danger" onClick={() => revokeDevice(item.id)}>撤銷</button>}</article>)}{!adminDevices.length && <Empty text="尚無裝置" />}</div>}
-      {tab === "node" && <><div className="metric-grid storage-metrics"><Metric label="已存檔案" value={storage?.fileCount.toLocaleString() ?? "—"} note={formatBytes(storage?.storedBytes ?? 0)} /><Metric label="上傳中" value={formatBytes(storage?.uploadingBytes ?? 0)} note="暫存容量" /><Metric label="已過期" value={formatBytes(storage?.expiredBytes ?? 0)} note="等待清理" /><Metric label="配額使用" value={formatBytes(storage?.quotaBytesUsed ?? 0)} note={`上限 ${formatBytes(storage?.quotaByteLimit ?? 0)}`} /></div>{nodeMetrics.at(-1) && <div className="metric-grid storage-metrics"><Metric label="CPU" value={`${nodeMetrics.at(-1)!.cpuPercent.toFixed(1)}%`} note="最新節點取樣" /><Metric label="記憶體" value={formatBytes(nodeMetrics.at(-1)!.memoryBytes)} note="系統使用量" /><Metric label="在線設備" value={nodeMetrics.at(-1)!.onlineDevices.toLocaleString()} note="即時連線" /><Metric label="進行中傳輸" value={nodeMetrics.at(-1)!.activeTransfers.toLocaleString()} note="目前工作" /></div>}{settings && <form className="card settings-form" onSubmit={saveSettings}><div className="list-title"><div><p className="eyebrow">LIMITS</p><h3>節點限制</h3></div><button className="primary">儲存設定</button></div><div className="settings-grid">{settingFields.map((field) => <label key={field.key}>{field.label}<input type="number" min={1} value={settings[field.key]} onChange={(event) => setSettings({ ...settings, [field.key]: Number(event.target.value) })} /><small>{field.percent ? "百分比" : formatBytes(settings[field.key])}</small></label>)}</div></form>}</>}
-      {tab === "audit" && <div className="card audit-list"><div className="list-title"><h3>最近事件</h3><span>{logs.length} 筆</span></div>{logs.map((item) => <article key={item.id}><span className="audit-mark">◆</span><p><strong>{item.action}</strong><small>{item.targetType}{item.targetId ? ` · ${item.targetId.slice(0, 8)}` : ""}</small></p><time>{formatDate(item.createdAt)}</time></article>)}{!logs.length && <Empty text="尚無稽核紀錄" />}</div>}
-      </>}
-    </section>
-  );
-}
-
-async function loadAdminPages<T>(path: string) {
-  const pageSize = 200;
-  const result: T[] = [];
-  for (let offset = 0; ; offset += pageSize) {
-    const page = await api.get<T[]>(`${path}?limit=${pageSize}&offset=${offset}`);
-    result.push(...page);
-    if (page.length < pageSize) return result;
-  }
-}
-
-const settingFields: Array<{ key: Exclude<keyof NodeSettings, "publicRegistrationEnabled">; label: string; percent?: boolean }> = [
-  { key: "singleFileLimitBytes", label: "單檔上限" }, { key: "defaultUserQuotaBytes", label: "預設使用者配額" },
-  { key: "nodeCacheLimitBytes", label: "節點快取上限" },
-  { key: "defaultUserDailyBytes", label: "使用者每日流量" },
-  { key: "diskWarningPercent", label: "磁碟警告門檻", percent: true }, { key: "diskStopPercent", label: "磁碟停止門檻", percent: true },
-];
 
 function PageHeading({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) {
   return <header className="page-heading"><div><p className="eyebrow accent">{eyebrow}</p><h1>{title}</h1><p>{description}</p></div>{action}</header>;
@@ -681,10 +523,9 @@ function labelDeviceType(value: string) { return ({ WINDOWS: "Windows", ANDROID:
 function statusLabel(value: string) { return ({ ONLINE: "在線", OFFLINE: "離線", PENDING: "待核准", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
-function currentNodeStatisticsPath() { const now = Date.now(); return `/api/statistics/node?${new URLSearchParams({ from: new Date(now - 2 * 60 * 1000).toISOString(), to: new Date(now + 60 * 1000).toISOString() })}`; }
 function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
 function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
-function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", ADMIN_VERIFICATION_FAILED: "密碼或驗證碼不正確", INVALID_TOTP_SETUP: "無法啟用 TOTP，請確認密碼與驗證碼", ADMIN_REAUTH_REQUIRED: "管理員驗證已逾時，請重新驗證", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", ADMIN_RESOURCE_CONFLICT: "帳號或電子郵件已存在", INVALID_INVITATION: "邀請資料或密碼格式不正確", INVITATION_EXPIRED: "邀請連結無效、已使用或已逾期", INVITATION_ACCOUNT_CONFLICT: "此邀請的帳號或電子郵件已存在", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
+function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", NODE_KEY_REQUIRED: "節點密鑰不正確或尚未設定", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
 
 function readSharedContent() {
   if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };
