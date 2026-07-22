@@ -48,4 +48,6 @@ Get-ChildItem -LiteralPath $repo -Recurse -Filter '*.md' -File |
     }
 
 if ($problems.Count) { throw "Documentation validation failed:`n$($problems -join "`n")" }
+& (Join-Path $repo 'scripts/check-automation.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Automation validation failed' }
 Write-Output "Documentation links and version $version are valid."

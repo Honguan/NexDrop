@@ -1,26 +1,42 @@
 version: 2
+
+multi-ecosystem-groups:
+  nexdrop-dependencies:
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Taipei
+    labels: [dependencies, generated-pr, auto-merge]
+
 updates:
   - package-ecosystem: gomod
     directory: /
-    schedule: {interval: weekly}
-    labels: [dependencies, generated-pr, auto-merge]
+    patterns: ["*"]
+    multi-ecosystem-group: nexdrop-dependencies
+    open-pull-requests-limit: 1
+    rebase-strategy: auto
   - package-ecosystem: npm
     directory: /web
-    schedule: {interval: weekly}
-    labels: [dependencies, generated-pr, auto-merge]
+    patterns: ["*"]
+    multi-ecosystem-group: nexdrop-dependencies
+    open-pull-requests-limit: 1
+    rebase-strategy: auto
   - package-ecosystem: npm
     directory: /extension
-    schedule: {interval: weekly}
-    labels: [dependencies, generated-pr, auto-merge]
+    patterns: ["*"]
+    multi-ecosystem-group: nexdrop-dependencies
+    open-pull-requests-limit: 1
+    rebase-strategy: auto
   - package-ecosystem: pub
     directory: /client
-    schedule: {interval: weekly}
-    labels: [dependencies, generated-pr, auto-merge]
+    patterns: ["*"]
+    multi-ecosystem-group: nexdrop-dependencies
+    open-pull-requests-limit: 1
+    rebase-strategy: auto
   - package-ecosystem: github-actions
     directory: /
-    schedule: {interval: weekly}
-    labels: [dependencies, generated-pr, auto-merge]
-    groups:
-      codeql-actions:
-        patterns:
-          - "github/codeql-action/*"
+    patterns: ["*"]
+    multi-ecosystem-group: nexdrop-dependencies
+    open-pull-requests-limit: 1
+    rebase-strategy: auto

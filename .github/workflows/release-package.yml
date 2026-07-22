@@ -1,0 +1,273 @@
+name: release-package
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 版本遞增方式
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+      summary:
+        description: 本版更新摘要
+        required: true
+        default: 維護與依賴更新
+        type: string
+
+concurrency:
+  group: release-package
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  publish:
+    name: release-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: 決定發布版本
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(tr -d '\r\n' < VERSION)
+          if ! [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION 不是穩定 SemVer：$current" >&2
+            exit 1
+          fi
+
+          current_tag="v${current}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${current_tag}" >/dev/null 2>&1; then
+            echo "目前 master 尚未發布，將恢復 ${current_tag} 的發布流程。"
+            echo "value=$current" >> "$GITHUB_OUTPUT"
+            echo "tag=$current_tag" >> "$GITHUB_OUTPUT"
+            echo "needs_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch origin "refs/tags/${current_tag}:refs/tags/${current_tag}"
+          tag_commit=$(git rev-list -n 1 "$current_tag")
+          completed=$(gh run list --workflow release.yml --limit 100 \
+            --json headSha,status,conclusion |
+            jq --arg sha "$tag_commit" 'any(.[]; .headSha == $sha and .status == "completed" and .conclusion == "success")')
+          if ! gh release view "$current_tag" >/dev/null 2>&1 || [[ "$completed" != true ]]; then
+            echo "${current_tag} 尚未完成正式發布，將從相同 Tag 恢復。"
+            echo "value=$current" >> "$GITHUB_OUTPUT"
+            echo "tag=$current_tag" >> "$GITHUB_OUTPUT"
+            echo "needs_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          IFS=. read -r major minor patch <<<"$current"
+          case "$BUMP" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            *) echo "不支援的版本遞增方式：$BUMP" >&2; exit 1 ;;
+          esac
+          version="${major}.${minor}.${patch}"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "needs_pr=true" >> "$GITHUB_OUTPUT"
+
+      - name: 建立或沿用版本 PR
+        if: steps.version.outputs.needs_pr == 'true'
+        id: pull_request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUMMARY: ${{ inputs.summary }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="release/v${VERSION}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            git fetch origin "${branch}:refs/remotes/origin/${branch}"
+            git switch --create "$branch" --track "origin/$branch"
+            test "$(tr -d '\r\n' < VERSION)" = "$VERSION"
+          else
+            pwsh -NoProfile -File ./scripts/prepare-release.ps1 -Version "$VERSION" -Summary "$SUMMARY"
+            git switch --create "$branch"
+            git add --all
+            git commit -m "chore: release v${VERSION}"
+            git push --set-upstream origin "$branch"
+          fi
+
+          pr=$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')
+          if [[ -z "$pr" ]]; then
+            pr=$(gh pr create \
+              --base master \
+              --head "$branch" \
+              --title "chore: release v${VERSION}" \
+              --body "由一鍵發布流程建立。必要檢查通過後會自動合併，接著建立不可變 Tag 並執行 Release。")
+          fi
+          echo "number=${pr##*/}" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: 通過必要檢查並自動整合
+        if: steps.version.outputs.needs_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pull_request.outputs.number }}
+          BRANCH: ${{ steps.pull_request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflows=(
+            server-ci.yml
+            web-ci.yml
+            extension-ci.yml
+            flutter-ci.yml
+            integration-test.yml
+            security.yml
+            docs.yml
+            docker-build.yml
+          )
+          expected='["server-ci","web-ci","extension-ci","flutter-ci (ubuntu-latest)","flutter-ci (windows-latest)","integration-test","security","docs","docker-build"]'
+
+          wait_for_required_checks() {
+            local sha=$1
+            local deadline=$((SECONDS + 7200))
+            while (( SECONDS < deadline )); do
+              checks=$(gh api --paginate \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" |
+                jq -s '{check_runs: [.[].check_runs[]]}')
+
+              failed=$(jq --argjson expected "$expected" '
+                [.check_runs[] | select(.name as $name | $expected | index($name)) |
+                  select(.conclusion != null and (.conclusion | IN("success", "neutral", "skipped") | not)) |
+                  .name] | unique | join(", ")' <<<"$checks")
+              if [[ -n "$failed" ]]; then
+                echo "必要檢查失敗：$failed" >&2
+                return 1
+              fi
+
+              missing=$(jq --argjson expected "$expected" '
+                [.check_runs[] | select(.name as $name | $expected | index($name)) |
+                  select(.conclusion | IN("success", "neutral", "skipped")) | .name] | unique as $done |
+                [$expected[] | select(. as $name | $done | index($name) | not)] | join(", ")' <<<"$checks")
+              if [[ -z "$missing" ]]; then
+                return 0
+              fi
+              echo "等待必要檢查：$missing"
+              sleep 20
+            done
+            echo '等待必要檢查逾時。' >&2
+            return 1
+          }
+
+          for attempt in 1 2 3; do
+            state=$(gh pr view "$PR" --json state --jq .state)
+            [[ "$state" = MERGED ]] && break
+            [[ "$state" = OPEN ]] || { echo "版本 PR 已關閉但未合併。" >&2; exit 1; }
+
+            merge_state=$(gh pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus)
+            if [[ "$merge_state" = BEHIND ]]; then
+              echo "版本 PR 落後 master，先以 rebase 更新。"
+              gh pr update-branch "$PR" --rebase
+            elif [[ "$merge_state" = DIRTY ]]; then
+              echo '版本 PR 有實際內容衝突，保留 PR 供修正，且不建立 Tag。' >&2
+              exit 1
+            fi
+
+            sha=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+            for workflow in "${workflows[@]}"; do
+              gh workflow run "$workflow" --ref "$BRANCH"
+            done
+            gh pr merge "$PR" --auto --squash --delete-branch
+            wait_for_required_checks "$sha"
+
+            for _ in {1..30}; do
+              state=$(gh pr view "$PR" --json state --jq .state)
+              [[ "$state" = MERGED ]] && break 2
+              sleep 10
+            done
+
+            merge_state=$(gh pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus)
+            if [[ "$merge_state" != BEHIND ]]; then
+              echo "必要檢查已通過，但 PR 未自動合併（狀態：$merge_state）。" >&2
+              exit 1
+            fi
+            echo "master 在檢查期間更新，重新同步後再驗證（第 ${attempt} 次）。"
+          done
+
+          state=$(gh pr view "$PR" --json state --jq .state)
+          [[ "$state" = MERGED ]] || { echo '三次同步後仍無法整合版本 PR。' >&2; exit 1; }
+
+      - name: 建立不可變 Tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin master --tags
+          commit=$(git rev-parse origin/master)
+          test "$(git show "${commit}:VERSION" | tr -d '\r\n')" = "$VERSION"
+          git switch --detach "$commit"
+          pwsh -NoProfile -File ./scripts/check-docs.ps1
+
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            tagged=$(git rev-list -n 1 "$TAG")
+            if [[ "$tagged" != "$commit" ]]; then
+              echo "${TAG} 已指向其他 Commit，禁止移動不可變 Tag。" >&2
+              exit 1
+            fi
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "$TAG" "$commit" -m "NexDrop ${VERSION}"
+            git push origin "$TAG"
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: 執行並等待正式發布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --workflow release.yml --limit 100 \
+            --json databaseId,headSha,status |
+            jq -r --arg sha "$COMMIT" '.[] | select(.headSha == $sha and (.status == "queued" or .status == "in_progress")) | .databaseId' |
+            head -n 1)
+
+          if [[ -n "$run_id" ]]; then
+            echo "沿用正在執行的 Release Workflow：${run_id}"
+          else
+            previous=$(gh run list --workflow release.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+            gh workflow run release.yml --ref "$TAG"
+
+            for _ in {1..30}; do
+              run_id=$(gh run list --workflow release.yml --event workflow_dispatch --limit 20 \
+                --json databaseId,headSha \
+                --jq ".[] | select(.headSha == \"$COMMIT\" and .databaseId > $previous) | .databaseId" |
+                head -n 1)
+              [[ -n "$run_id" ]] && break
+              sleep 5
+            done
+            [[ -n "$run_id" ]] || { echo '找不到剛啟動的 Release Workflow。' >&2; exit 1; }
+          fi
+          gh run watch "$run_id" --exit-status --interval 20
+          gh release view "$TAG" >/dev/null

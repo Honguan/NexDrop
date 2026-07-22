@@ -36,7 +36,7 @@ jobs:
             exit 0
           fi
 
-          functional=$(printf '%s\n' "$changed" | grep -E '^(cmd|internal|migrations|web/src|web/tests|extension/src|extension/tests|extension/scripts|client/lib|client/test|client/android|client/windows|scripts|Dockerfile|compose\.yaml|go\.(mod|sum)|web/package(-lock)?\.json|extension/package(-lock)?\.json|client/pubspec\.(yaml|lock))' || true)
+          functional=$(printf '%s\n' "$changed" | grep -E '^(cmd|internal|migrations|web/src|web/tests|extension/src|extension/tests|extension/scripts|client/lib|client/test|client/android|client/windows|scripts/(build-node-release\.ps1|sign-android-release\.sh)|Dockerfile|compose\.yaml|go\.(mod|sum)|web/package(-lock)?\.json|extension/package(-lock)?\.json|client/pubspec\.(yaml|lock))' || true)
           if test -z "$functional"; then
             echo "No functional release-triggering files changed."
             exit 0
