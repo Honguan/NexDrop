@@ -20,6 +20,7 @@ jobs:
       - name: Enable auto-merge for trusted generated PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
@@ -42,6 +43,7 @@ jobs:
       - name: Merge trusted generated PR after checks pass
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.check_suite.head_sha }}
         shell: bash
         run: |

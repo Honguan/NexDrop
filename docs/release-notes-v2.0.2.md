@@ -16,4 +16,4 @@ NexDrop 2.0.2 發布設備加入與用戶端穩定性修正，並同步 2.x Rele
 ./deploy/nexdrop update 2.0.2
 ```
 
-升級前請先備份資料。若使用臨時簽章 Android APK，覆蓋安裝可能需要先移除舊版 APK；設定固定 Android 正式簽章 Secrets 後可維持後續覆蓋更新。
+升級前請先備份資料。若使用臨時簽章 Android APK，覆蓋安裝可能需要先移除舊版 APK；設定固定 Android 正式簽章 Secrets 後可維持後續覆蓋更新。未設定 Windows 正式簽章憑證時，EXE 與 ZIP 會維持未簽章，Windows 可能顯示 SmartScreen 警告。
