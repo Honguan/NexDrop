@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-React／TypeScript 用戶端提供設備管理、加密傳輸、活動紀錄與統計；正式產物會內嵌至 Node 映像。開發需要 Node.js 24 與已提交的 npm 鎖定檔。
+React／TypeScript 用戶端提供設備管理、加密傳輸、活動紀錄與統計。即時模組統一處理心跳、通知確認、異常訊息與重新連線。正式產物會內嵌至 Node 映像；開發需要 Node.js 24 與已提交的 npm 鎖定檔。
 
 ```bash
 npm ci

@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-The React and TypeScript client provides device management, encrypted transfer, activity, and statistics. Production assets are embedded in the Node image. Development requires Node.js 24 and the committed npm lockfile.
+The React and TypeScript client provides device management, encrypted transfer, activity, and statistics. Its real-time module owns heartbeat, notification acknowledgement, malformed-event handling, and reconnect behavior. Production assets are embedded in the Node image. Development requires Node.js 24 and the committed npm lockfile.
 
 ```bash
 npm ci

@@ -12,8 +12,11 @@ test("第一方 Web 預設全選設備、提供複製刪除並移除群組入口
 
 test("Web 會定期刷新設備與傳輸並維持即時狀態", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const realtime = await readFile(new URL("../src/realtime.ts", import.meta.url), "utf8");
   assert.match(app, /window\.setInterval\(.*reload/s);
   assert.match(app, /item\.online/);
-  assert.match(app, /socket\.onmessage/);
+  assert.match(app, /subscribeNodeEvents/);
+  assert.match(realtime, /socket\.onmessage/);
+  assert.match(realtime, /type: "heartbeat"/);
   assert.doesNotMatch(app, /\/api\/admin\//);
 });

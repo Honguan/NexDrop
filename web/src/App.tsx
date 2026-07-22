@@ -13,6 +13,7 @@ import {
 import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
 import { messageFor } from "./errors";
 import { fileMetadata, formatBytes, formatDate, labelDeviceType, statusLabel, successRate } from "./presentation";
+import { subscribeNodeEvents } from "./realtime";
 
 type View = "chat" | "devices" | "analytics";
 type SharedContent = { content: string; groupId: string };
@@ -142,12 +143,14 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [sharedContent, setSharedContent] = useState(readSharedContent);
 
   const reload = useCallback(async () => {
-	const [nextDevices, transferPage] = await Promise.all([
+    const [nextDevices, transferPage] = await Promise.all([
       api.get<Device[]>("/api/devices"),
-	  api.get<{ items: Transfer[]; nextCursor?: string }>("/api/transfers?limit=100"),
+      api.get<{ items: Transfer[]; nextCursor?: string }>(
+        "/api/transfers?limit=100",
+      ),
     ]);
     setDevices(nextDevices);
-	setTransfers(transferPage.items);
+    setTransfers(transferPage.items);
   }, []);
 
   useEffect(() => {
@@ -168,48 +171,32 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => window.clearInterval(refresh);
   }, [reload]);
 
+  const localDeviceID = deviceID(user.id);
+  const realtimeReady = Boolean(
+    localDeviceID &&
+      devices.some(
+        (item) =>
+          item.id === localDeviceID && item.trustStatus === "TRUSTED",
+      ),
+  );
+
   useEffect(() => {
-    const localDeviceID = deviceID(user.id);
-    if (!localDeviceID || !devices.some((item) => item.id === localDeviceID && item.trustStatus === "TRUSTED")) return;
-    let socket: WebSocket | null = null;
-    let heartbeat: number | undefined;
-    let reconnect: number | undefined;
-    let stopped = false;
-    const connect = () => {
-      const url = api.webSocketURL();
-      if (!url || stopped) return;
-      socket = new WebSocket(url, "nexdrop.v1");
-      socket.onopen = () => setOnline(true);
-      socket.onmessage = (event) => {
-        const message = JSON.parse(event.data as string) as { type: string; notificationId?: string; notification?: { id: string } };
-        if (message.type === "connected") {
-          reload().catch(() => undefined);
-          heartbeat = window.setInterval(() => socket?.send(JSON.stringify({ type: "heartbeat" })), 5000);
+    if (!realtimeReady) return;
+    const url = api.webSocketURL();
+    if (!url) return;
+    return subscribeNodeEvents(url, {
+      onOnlineChange: setOnline,
+      onRefresh: () => void reload().catch(() => undefined),
+      onNotification: () => {
+        if (!("Notification" in window)) return;
+        if (Notification.permission === "granted") {
+          new Notification("NexDrop", { body: "收到新的訊息或資料" });
+        } else if (Notification.permission === "default") {
+          void Notification.requestPermission();
         }
-        if (message.type === "heartbeat_ack") reload().catch(() => undefined);
-        if (message.type === "notification" && message.notification) {
-          socket?.send(JSON.stringify({ type: "notification_ack", notificationId: message.notification.id }));
-          if ("Notification" in window) {
-            if (Notification.permission === "granted") new Notification("NexDrop", { body: "收到新的訊息或資料" });
-            else if (Notification.permission === "default") void Notification.requestPermission();
-          }
-          reload().catch(() => undefined);
-        }
-      };
-      socket.onclose = () => {
-        setOnline(false);
-        if (heartbeat) window.clearInterval(heartbeat);
-        if (!stopped) reconnect = window.setTimeout(connect, 3000);
-      };
-    };
-    connect();
-    return () => {
-      stopped = true;
-      if (heartbeat) window.clearInterval(heartbeat);
-      if (reconnect) window.clearTimeout(reconnect);
-      socket?.close();
-    };
-  }, [devices.length, reload, user.id]);
+      },
+    });
+  }, [realtimeReady, reload]);
 
   async function logout() {
     await api.logout();
