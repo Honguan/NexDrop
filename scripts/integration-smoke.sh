@@ -10,6 +10,7 @@ base_url="${NEXDROP_INTEGRATION_BASE_URL:-http://127.0.0.1:8080}"
 restart_barrier="${NEXDROP_INTEGRATION_RESTART_BARRIER:-}"
 admin_username="${NEXDROP_BOOTSTRAP_ADMIN_USERNAME:?admin username is required}"
 admin_password="${NEXDROP_BOOTSTRAP_ADMIN_PASSWORD:?admin password is required}"
+node_key="${NEXDROP_NODE_KEY:?node key is required}"
 accept='application/vnd.nexdrop.v1+json'
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
@@ -24,7 +25,7 @@ api() {
   local access="$1"
   shift
   curl --fail-with-body --silent --show-error -H "Accept: $accept" \
-    -H "Authorization: Bearer $access" "$@"
+    -H "Authorization: Bearer $access" -H "X-NexDrop-Node-Key: $node_key" "$@"
 }
 expect_status() {
   local expected="$1"
@@ -39,10 +40,12 @@ expect_status() {
 }
 
 login="$(curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
+  -H "X-NexDrop-Node-Key: $node_key" \
   --data "$(jq -nc --arg identifier "$admin_username" --arg password "$admin_password" '{identifier:$identifier,password:$password}')" \
   "$base_url/api/auth/login")"
 refresh="$(jq -er '.refreshToken' <<<"$login")"
 admin_tokens="$(curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
+  -H "X-NexDrop-Node-Key: $node_key" \
   --data "$(jq -nc --arg refreshToken "$refresh" '{refreshToken:$refreshToken}')" "$base_url/api/auth/refresh")"
 admin_token="$(token <<<"$admin_tokens")"
 
@@ -53,6 +56,7 @@ sender_id="$(jq -er '.id' <<<"$sender")"
 jq -e '.trustStatus == "TRUSTED"' <<<"$sender" >/dev/null
 
 target_login="$(curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' -H "Accept: $accept" \
+  -H "X-NexDrop-Node-Key: $node_key" \
   --data "$(jq -nc --arg identifier "$admin_username" --arg password "$admin_password" '{identifier:$identifier,password:$password}')" \
   "$base_url/api/auth/login")"
 target_token="$(token <<<"$target_login")"
