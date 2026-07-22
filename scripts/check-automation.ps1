@@ -77,6 +77,9 @@ if (-not $integrationSmoke.Contains('X-NexDrop-Node-Key: $node_key')) {
 if (-not $integrationWorkflow.Contains('-node-key "$NEXDROP_NODE_KEY"')) {
     throw 'Integration load test must receive the Node key'
 }
+if (-not $integrationWorkflow.Contains('-H "X-NexDrop-Node-Key: $NEXDROP_NODE_KEY"')) {
+    throw 'Integration recovery write must send the Node key'
+}
 if (-not $loadTest.Contains('"X-NexDrop-Node-Key": nodeKey')) {
     throw 'Load test device registration must send the Node key'
 }

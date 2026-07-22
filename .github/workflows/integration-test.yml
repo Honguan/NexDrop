@@ -167,6 +167,7 @@ jobs:
           test "$ready_status" = 503
           unavailable_device_name="Must-not-persist-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           unavailable_write=$(curl --max-time 10 --silent --output /dev/null --write-out '%{http_code}' -H "Authorization: Bearer $recovery_token" \
+            -H "X-NexDrop-Node-Key: $NEXDROP_NODE_KEY" \
             -H 'Content-Type: application/json' --data "$(jq -nc --arg name "$unavailable_device_name" \
               '{displayName:$name,type:"WEB_CHROME",publicKey:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",keyAlgorithm:"X25519"}')" \
             http://127.0.0.1:8080/api/devices || true)
