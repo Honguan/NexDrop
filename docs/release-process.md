@@ -12,7 +12,7 @@
 
 若任何必要檢查失敗，流程會保留版本 PR 及檢查紀錄，不建立 Tag。修正同一個 PR 後重新執行 `release-package` 即可續跑；不會建立重複 PR。若版本 PR 在檢查期間再次落後 `master`，流程最多自動同步並重驗三次。
 
-若版本 PR 已合併但 Tag 或 Release 尚未完成，重新執行會偵測目前 `VERSION` 尚未發布，直接從同一個 `master` Commit 恢復 Tag 與 Release，不會再遞增版本。
+若版本 PR 已合併但 Tag 或 Release 尚未完成，重新執行會同時檢查 Tag、成功的 Release Workflow 與實際 Release，直接從同一個 `master` Commit 恢復，不會再遞增版本。若該 Commit 已有執行中的 Release，流程會接手等待而不會重複啟動。
 
 ## 本機準備版本
 

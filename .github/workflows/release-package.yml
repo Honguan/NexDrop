@@ -58,6 +58,19 @@ jobs:
             exit 0
           fi
 
+          git fetch origin "refs/tags/${current_tag}:refs/tags/${current_tag}"
+          tag_commit=$(git rev-list -n 1 "$current_tag")
+          completed=$(gh run list --workflow release.yml --limit 100 \
+            --json headSha,status,conclusion |
+            jq --arg sha "$tag_commit" 'any(.[]; .headSha == $sha and .status == "completed" and .conclusion == "success")')
+          if ! gh release view "$current_tag" >/dev/null 2>&1 || [[ "$completed" != true ]]; then
+            echo "${current_tag} 尚未完成正式發布，將從相同 Tag 恢復。"
+            echo "value=$current" >> "$GITHUB_OUTPUT"
+            echo "tag=$current_tag" >> "$GITHUB_OUTPUT"
+            echo "needs_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           IFS=. read -r major minor patch <<<"$current"
           case "$BUMP" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
@@ -235,17 +248,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          previous=$(gh run list --workflow release.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')
-          gh workflow run release.yml --ref "$TAG"
+          run_id=$(gh run list --workflow release.yml --limit 100 \
+            --json databaseId,headSha,status |
+            jq -r --arg sha "$COMMIT" '.[] | select(.headSha == $sha and (.status == "queued" or .status == "in_progress")) | .databaseId' |
+            head -n 1)
 
-          run_id=''
-          for _ in {1..30}; do
-            run_id=$(gh run list --workflow release.yml --event workflow_dispatch --limit 20 \
-              --json databaseId,headSha \
-              --jq ".[] | select(.headSha == \"$COMMIT\" and .databaseId > $previous) | .databaseId" |
-              head -n 1)
-            [[ -n "$run_id" ]] && break
-            sleep 5
-          done
-          [[ -n "$run_id" ]] || { echo '找不到剛啟動的 Release Workflow。' >&2; exit 1; }
+          if [[ -n "$run_id" ]]; then
+            echo "沿用正在執行的 Release Workflow：${run_id}"
+          else
+            previous=$(gh run list --workflow release.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+            gh workflow run release.yml --ref "$TAG"
+
+            for _ in {1..30}; do
+              run_id=$(gh run list --workflow release.yml --event workflow_dispatch --limit 20 \
+                --json databaseId,headSha \
+                --jq ".[] | select(.headSha == \"$COMMIT\" and .databaseId > $previous) | .databaseId" |
+                head -n 1)
+              [[ -n "$run_id" ]] && break
+              sleep 5
+            done
+            [[ -n "$run_id" ]] || { echo '找不到剛啟動的 Release Workflow。' >&2; exit 1; }
+          fi
           gh run watch "$run_id" --exit-status --interval 20
+          gh release view "$TAG" >/dev/null

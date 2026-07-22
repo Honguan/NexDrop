@@ -61,11 +61,13 @@ foreach ($workflow in $requiredWorkflows) {
 $releasePackage = Read-RepoFile '.github/workflows/release-package.yml'
 foreach ($required in @(
     'scripts/prepare-release.ps1',
+    'gh release view "$current_tag"',
     'gh pr update-branch',
     'gh pr merge "$PR" --auto --squash --delete-branch',
     'git tag -a "$TAG"',
     'gh workflow run release.yml --ref "$TAG"',
-    'gh run watch "$run_id" --exit-status'
+    'gh run watch "$run_id" --exit-status',
+    'gh release view "$TAG"'
 )) {
     if (-not $releasePackage.Contains($required)) {
         throw "One-click release workflow is missing: $required"
