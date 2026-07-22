@@ -26,7 +26,7 @@ jobs:
           grep -q "## \[${version}\]" CHANGELOG.md
           test -f "docs/release-notes-v${version}.md"
           echo "value=${version}" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - run: go test ./...
       - run: go vet ./...
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - shell: pwsh
         run: ./scripts/build-node-release.ps1 -Version '${{ needs.validate.outputs.version }}' -Commit '${{ github.sha }}'
@@ -122,7 +122,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - name: 建置 Windows 產物並套用可選簽章
         shell: pwsh
