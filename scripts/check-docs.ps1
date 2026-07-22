@@ -20,6 +20,29 @@ $releaseWorkflow = Join-Path $repo '.github/workflows/release.yml'
 if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch "tags: ['v*']")) { throw 'release workflow must support version tags' }
 if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch 'gh release create')) { throw 'release workflow must create a GitHub release' }
 
+$bilingualReadmes = @(
+    @('README.md', 'README.zh-TW.md'),
+    @('docs/README.md', 'docs/README.zh-TW.md'),
+    @('cmd/README.md', 'cmd/README.zh-TW.md'),
+    @('web/README.md', 'web/README.zh-TW.md'),
+    @('extension/README.md', 'extension/README.zh-TW.md'),
+    @('client/README.md', 'client/README.zh-TW.md'),
+    @('client/android/README.md', 'client/android/README.zh-TW.md'),
+    @('client/windows/README.md', 'client/windows/README.zh-TW.md'),
+    @('deploy/README.md', 'deploy/README.zh-TW.md')
+)
+foreach ($pair in $bilingualReadmes) {
+    $englishPath = Join-Path $repo $pair[0]
+    $chinesePath = Join-Path $repo $pair[1]
+    if (-not (Test-Path -LiteralPath $chinesePath -PathType Leaf)) { throw "missing Traditional Chinese README: $($pair[1])" }
+    $english = Get-Content -Raw -Encoding UTF8 $englishPath
+    $chinese = Get-Content -Raw -Encoding UTF8 $chinesePath
+    if (-not $english.Contains('(README.zh-TW.md)')) { throw "$($pair[0]) must link to Traditional Chinese" }
+    if (-not $chinese.Contains('(README.md)')) { throw "$($pair[1]) must link to English" }
+    $englishBody = $english -replace '(?m)^\[[^\]]+\]\(README\.zh-TW\.md\)\r?\n?', ''
+    if ($englishBody -match '[\u3400-\u9fff]') { throw "$($pair[0]) must remain English-first" }
+}
+
 $problems = @()
 Get-ChildItem -LiteralPath $repo -Recurse -Filter '*.md' -File |
     Where-Object { $_.FullName -notmatch '[\\/](node_modules|build|dist)[\\/]' } |

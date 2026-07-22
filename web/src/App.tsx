@@ -11,7 +11,8 @@ import {
   statisticsPath,
 } from "./api";
 import { decryptFileChunks, decryptText, deviceID, encryptFiles, encryptText, ensureDeviceKey, proveDeviceSession, rememberDevice } from "./crypto";
-import { rateLimitMessage } from "./errors";
+import { messageFor } from "./errors";
+import { fileMetadata, formatBytes, formatDate, labelDeviceType, statusLabel, successRate } from "./presentation";
 
 type View = "chat" | "devices" | "analytics";
 type SharedContent = { content: string; groupId: string };
@@ -519,14 +520,6 @@ function PanelLoader() { return <div className="panel-loader"><span className="l
 function Metric({ label, value, note, danger }: { label: string; value: string; note: string; danger?: boolean }) { return <article className={`metric card ${danger ? "danger" : ""}`}><p>{label}</p><strong>{value}</strong><small>{note}</small></article>; }
 
 function browserName() { return `${navigator.userAgent.includes("Edg/") ? "Edge" : "Chrome"} · ${navigator.platform || "Web"}`; }
-function labelDeviceType(value: string) { return ({ WINDOWS: "Windows", ANDROID: "Android", WEB_CHROME: "Chrome Web", WEB_EDGE: "Edge Web" } as Record<string, string>)[value] ?? value; }
-function statusLabel(value: string) { return ({ ONLINE: "在線", OFFLINE: "離線", PENDING: "待核准", TRUSTED: "信任", REVOKED: "已撤銷", CREATED: "已建立", QUEUED: "佇列中", DELIVERED: "已送達", READ: "已讀", FAILED: "失敗", CANCELLED: "已取消", ACTIVE: "啟用", ADMIN: "管理員", DISABLED: "已停用" } as Record<string, string>)[value] ?? value.replaceAll("_", " "); }
-function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
-function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
-function fileMetadata(value: string | undefined, index: number) { try { return (JSON.parse(value ?? "") as Array<{ name: string; mimeType: string; size: number }>)[index]; } catch { return undefined; } }
-function successRate(value: Overview) { const total = value.succeeded + value.failed; return total ? Math.round((value.succeeded / total) * 100) : 0; }
-function messageFor(reason: unknown) { if (reason instanceof APIError) { const limited = rateLimitMessage(reason); if (limited) return limited; return ({ INVALID_REQUEST: "請確認所有必填欄位與格式", INVALID_CREDENTIALS: "帳號或密碼不正確", TOTP_REQUIRED: "請輸入驗證器中的六位數驗證碼", PERMISSION_DENIED: "你沒有執行此操作的權限", INVALID_TOKEN: "登入已失效，請重新登入", NODE_KEY_REQUIRED: "節點密鑰不正確或尚未設定", INVALID_TRANSFER: "傳輸內容或目的地無效", QUOTA_EXCEEDED: "已超過可用配額", STORAGE_FULL: "節點儲存空間不足" } as Record<string, string>)[reason.code] ?? `操作失敗：${reason.code}`; } if (reason instanceof Error) return reason.message; return "操作失敗，請稍後再試"; }
-
 function readSharedContent() {
   if (!location.hash.startsWith("#share=")) return { content: "", groupId: "" };
   try {

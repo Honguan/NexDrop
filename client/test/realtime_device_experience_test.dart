@@ -9,14 +9,21 @@ void main() {
     expect(mainSource, isNot(contains("'群組'")));
     expect(mainSource, contains('複製'));
     expect(mainSource, contains('刪除'));
+    expect(mainSource, contains('ValueListenableBuilder<TextEditingValue>'));
+    expect(mainSource, contains('LogicalKeyboardKey.enter'));
+    expect(mainSource, contains('_sendFromShortcut'));
   });
 
   test('Windows 最小化使用已封裝的系統匣圖示', () {
     final mainSource = File('lib/main.dart').readAsStringSync();
+    final desktopLifecycle = File(
+      'lib/ui/desktop_lifecycle.dart',
+    ).readAsStringSync();
     final pubspec = File('pubspec.yaml').readAsStringSync();
-    expect(mainSource, contains('onWindowMinimize'));
-    expect(mainSource, contains('getApplicationSupportDirectory'));
-    expect(mainSource, contains('await _desktopTrayIconPath()'));
+    expect(mainSource, contains("import 'ui/desktop_lifecycle.dart'"));
+    expect(desktopLifecycle, contains('onWindowMinimize'));
+    expect(desktopLifecycle, contains('getApplicationSupportDirectory'));
+    expect(desktopLifecycle, contains('await _desktopTrayIconPath()'));
     expect(pubspec, contains('windows/runner/resources/app_icon.ico'));
   });
 

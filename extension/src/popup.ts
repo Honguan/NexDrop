@@ -4,6 +4,7 @@ import { SharePayload, nodeURL } from "./protocol.js";
 const statusElement = document.querySelector<HTMLElement>("#status")!;
 const targetsElement = document.querySelector<HTMLElement>("#targets")!;
 const contentInput = document.querySelector<HTMLTextAreaElement>("#content")!;
+const contentCount = document.querySelector<HTMLElement>("#content-count")!;
 const includeURL = document.querySelector<HTMLInputElement>("#include-url")!;
 const sendButton = document.querySelector<HTMLButtonElement>("#send")!;
 const openButton = document.querySelector<HTMLButtonElement>("#open-web")!;
@@ -11,9 +12,31 @@ const openButton = document.querySelector<HTMLButtonElement>("#open-web")!;
 void initialize();
 
 async function initialize() {
-  const preference = await chrome.storage.sync.get({ includeCurrentURL: true });
+  const [preference, localState] = await Promise.all([
+    chrome.storage.sync.get({ includeCurrentURL: true }),
+    chrome.storage.local.get({ popupDraft: "" }),
+  ]);
   includeURL.checked = Boolean(preference.includeCurrentURL);
-  includeURL.addEventListener("change", () => chrome.storage.sync.set({ includeCurrentURL: includeURL.checked }));
+  contentInput.value =
+    typeof localState.popupDraft === "string" ? localState.popupDraft : "";
+  updateContentCount();
+  includeURL.addEventListener("change", () =>
+    chrome.storage.sync.set({ includeCurrentURL: includeURL.checked }),
+  );
+  contentInput.addEventListener("input", () => {
+    updateContentCount();
+    void chrome.storage.local.set({ popupDraft: contentInput.value });
+  });
+  contentInput.addEventListener("keydown", (event) => {
+    if (
+      event.key === "Enter" &&
+      (event.ctrlKey || event.metaKey) &&
+      !sendButton.disabled
+    ) {
+      event.preventDefault();
+      void sendContent();
+    }
+  });
   openButton.addEventListener("click", async () => chrome.tabs.create({ url: await nodeURL() }));
   sendButton.addEventListener("click", sendContent);
   try {
@@ -53,7 +76,11 @@ function renderTargets(devices: Array<{ id: string; name: string; online: boolea
 }
 
 async function sendContent() {
-  const targets = Array.from(document.querySelectorAll<HTMLInputElement>('#targets input[name="target"]:checked')).map((input) => input.value);
+  const targets = Array.from(
+    document.querySelectorAll<HTMLInputElement>(
+      '#targets input[name="target"]:checked',
+    ),
+  ).map((input) => input.value);
   if (!targets.length) {
     showResult("請選擇接收設備", false);
     return;
@@ -67,11 +94,36 @@ async function sendContent() {
     return;
   }
   sendButton.disabled = true;
-  const payload: SharePayload = { kind: includeURL.checked ? "PAGE" : "SELECTION", title: tab?.title, url: includeURL.checked ? tab?.url : undefined, text, targetDeviceIds: targets };
-  const response = await chrome.runtime.sendMessage({ type: "share", payload });
-  showResult(response?.ok ? "已安全送出" : messageFor(response?.error, response?.retryAfterSeconds), Boolean(response?.ok));
-  if (response?.ok) window.setTimeout(() => window.close(), 800);
-  else sendButton.disabled = false;
+  try {
+    const payload: SharePayload = {
+      kind: includeURL.checked ? "PAGE" : "SELECTION",
+      title: tab?.title,
+      url: includeURL.checked ? tab?.url : undefined,
+      text,
+      targetDeviceIds: targets,
+    };
+    const response = await chrome.runtime.sendMessage({ type: "share", payload });
+    showResult(
+      response?.ok
+        ? "已安全送出"
+        : messageFor(response?.error, response?.retryAfterSeconds),
+      Boolean(response?.ok),
+    );
+    if (response?.ok) {
+      await chrome.storage.local.remove("popupDraft");
+      contentInput.value = "";
+      updateContentCount();
+      window.setTimeout(() => window.close(), 800);
+      return;
+    }
+  } catch {
+    showResult("傳送失敗，請檢查節點連線。", false);
+  }
+  sendButton.disabled = false;
+}
+
+function updateContentCount() {
+  contentCount.textContent = `${Array.from(contentInput.value).length} 字`;
 }
 
 function showResult(message: string, success: boolean) {

@@ -7,8 +7,9 @@
       <p class="eyebrow">SEND CONTENT</p>
       <h1>傳送內容</h1>
       <p class="hint">輸入內容；預設傳送給所有設備，也可取消不需要的設備。</p>
-      <label class="content-label" for="content">傳送內容</label>
+      <label class="content-label" for="content"><span>傳送內容</span><small id="content-count" aria-live="polite">0 字</small></label>
       <textarea id="content" rows="4" placeholder="輸入文字、備註或連結"></textarea>
+      <p class="shortcut-hint">按 Ctrl／⌘ + Enter 快速傳送；未送出的內容會保存在本機。</p>
       <label class="url-option"><input id="include-url" type="checkbox" /> 同時附上目前分頁網址</label>
       <section id="targets" aria-label="目的設備"><p class="empty">正在讀取設備…</p></section>
       <button id="send" class="primary" disabled>安全傳送 <span>↗</span></button>

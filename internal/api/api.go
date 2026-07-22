@@ -2,21 +2,16 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"nexdrop/internal/analytics"
@@ -52,59 +47,6 @@ func NewWithCursorKey(cursorKey []byte, authService *auth.Service, deviceService
 		cursorKey:  append([]byte(nil), cursorKey...),
 		nodeKey:    strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY")),
 	}
-}
-
-type rateWindow struct {
-	count int
-	reset time.Time
-}
-
-type fixedWindowLimiter struct {
-	mu      sync.Mutex
-	limit   int
-	windows map[string]rateWindow
-}
-
-func newFixedWindowLimiter(limit int) *fixedWindowLimiter {
-	return &fixedWindowLimiter{limit: limit, windows: make(map[string]rateWindow)}
-}
-
-func (limiter *fixedWindowLimiter) allow(key string, now time.Time) (bool, time.Duration) {
-	limiter.mu.Lock()
-	defer limiter.mu.Unlock()
-	window := limiter.windows[key]
-	if window.reset.IsZero() || !now.Before(window.reset) {
-		window = rateWindow{reset: now.Add(time.Minute)}
-	}
-	window.count++
-	limiter.windows[key] = window
-	return window.count <= limiter.limit, time.Until(window.reset)
-}
-
-func rateLimit(name string, fallback int) int {
-	value, err := strconv.Atoi(os.Getenv(name))
-	if err != nil || value < 1 {
-		return fallback
-	}
-	return value
-}
-
-func rateLimitKey(r *http.Request, identity string) string {
-	host := r.RemoteAddr
-	if value, _, err := net.SplitHostPort(host); err == nil {
-		host = value
-	}
-	return host + "|" + strings.ToLower(strings.TrimSpace(identity))
-}
-
-func enforceRateLimit(w http.ResponseWriter, r *http.Request, limiter *fixedWindowLimiter, identity string) bool {
-	allowed, retryAfter := limiter.allow(rateLimitKey(r, identity), time.Now().UTC())
-	if allowed {
-		return true
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter.Seconds()))))
-	writeError(w, http.StatusTooManyRequests, "RATE_LIMITED")
-	return false
 }
 
 func (api *API) nodeKeyRequired(next http.Handler) http.Handler {
@@ -167,60 +109,6 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/statistics/groups", api.statisticsGroups)
 	mux.HandleFunc("GET /api/statistics/node", api.statisticsNode)
 	return apiContract(mux)
-}
-
-const versionMediaType = "application/vnd.nexdrop.v1+json"
-
-type contractResponseWriter struct {
-	http.ResponseWriter
-	requestID string
-	versioned bool
-	status    int
-	errorCode string
-}
-
-func (writer *contractResponseWriter) WriteHeader(status int) {
-	writer.status = status
-	writer.ResponseWriter.WriteHeader(status)
-}
-
-func (writer *contractResponseWriter) Write(data []byte) (int, error) {
-	if writer.status == 0 {
-		writer.WriteHeader(http.StatusOK)
-	}
-	return writer.ResponseWriter.Write(data)
-}
-
-func apiContract(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := newRequestID()
-		w.Header().Set("X-Request-ID", requestID)
-		w.Header().Set("X-NexDrop-API-Version", version.APIVersion)
-		writer := &contractResponseWriter{ResponseWriter: w, requestID: requestID, versioned: strings.Contains(r.Header.Get("Accept"), versionMediaType)}
-		started := time.Now()
-		next.ServeHTTP(writer, r)
-		status := writer.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		attributes := []any{"module", "api", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "error_code", writer.errorCode, "duration_ms", time.Since(started).Milliseconds()}
-		if strings.HasPrefix(r.URL.Path, "/api/transfers/") {
-			if transferID := r.PathValue("id"); transferID != "" {
-				attributes = append(attributes, "transfer_id", transferID)
-			}
-		}
-		slog.Info("API request", attributes...)
-	})
-}
-
-func newRequestID() string {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return fmt.Sprintf("request-%d", time.Now().UnixNano())
-	}
-	value[6] = (value[6] & 0x0f) | 0x40
-	value[8] = (value[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }
 
 func (api *API) version(w http.ResponseWriter, _ *http.Request) {

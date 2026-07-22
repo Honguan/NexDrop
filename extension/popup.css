@@ -12,7 +12,9 @@ main { padding: 22px 20px; }
 .eyebrow { margin: 0 0 8px; color: #148166; font: 750 9px ui-monospace, monospace; letter-spacing: .14em; }
 h1 { margin: 0 0 7px; font-size: 23px; letter-spacing: -.04em; }
 .hint { color: #768091; font-size: 10px; line-height: 1.55; }
-.content-label { display: block; margin: 14px 0 6px; font-size: 10px; font-weight: 750; }
+.content-label { display: flex; justify-content: space-between; margin: 14px 0 6px; font-size: 10px; font-weight: 750; }
+.content-label small, .shortcut-hint { color: #8a94a2; font-size: 8px; font-weight: 500; }
+.shortcut-hint { margin: 5px 1px 0; }
 textarea { width: 100%; resize: vertical; border: 1px solid #dce2e9; border-radius: 9px; padding: 10px; font: 11px/1.5 system-ui; outline: none; }
 textarea:focus { border-color: #49ddb3; box-shadow: 0 0 0 3px rgba(73,221,179,.14); }
 .url-option { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #586477; font-size: 9px; }

@@ -5,8 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:workmanager/workmanager.dart';
 
@@ -16,6 +14,7 @@ import 'core/local_database.dart';
 import 'core/models.dart';
 import 'core/node_join.dart';
 import 'core/platform_share.dart';
+import 'ui/desktop_lifecycle.dart';
 
 const _backgroundSyncTask = 'nexdrop.background-sync';
 
@@ -135,88 +134,6 @@ class NexDropApp extends StatelessWidget {
       ),
     ),
   );
-}
-
-class DesktopLifecycle extends StatefulWidget {
-  const DesktopLifecycle({
-    super.key,
-    required this.controller,
-    required this.child,
-  });
-  final AppController controller;
-  final Widget child;
-
-  @override
-  State<DesktopLifecycle> createState() => _DesktopLifecycleState();
-}
-
-class _DesktopLifecycleState extends State<DesktopLifecycle>
-    with WindowListener, TrayListener {
-  bool _exiting = false;
-  @override
-  void initState() {
-    super.initState();
-    if (Platform.isWindows) unawaited(_initializeDesktop());
-  }
-
-  Future<void> _initializeDesktop() async {
-    windowManager.addListener(this);
-    trayManager.addListener(this);
-    await trayManager.setIcon(await _desktopTrayIconPath());
-    await trayManager.setToolTip('NexDrop');
-    await trayManager.setContextMenu(
-      Menu(
-        items: [
-          MenuItem(key: 'show', label: '開啟 NexDrop'),
-          MenuItem.separator(),
-          MenuItem(key: 'exit', label: '完全退出'),
-        ],
-      ),
-    );
-  }
-
-  @override
-  void onWindowClose() => unawaited(_exit());
-
-  @override
-  void onWindowMinimize() => unawaited(windowManager.hide());
-
-  @override
-  void onTrayIconMouseDown() =>
-      unawaited(windowManager.show().then((_) => windowManager.focus()));
-
-  @override
-  void onTrayMenuItemClick(MenuItem menuItem) {
-    if (menuItem.key == 'show') {
-      unawaited(windowManager.show().then((_) => windowManager.focus()));
-    }
-    if (menuItem.key == 'exit') unawaited(_exit());
-  }
-
-  Future<void> _exit() async {
-    if (_exiting) return;
-    _exiting = true;
-    try {
-      await windowManager.setPreventClose(false);
-      await widget.controller.shutdown();
-      await trayManager.destroy();
-      await windowManager.destroy();
-    } finally {
-      exit(0);
-    }
-  }
-
-  @override
-  void dispose() {
-    if (Platform.isWindows) {
-      windowManager.removeListener(this);
-      trayManager.removeListener(this);
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
 }
 
 class LoginView extends StatefulWidget {
@@ -492,6 +409,12 @@ class _SendViewState extends State<SendView> {
   }
 
   @override
+  void dispose() {
+    content.dispose();
+    super.dispose();
+  }
+
+  @override
   void didUpdateWidget(covariant SendView oldWidget) {
     super.didUpdateWidget(oldWidget);
     WidgetsBinding.instance.addPostFrameCallback((_) => _applySharedContent());
@@ -515,100 +438,130 @@ class _SendViewState extends State<SendView> {
       selectionInitialized = true;
       selectedDevices.addAll(trusted.map((device) => device.id));
     }
-    return _Page(
-      title: '安全傳送',
-      subtitle: '區網可用時直接傳輸，否則交由你的 Linux 節點接力。',
-      child: DropTarget(
-        onDragEntered: (_) => setState(() => draggingFiles = true),
-        onDragExited: (_) => setState(() => draggingFiles = false),
-        onDragDone: (details) => setState(() {
-          draggingFiles = false;
-          files = {
-            ...files,
-            ...details.files.map((file) => file.path),
-          }.toList();
-        }),
-        child: Card(
-          color: draggingFiles
-              ? Theme.of(context).colorScheme.primaryContainer
-              : null,
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                TextField(
-                  controller: content,
-                  minLines: 4,
-                  maxLines: 8,
-                  enabled: files.isEmpty,
-                  decoration: const InputDecoration(
-                    labelText: '文字或網址',
-                    alignLabelWithHint: true,
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter, control: true):
+            _sendFromShortcut,
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true):
+            _sendFromShortcut,
+      },
+      child: _Page(
+        title: '安全傳送',
+        subtitle: '區網可用時直接傳輸，否則交由你的 Linux 節點接力。',
+        child: DropTarget(
+          onDragEntered: (_) => setState(() => draggingFiles = true),
+          onDragExited: (_) => setState(() => draggingFiles = false),
+          onDragDone: (details) => setState(() {
+            draggingFiles = false;
+            files = {
+              ...files,
+              ...details.files.map((file) => file.path),
+            }.toList();
+          }),
+          child: Card(
+            color: draggingFiles
+                ? Theme.of(context).colorScheme.primaryContainer
+                : null,
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: content,
+                    minLines: 4,
+                    maxLines: 8,
+                    enabled: files.isEmpty,
+                    decoration: InputDecoration(
+                      labelText: '文字或網址',
+                      alignLabelWithHint: true,
+                      helperText: Platform.isWindows
+                          ? 'Ctrl + Enter 快速傳送'
+                          : null,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                if (files.isEmpty)
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    secondary: const Icon(Icons.notifications_active_outlined),
-                    title: const Text('一般通知訊息'),
-                    subtitle: const Text('以通知類型傳送這段文字。'),
-                    value: notification,
-                    onChanged: (value) => setState(() => notification = value),
+                  const SizedBox(height: 12),
+                  if (files.isEmpty)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      secondary: const Icon(
+                        Icons.notifications_active_outlined,
+                      ),
+                      title: const Text('一般通知訊息'),
+                      subtitle: const Text('以通知類型傳送這段文字。'),
+                      value: notification,
+                      onChanged: (value) =>
+                          setState(() => notification = value),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: _pickFiles,
+                    icon: const Icon(Icons.attach_file_rounded),
+                    label: Text(
+                      files.isEmpty ? '選擇檔案' : '${files.length} 個檔案已選擇',
+                    ),
                   ),
-                OutlinedButton.icon(
-                  onPressed: _pickFiles,
-                  icon: const Icon(Icons.attach_file_rounded),
-                  label: Text(
-                    files.isEmpty ? '選擇檔案' : '${files.length} 個檔案已選擇',
+                  const SizedBox(height: 22),
+                  Text(
+                    '信任設備',
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
-                ),
-                const SizedBox(height: 22),
-                Text('信任設備', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: trusted
-                      .map(
-                        (device) => FilterChip(
-                          label: Text(device.displayName),
-                          selected: selectedDevices.contains(device.id),
-                          onSelected: (_) => setState(
-                            () => selectedDevices.contains(device.id)
-                                ? selectedDevices.remove(device.id)
-                                : selectedDevices.add(device.id),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: trusted
+                        .map(
+                          (device) => FilterChip(
+                            label: Text(device.displayName),
+                            selected: selectedDevices.contains(device.id),
+                            onSelected: (_) => setState(
+                              () => selectedDevices.contains(device.id)
+                                  ? selectedDevices.remove(device.id)
+                                  : selectedDevices.add(device.id),
+                            ),
                           ),
-                        ),
-                      )
-                      .toList(),
-                ),
-                const SizedBox(height: 18),
-                DropdownButtonFormField<String>(
-                  initialValue: routeMode,
-                  decoration: const InputDecoration(labelText: '傳輸路由'),
-                  items: const [
-                    DropdownMenuItem(
-                      value: 'AUTOMATIC',
-                      child: Text('自動（區網優先）'),
+                        )
+                        .toList(),
+                  ),
+                  const SizedBox(height: 18),
+                  DropdownButtonFormField<String>(
+                    initialValue: routeMode,
+                    decoration: const InputDecoration(labelText: '傳輸路由'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'AUTOMATIC',
+                        child: Text('自動（區網優先）'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'LAN_ONLY',
+                        child: Text('僅區域網路'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'NODE_ONLY',
+                        child: Text('僅 Linux 節點'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'WAIT_LAN',
+                        child: Text('等待區域網路'),
+                      ),
+                    ],
+                    onChanged: (value) => setState(() => routeMode = value!),
+                  ),
+                  const SizedBox(height: 24),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: content,
+                    builder: (context, value, child) => FilledButton.icon(
+                      onPressed: _canSend && !widget.controller.busy
+                          ? _send
+                          : null,
+                      icon: const Icon(Icons.lock_rounded),
+                      label: Text(
+                        widget.controller.busy ? '加密與傳送中…' : '建立安全傳輸',
+                      ),
                     ),
-                    DropdownMenuItem(value: 'LAN_ONLY', child: Text('僅區域網路')),
-                    DropdownMenuItem(
-                      value: 'NODE_ONLY',
-                      child: Text('僅 Linux 節點'),
-                    ),
-                    DropdownMenuItem(value: 'WAIT_LAN', child: Text('等待區域網路')),
-                  ],
-                  onChanged: (value) => setState(() => routeMode = value!),
-                ),
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  onPressed: _canSend && !widget.controller.busy ? _send : null,
-                  icon: const Icon(Icons.lock_rounded),
-                  label: Text(widget.controller.busy ? '加密與傳送中…' : '建立安全傳輸'),
-                ),
-              ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -629,6 +582,10 @@ class _SendViewState extends State<SendView> {
     if (result != null) {
       setState(() => files = result.paths.whereType<String>().toList());
     }
+  }
+
+  void _sendFromShortcut() {
+    if (_canSend && !widget.controller.busy) _send();
   }
 
   void _send() {
@@ -1170,19 +1127,6 @@ class _Brand extends StatelessWidget {
       ),
     ],
   );
-}
-
-Future<String> _desktopTrayIconPath() async {
-  final data = await rootBundle.load('windows/runner/resources/app_icon.ico');
-  final directory = await getApplicationSupportDirectory();
-  final file = File(
-    '${directory.path}${Platform.pathSeparator}nexdrop-tray.ico',
-  );
-  final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-  if (!await file.exists() || await file.length() != bytes.length) {
-    await file.writeAsBytes(bytes, flush: true);
-  }
-  return file.path;
 }
 
 class _LoadingView extends StatelessWidget {
