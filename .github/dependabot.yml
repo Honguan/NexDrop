@@ -20,3 +20,7 @@ updates:
     directory: /
     schedule: {interval: weekly}
     labels: [dependencies, generated-pr, auto-merge]
+    groups:
+      codeql-actions:
+        patterns:
+          - "github/codeql-action/*"
