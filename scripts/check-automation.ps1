@@ -105,6 +105,12 @@ foreach ($workflow in $requiredWorkflows) {
     }
 }
 
+$releaseWorkflow = Read-RepoFile '.github/workflows/release.yml'
+if ($releaseWorkflow.Contains('cat ''docs/release-notes-v${{ needs.validate.outputs.version }}.zh-TW.md'' >> release-notes.md')) {
+    throw 'Published GitHub Release notes must not include the Traditional Chinese document'
+}
+Assert-MatchCount $releaseWorkflow '## Android' 1 'Published GitHub Release warnings must be English-only'
+
 & (Join-Path $repo 'scripts/prepare-release.ps1') -CheckOnly
 if ($LASTEXITCODE -ne 0) { throw 'Release metadata preflight failed' }
 
