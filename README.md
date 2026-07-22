@@ -2,7 +2,7 @@
 
 NexDrop 是可自行架設的混合式多裝置傳輸平台。它會優先在區網直接傳輸，無法直連時改由私有 Node 暫存，支援 Windows 10/11、Android、Web、Chrome 與 Edge。
 
-目前版本為 **2.0.1**。主要能力包含節點密鑰快速加入、端對端加密文字與檔案、分段續傳、即時設備狀態與逐設備統計。節點維運改由部署命令執行，不再提供 Web 管理後台。
+目前版本為 **2.0.2**。主要能力包含節點密鑰快速加入、端對端加密文字與檔案、分段續傳、即時設備狀態與逐設備統計。節點維運改由部署命令執行，不再提供 Web 管理後台。
 
 ## 架構
 
@@ -53,7 +53,7 @@ cd ../client && flutter analyze && flutter test
 ./deploy/nexdrop backup --output /var/lib/nexdrop/backups/manual.tar.gz
 ./deploy/nexdrop cleanup --limit 100
 ./deploy/nexdrop update
-# 或鎖定版本：./deploy/nexdrop update 2.0.1
+# 或鎖定版本：./deploy/nexdrop update 2.0.2
 ```
 
 ## 安全與發布

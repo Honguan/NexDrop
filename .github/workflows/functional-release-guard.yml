@@ -1,0 +1,68 @@
+name: functional-release-guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  require-release-version:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Require release metadata for functional changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        shell: bash
+        run: |
+          case "$PR_AUTHOR" in
+            dependabot[bot]|github-actions[bot])
+              echo "Generated PR; release version bump is not required."
+              exit 0
+              ;;
+          esac
+
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          if test -z "$changed"; then
+            echo "No changed files."
+            exit 0
+          fi
+
+          functional=$(printf '%s\n' "$changed" | grep -E '^(cmd|internal|migrations|web/src|web/tests|extension/src|extension/tests|extension/scripts|client/lib|client/test|client/android|client/windows|scripts|Dockerfile|compose\.yaml|go\.(mod|sum)|web/package(-lock)?\.json|extension/package(-lock)?\.json|client/pubspec\.(yaml|lock))' || true)
+          if test -z "$functional"; then
+            echo "No functional release-triggering files changed."
+            exit 0
+          fi
+
+          release_files=$(printf '%s\n' "$changed" | grep -E '^(VERSION|CHANGELOG\.md|docs/release-notes-v[^/]+\.md|web/package(-lock)?\.json|extension/package(-lock)?\.json|extension/manifest\.json|extension/manifests/(chrome|edge)\.json|client/pubspec\.yaml|Dockerfile)$' || true)
+          if ! printf '%s\n' "$release_files" | grep -qx 'VERSION'; then
+            echo "Functional changes require a VERSION bump."
+            echo "$functional"
+            exit 1
+          fi
+          if ! printf '%s\n' "$release_files" | grep -qx 'CHANGELOG.md'; then
+            echo "Functional changes require CHANGELOG.md release notes."
+            echo "$functional"
+            exit 1
+          fi
+          if ! printf '%s\n' "$release_files" | grep -Eq '^docs/release-notes-v[^/]+\.md$'; then
+            echo "Functional changes require docs/release-notes-v<version>.md."
+            echo "$functional"
+            exit 1
+          fi
+
+          version=$(tr -d '\r\n' < VERSION)
+          test -n "$version"
+          grep -q '"version": "'"$version"'"' web/package.json
+          grep -q '"version": "'"$version"'"' extension/package.json
+          grep -q '^version: '"$version"'+' client/pubspec.yaml
+          grep -q "## \[$version\]" CHANGELOG.md
+          test -f "docs/release-notes-v${version}.md"
