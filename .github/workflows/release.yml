@@ -26,7 +26,7 @@ jobs:
           grep -q "## \[${version}\]" CHANGELOG.md
           test -f "docs/release-notes-v${version}.md"
           echo "value=${version}" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - run: go test ./...
       - run: go vet ./...
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - shell: pwsh
         run: ./scripts/build-node-release.ps1 -Version '${{ needs.validate.outputs.version }}' -Commit '${{ github.sha }}'
@@ -122,7 +122,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {channel: stable, cache: true}
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - name: 建置 Windows 產物並套用可選簽章
         shell: pwsh
@@ -156,7 +156,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
         with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
       - id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
@@ -173,9 +173,9 @@ jobs:
             ghcr.io/honguan/nexdrop:${{ needs.validate.outputs.version }}
             ghcr.io/honguan/nexdrop:1.0
             ghcr.io/honguan/nexdrop:latest
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
       - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with: {image: 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}', format: spdx-json, output-file: nexdrop-node.spdx.json, upload-artifact: false}
@@ -197,7 +197,7 @@ jobs:
           cd release-assets
           find . -maxdepth 1 -type f ! -name 'checksums-*' -print0 | sort -z | xargs -0 sha256sum > checksums-sha256.txt
           sha256sum --check checksums-sha256.txt
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with: {subject-path: 'release-assets/*'}
       - name: 建立實際發布說明
         run: |
