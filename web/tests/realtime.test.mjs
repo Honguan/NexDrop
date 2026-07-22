@@ -47,9 +47,10 @@ test("realtime subscription owns heartbeat, acknowledgement, and reconnect", () 
   const online = [];
   const notifications = [];
   let refreshes = 0;
+  let token = "token-1";
 
   const stop = subscribeNodeEvents(
-    "wss://node.example/ws",
+    () => `wss://node.example/ws?access_token=${token}`,
     {
       onOnlineChange: (value) => online.push(value),
       onRefresh: () => refreshes++,
@@ -59,6 +60,7 @@ test("realtime subscription owns heartbeat, acknowledgement, and reconnect", () 
   );
 
   assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].url, "wss://node.example/ws?access_token=token-1");
   sockets[0].onopen();
   sockets[0].onmessage({ data: JSON.stringify({ type: "connected" }) });
   assert.deepEqual(online, [true]);
@@ -81,8 +83,10 @@ test("realtime subscription owns heartbeat, acknowledgement, and reconnect", () 
   sockets[0].onclose();
   assert.deepEqual(online, [true, false]);
   assert.equal([...timeouts.values()][0].milliseconds, 3000);
+  token = "token-2";
   [...timeouts.values()][0].callback();
   assert.equal(sockets.length, 2);
+  assert.equal(sockets[1].url, "wss://node.example/ws?access_token=token-2");
 
   stop();
   assert.equal(sockets[1].closed, true);

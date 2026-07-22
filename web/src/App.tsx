@@ -247,7 +247,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     if (!realtimeReady) return;
     const url = api.webSocketURL();
     if (!url) return;
-    return subscribeNodeEvents(url, {
+    return subscribeNodeEvents(() => api.webSocketURL(), {
       onOnlineChange: setOnline,
       onRefresh: () => void reload().catch(() => undefined),
       onNotification: () => {

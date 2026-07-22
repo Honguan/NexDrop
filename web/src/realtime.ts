@@ -22,8 +22,10 @@ type NodeEvent = {
   notification?: { id: string };
 };
 
+type RealtimeURL = string | (() => string | null | undefined);
+
 export function subscribeNodeEvents(
-  url: string,
+  url: RealtimeURL,
   handlers: RealtimeHandlers,
   environment: RealtimeEnvironment = browserEnvironment(),
 ) {
@@ -40,7 +42,13 @@ export function subscribeNodeEvents(
 
   const connect = () => {
     if (stopped) return;
-    socket = environment.createSocket(url);
+    const currentURL = typeof url === "function" ? url() : url;
+    if (!currentURL) {
+      handlers.onOnlineChange(false);
+      reconnect = environment.setTimeout(connect, 3000);
+      return;
+    }
+    socket = environment.createSocket(currentURL);
     socket.onopen = () => handlers.onOnlineChange(true);
     socket.onmessage = (event) => {
       const message = parseNodeEvent(event.data);
