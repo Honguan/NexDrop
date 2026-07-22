@@ -133,7 +133,19 @@ function showResult(message: string, success: boolean) {
 }
 
 function messageFor(code?: string, retryAfterSeconds?: number) {
-  if (code === "RATE_LIMITED") return retryAfterSeconds ? `操作太頻繁，請在 ${retryAfterSeconds} 秒後再試。` : "操作太頻繁，請稍後再試。";
-  const messages: Record<string, string> = { TARGET_REQUIRED: "請選擇接收設備。", CONTENT_REQUIRED: "請輸入要傳送的內容。", TARGET_UNAVAILABLE: "接收設備目前不可用。", INVALID_TOKEN: "登入已過期，請重新配對。" };
-  return messages[code ?? ""] ?? "傳送失敗，請檢查節點連線。";
+  if (code === "RATE_LIMITED") {
+    return retryAfterSeconds
+      ? `操作太頻繁，請在 ${retryAfterSeconds} 秒後再試。`
+      : "操作太頻繁，請稍後再試。";
+  }
+  const messages: Record<string, string> = {
+    TARGET_REQUIRED: "請至少選擇一台接收設備。",
+    CONTENT_REQUIRED: "請輸入要傳送的內容或網址。",
+    TARGET_UNAVAILABLE: "接收設備已離線、撤銷或缺少加密金鑰，請重新整理設備清單。",
+    INVALID_TOKEN: "登入已過期，請開啟設定並重新配對。",
+    NOT_PAIRED: "擴充功能尚未連接節點，請先開啟設定完成配對。",
+    PERMISSION_DENIED: "未取得節點存取權限，請重新配對並允許網站權限。",
+    PAIR_FAILED: "設備登記未完成，請確認節點與帳號設定後重新配對。",
+  };
+  return messages[code ?? ""] ?? "傳送失敗，請確認節點在線後再試。";
 }
