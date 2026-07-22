@@ -3,15 +3,20 @@ updates:
   - package-ecosystem: gomod
     directory: /
     schedule: {interval: weekly}
+    labels: [dependencies, generated-pr, auto-merge]
   - package-ecosystem: npm
     directory: /web
     schedule: {interval: weekly}
+    labels: [dependencies, generated-pr, auto-merge]
   - package-ecosystem: npm
     directory: /extension
     schedule: {interval: weekly}
+    labels: [dependencies, generated-pr, auto-merge]
   - package-ecosystem: pub
     directory: /client
     schedule: {interval: weekly}
+    labels: [dependencies, generated-pr, auto-merge]
   - package-ecosystem: github-actions
     directory: /
     schedule: {interval: weekly}
+    labels: [dependencies, generated-pr, auto-merge]

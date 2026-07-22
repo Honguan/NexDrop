@@ -1,0 +1,55 @@
+name: auto-merge-generated-pr
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  check_suite:
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  enable:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge for trusted generated PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        shell: bash
+        run: |
+          case "$PR_AUTHOR" in
+            dependabot[bot]|github-actions[bot]) ;;
+            *) echo "Not a trusted generated PR author: $PR_AUTHOR"; exit 0 ;;
+          esac
+          if test "$PR_DRAFT" = true; then
+            echo "Draft PR; auto-merge not enabled."
+            exit 0
+          fi
+          gh pr merge "$PR_NUMBER" --auto --squash --delete-branch
+
+  merge-after-checks:
+    if: github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge trusted generated PR after checks pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.check_suite.head_sha }}
+        shell: bash
+        run: |
+          prs=$(gh pr list --state open --search "$HEAD_SHA" --json number,author,isDraft --jq '.[] | select((.author.login == "dependabot[bot]" or .author.login == "github-actions[bot]") and (.isDraft | not)) | .number')
+          if test -z "$prs"; then
+            echo "No trusted generated PR is ready for auto-merge."
+            exit 0
+          fi
+          for pr in $prs; do
+            gh pr merge "$pr" --squash --delete-branch
+          done

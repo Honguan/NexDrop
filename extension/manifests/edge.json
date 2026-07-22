@@ -1,7 +1,15 @@
 {
   "manifest_version": 3,
   "name": "NexDrop",
+<<<<<<< ours
+<<<<<<< ours
   "version": "1.0.5",
+=======
+  "version": "2.0.2",
+>>>>>>> theirs
+=======
+  "version": "2.0.2",
+>>>>>>> theirs
   "description": "將分頁、連結與選取文字送到你的 NexDrop 設備。",
   "permissions": ["activeTab", "contextMenus", "storage"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],

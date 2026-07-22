@@ -7,7 +7,15 @@ COPY web/src ./src
 RUN npm run build
 
 FROM golang:1.26.5-alpine3.24 AS build
+<<<<<<< ours
+<<<<<<< ours
 ARG VERSION=1.0.5
+=======
+ARG VERSION=2.0.2
+>>>>>>> theirs
+=======
+ARG VERSION=2.0.2
+>>>>>>> theirs
 ARG COMMIT=development
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -16,7 +24,15 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X nexdrop/internal/version.ProductVersion=${VERSION} -X nexdrop/internal/version.BuildCommit=${COMMIT}" -o /out/nexdrop ./cmd/nexdrop
 
 FROM alpine:3.24.1
+<<<<<<< ours
+<<<<<<< ours
 ARG VERSION=1.0.5
+=======
+ARG VERSION=2.0.2
+>>>>>>> theirs
+=======
+ARG VERSION=2.0.2
+>>>>>>> theirs
 ARG COMMIT=development
 LABEL org.opencontainers.image.title="NexDrop Node" \
       org.opencontainers.image.version="${VERSION}" \

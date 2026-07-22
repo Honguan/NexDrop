@@ -1,6 +1,14 @@
 {
   "name": "nexdrop-web",
+<<<<<<< ours
+<<<<<<< ours
   "version": "1.0.5",
+=======
+  "version": "2.0.2",
+>>>>>>> theirs
+=======
+  "version": "2.0.2",
+>>>>>>> theirs
   "private": true,
   "type": "module",
   "scripts": {
