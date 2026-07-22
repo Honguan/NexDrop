@@ -13,7 +13,7 @@ const (
 )
 
 var (
-	ProductVersion = "2.0.2"
+	ProductVersion = "2.0.3"
 	BuildCommit    = "development"
 )
 

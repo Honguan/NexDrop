@@ -1,10 +1,10 @@
 services:
   nexdrop:
-    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:2.0.2}"
+    image: "${NEXDROP_IMAGE:-ghcr.io/honguan/nexdrop:2.0.3}"
     build:
       context: .
       args:
-        VERSION: "2.0.2"
+        VERSION: "2.0.3"
     environment:
       NEXDROP_HTTP_ADDRESS: ":8080"
       NEXDROP_DATABASE_URL: "postgres://nexdrop@postgres:5432/nexdrop?sslmode=disable"

@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-07-22
+
+### Changed
+
+- 將 CodeQL 工作流程統一更新至 4.37.3，並將相關 Dependabot 更新分組，避免元件版本不同步。
+- 更新 `docker/setup-buildx-action` 至 4.2.0 與 `actions/checkout` 至 7.0.1。
+
+### Fixed
+
+- 修正自動合併工作流程對 `dependabot[bot]` 與 `github-actions[bot]` 的作者比對，讓可信任的自動更新可在必要檢查通過後合併。
+- 解決多個 GitHub Actions 更新同時修改發布工作流程時的衝突。
+
 ## [2.0.2] - 2026-07-22
 
 ### Changed
