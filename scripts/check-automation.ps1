@@ -125,6 +125,7 @@ $englishReleaseNotes = Read-RepoFile "docs/release-notes-v$currentVersion.md"
 if ([regex]::IsMatch($englishReleaseNotes, '[\u3400-\u9fff]')) {
     throw 'Published GitHub Release source notes must be English-only'
 }
+Assert-MatchCount $releaseWorkflow '--notes-file release-notes\.md' 1 'Release workflow must publish the validated English notes file'
 
 & (Join-Path $repo 'scripts/prepare-release.ps1') -CheckOnly
 if ($LASTEXITCODE -ne 0) { throw 'Release metadata preflight failed' }
