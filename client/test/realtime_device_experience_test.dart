@@ -46,7 +46,14 @@ void main() {
   test('裝置與節點狀態透過心跳即時刷新', () {
     final controller = File('lib/app_controller.dart').readAsStringSync();
     final models = File('lib/core/models.dart').readAsStringSync();
-    expect(controller, contains("message['type'] == 'heartbeat_ack'"));
+    final realtime = File(
+      'lib/core/realtime_connection.dart',
+    ).readAsStringSync();
+    expect(controller, contains('RealtimeConnection('));
+    expect(controller, contains('onHeartbeat: reload'));
+    expect(realtime, contains("case 'heartbeat_ack'"));
+    expect(realtime, contains("'type': 'notification_ack'"));
+    expect(realtime, contains('_scheduleReconnect'));
     expect(models, contains('final bool online'));
     expect(models, contains('final DateTime? lastSeenAt'));
   });

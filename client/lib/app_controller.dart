@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'core/api_client.dart';
 import 'core/crypto_service.dart';
@@ -11,6 +9,7 @@ import 'core/lan_service.dart';
 import 'core/models.dart';
 import 'core/node_join.dart';
 import 'core/platform_share.dart';
+import 'core/realtime_connection.dart';
 import 'core/transfer_service.dart';
 
 class AppController extends ChangeNotifier {
@@ -25,6 +24,13 @@ class AppController extends ChangeNotifier {
       crypto: crypto,
       database: database,
       lan: lan,
+    );
+    realtime = RealtimeConnection(
+      connect: api.connectWebSocket,
+      onConnected: _handleRealtimeConnected,
+      onHeartbeat: reload,
+      onNotification: reload,
+      onStatusChanged: _handleRealtimeStatus,
     );
     _lanSubscription = lan.changes.listen((_) {
       unawaited(_retryWaitingLan());
@@ -53,6 +59,7 @@ class AppController extends ChangeNotifier {
   final LanService lan;
   final PlatformShareService platformShare;
   late final TransferService transfersService;
+  late final RealtimeConnection realtime;
   StreamSubscription<Set<String>>? _lanSubscription;
   StreamSubscription<LanIncomingTransfer>? _incomingLanSubscription;
   StreamSubscription<PlatformSharePayload>? _shareSubscription;
@@ -71,10 +78,6 @@ class AppController extends ChangeNotifier {
   String? receiveDirectory;
   Set<String> get lanOnlineDeviceIds => lan.onlineDeviceIds;
   String? error;
-  WebSocketChannel? _socket;
-  StreamSubscription<dynamic>? _socketSubscription;
-  Timer? _heartbeat;
-  Timer? _reconnect;
   bool _closed = false;
 
   Future<void> initialize() async {
@@ -416,60 +419,22 @@ class AppController extends ChangeNotifier {
     currentDevice = session.device;
     await reload();
     await lan.start(current: currentDevice!, trustedDevices: devices);
-    await _connect();
-  }
-
-  Future<void> _connect() async {
-    if (_closed) return;
-    await _disconnect();
-    if (_closed) return;
-    if (currentDevice?.trusted != true) return;
-    try {
-      _socket = await api.connectWebSocket();
-      _socketSubscription = _socket!.stream.listen(
-        (event) {
-          final message = jsonDecode(event as String) as Map<String, dynamic>;
-          if (message['type'] == 'connected') {
-            nodeOnline = true;
-            unawaited(_retryWaitingLan());
-            unawaited(_flushDrafts());
-            unawaited(_flushMetrics());
-            unawaited(_updateDesktopStatus());
-            _heartbeat = Timer.periodic(
-              const Duration(seconds: 5),
-              (_) => _socket?.sink.add(jsonEncode({'type': 'heartbeat'})),
-            );
-          } else if (message['type'] == 'heartbeat_ack') {
-            unawaited(reload());
-          } else if (message['type'] == 'notification') {
-            final notification =
-                message['notification'] as Map<String, dynamic>?;
-            _socket?.sink.add(
-              jsonEncode({
-                'type': 'notification_ack',
-                'notificationId': notification?['id'],
-              }),
-            );
-            unawaited(reload());
-          }
-          notifyListeners();
-        },
-        onDone: _scheduleReconnect,
-        onError: (_) => _scheduleReconnect(),
-        cancelOnError: true,
-      );
-    } catch (_) {
-      _scheduleReconnect();
+    if (currentDevice?.trusted == true) {
+      await realtime.start();
+    } else {
+      await realtime.stop();
     }
   }
 
-  void _scheduleReconnect() {
-    if (_closed) return;
-    nodeOnline = false;
+  void _handleRealtimeConnected() {
+    unawaited(_retryWaitingLan());
+    unawaited(_flushDrafts());
+    unawaited(_flushMetrics());
+  }
+
+  void _handleRealtimeStatus(bool online) {
+    nodeOnline = online;
     unawaited(_updateDesktopStatus());
-    _heartbeat?.cancel();
-    _reconnect?.cancel();
-    _reconnect = Timer(const Duration(seconds: 3), () => unawaited(_connect()));
     notifyListeners();
   }
 
@@ -547,12 +512,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _disconnect() async {
-    _reconnect?.cancel();
-    _heartbeat?.cancel();
-    await _socketSubscription?.cancel();
-    await _socket?.sink.close();
-    _socket = null;
-    nodeOnline = false;
+    await realtime.stop();
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -580,13 +540,7 @@ class AppController extends ChangeNotifier {
   Future<void> shutdown() async {
     if (_closed) return;
     _closed = true;
-    _reconnect?.cancel();
-    _heartbeat?.cancel();
-    await _socketSubscription?.cancel();
-    _socketSubscription = null;
-    await _socket?.sink.close();
-    _socket = null;
-    nodeOnline = false;
+    await realtime.close();
     await _lanSubscription?.cancel();
     await _incomingLanSubscription?.cancel();
     await _shareSubscription?.cancel();

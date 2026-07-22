@@ -18,7 +18,7 @@ The shared Flutter client officially supports Windows 10/11 and Android.
 - Platform-secure storage on Android and Windows
 - Local SQLite history, drafts, pending LAN tasks, and statistics queue
 
-The send workspace and the shared refreshable page shell are isolated UI modules. This keeps file selection, keyboard shortcuts, and refresh behavior independently testable without coupling them to application startup.
+The send workspace and the shared refreshable page shell are isolated UI modules. WebSocket heartbeat, acknowledgement, and reconnect behavior lives in a dedicated core connection module. These boundaries keep interaction and connection behavior independently testable without coupling them to application startup.
 
 ## Requirements and development
 
