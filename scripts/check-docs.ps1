@@ -12,9 +12,13 @@ if (-not (Select-String -Quiet -Path (Join-Path $repo 'client/pubspec.yaml') -Pa
 if (-not $goVersion -or -not (Select-String -Quiet -Path (Join-Path $repo 'cmd/README.md') -SimpleMatch "Go $goVersion+")) { throw 'cmd/README.md Go version mismatch' }
 $escapedVersion = [regex]::Escape($version)
 if (-not (Select-String -Quiet -Path (Join-Path $repo 'CHANGELOG.md') -Pattern "^## \[$escapedVersion\]")) { throw 'CHANGELOG.md version mismatch' }
+if (-not (Select-String -Quiet -Path (Join-Path $repo 'CHANGELOG.zh-TW.md') -Pattern "^## \[$escapedVersion\]")) { throw 'CHANGELOG.zh-TW.md version mismatch' }
 $releaseNotes = Join-Path $repo "docs/release-notes-v$version.md"
+$releaseNotesZhTW = Join-Path $repo "docs/release-notes-v$version.zh-TW.md"
 if (-not (Test-Path -LiteralPath $releaseNotes -PathType Leaf)) { throw "missing release notes for $version" }
+if (-not (Test-Path -LiteralPath $releaseNotesZhTW -PathType Leaf)) { throw "missing Traditional Chinese release notes for $version" }
 if (-not (Select-String -Quiet -Path $releaseNotes -Pattern "^# NexDrop $escapedVersion$")) { throw 'release notes version mismatch' }
+if (-not (Select-String -Quiet -Path $releaseNotesZhTW -Pattern "^# NexDrop $escapedVersion$")) { throw 'Traditional Chinese release notes version mismatch' }
 
 $releaseWorkflow = Join-Path $repo '.github/workflows/release.yml'
 if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch "tags: ['v*']")) { throw 'release workflow must support version tags' }
@@ -22,6 +26,7 @@ if (-not (Select-String -Quiet -Path $releaseWorkflow -SimpleMatch 'gh release c
 
 $bilingualDocs = @(
     @('README.md', 'README.zh-TW.md'),
+    @('CHANGELOG.md', 'CHANGELOG.zh-TW.md'),
     @('SECURITY.md', 'SECURITY.zh-TW.md'),
     @('CONTRIBUTING.md', 'CONTRIBUTING.zh-TW.md'),
     @('CODE_OF_CONDUCT.md', 'CODE_OF_CONDUCT.zh-TW.md'),

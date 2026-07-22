@@ -63,7 +63,7 @@ cd ../client && flutter analyze && flutter test
 
 正式環境必須使用 HTTPS、強密碼及固定完整映像版本，不可提交 `.env`、Token、私鑰、keystore 或簽章憑證。弱點請依 [SECURITY.zh-TW.md](SECURITY.zh-TW.md) 私下回報。
 
-正式產物與 SHA-256 位於 [GitHub Releases](https://github.com/Honguan/NexDrop/releases)。維護者可在 GitHub Actions 執行 `release-package`，由單一流程建立版本 PR、執行必要檢查、自動整合、建立不可變 Tag 並等待正式產物。變更與發布方式請見 [CHANGELOG.md](CHANGELOG.md) 與[發布流程](docs/release-process.zh-TW.md)。
+正式產物與 SHA-256 位於 [GitHub Releases](https://github.com/Honguan/NexDrop/releases)。維護者可在 GitHub Actions 執行 `release-package`，由單一流程建立版本 PR、執行必要檢查、自動整合、建立不可變 Tag 並等待正式產物。變更與發布方式請見 [繁中變更紀錄](CHANGELOG.zh-TW.md) 與[發布流程](docs/release-process.zh-TW.md)。
 
 ## 文件
 

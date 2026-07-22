@@ -42,7 +42,7 @@ jobs:
             exit 0
           fi
 
-          release_files=$(printf '%s\n' "$changed" | grep -E '^(VERSION|CHANGELOG\.md|docs/release-notes-v[^/]+\.md|web/package(-lock)?\.json|extension/package(-lock)?\.json|extension/manifest\.json|extension/manifests/(chrome|edge)\.json|client/pubspec\.yaml|Dockerfile)$' || true)
+          release_files=$(printf '%s\n' "$changed" | grep -E '^(VERSION|CHANGELOG(\.zh-TW)?\.md|docs/release-notes-v[^/]+\.md|web/package(-lock)?\.json|extension/package(-lock)?\.json|extension/manifest\.json|extension/manifests/(chrome|edge)\.json|client/pubspec\.yaml|Dockerfile)$' || true)
           if ! printf '%s\n' "$release_files" | grep -qx 'VERSION'; then
             echo "Functional changes require a VERSION bump."
             echo "$functional"
@@ -53,8 +53,18 @@ jobs:
             echo "$functional"
             exit 1
           fi
-          if ! printf '%s\n' "$release_files" | grep -Eq '^docs/release-notes-v[^/]+\.md$'; then
+          if ! printf '%s\n' "$release_files" | grep -qx 'CHANGELOG.zh-TW.md'; then
+            echo "Functional changes require CHANGELOG.zh-TW.md release notes."
+            echo "$functional"
+            exit 1
+          fi
+          if ! printf '%s\n' "$release_files" | grep -Eq '^docs/release-notes-v[0-9]+\.[0-9]+\.[0-9]+\.md$'; then
             echo "Functional changes require docs/release-notes-v<version>.md."
+            echo "$functional"
+            exit 1
+          fi
+          if ! printf '%s\n' "$release_files" | grep -Eq '^docs/release-notes-v[0-9]+\.[0-9]+\.[0-9]+\.zh-TW\.md$'; then
+            echo "Functional changes require Traditional Chinese release notes."
             echo "$functional"
             exit 1
           fi
@@ -65,4 +75,6 @@ jobs:
           grep -q '"version": "'"$version"'"' extension/package.json
           grep -q '^version: '"$version"'+' client/pubspec.yaml
           grep -q "## \[$version\]" CHANGELOG.md
+          grep -q "## \[$version\]" CHANGELOG.zh-TW.md
           test -f "docs/release-notes-v${version}.md"
+          test -f "docs/release-notes-v${version}.zh-TW.md"

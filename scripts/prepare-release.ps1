@@ -118,6 +118,7 @@ $currentNumber = "$($currentMatch.Groups[1].Value),$($currentMatch.Groups[2].Val
 Assert-Contains 'client/windows/runner/Runner.rc' $currentNumber
 Assert-Contains 'client/windows/runner/Runner.rc' "`"$currentVersion`""
 Assert-Contains 'CHANGELOG.md' '## [Unreleased]'
+Assert-Contains 'CHANGELOG.zh-TW.md' '## [Unreleased]'
 Assert-Contains 'docs/release-notes-template.md' '{{VERSION}}'
 Assert-Contains 'docs/release-notes-template.md' '{{SUMMARY}}'
 Assert-Contains 'docs/release-notes-template.zh-TW.md' '{{VERSION}}'
@@ -167,6 +168,11 @@ $changelog = Read-RepositoryText 'CHANGELOG.md'
 $changelogSection = "## [Unreleased]`n`n## [$nextVersion] - $date`n`n### Changed`n`n- $summaryLine"
 $changelog = $changelog.Replace('## [Unreleased]', $changelogSection)
 Write-RepositoryText 'CHANGELOG.md' $changelog
+
+$changelogZhTW = Read-RepositoryText 'CHANGELOG.zh-TW.md'
+$changelogZhTWSection = "## [Unreleased]`n`n## [$nextVersion] - $date`n`n### Changed`n`n- $summaryZhTWLine"
+$changelogZhTW = $changelogZhTW.Replace('## [Unreleased]', $changelogZhTWSection)
+Write-RepositoryText 'CHANGELOG.zh-TW.md' $changelogZhTW
 
 $releaseNotes = (Read-RepositoryText 'docs/release-notes-template.md').Replace('{{VERSION}}', $nextVersion).Replace('{{SUMMARY}}', $summaryLine)
 if ($releaseNotes.Contains('{{VERSION}}') -or $releaseNotes.Contains('{{SUMMARY}}')) {
