@@ -106,10 +106,25 @@ foreach ($workflow in $requiredWorkflows) {
 }
 
 $releaseWorkflow = Read-RepoFile '.github/workflows/release.yml'
-if ($releaseWorkflow.Contains('cat ''docs/release-notes-v${{ needs.validate.outputs.version }}.zh-TW.md'' >> release-notes.md')) {
+$releaseNotesBuild = [regex]::Match(
+    $releaseWorkflow,
+    '(?ms)^\s{10}cp ''docs/release-notes-v.*?(?=^\s{6}- env:)'
+)
+if (-not $releaseNotesBuild.Success) {
+    throw 'Release workflow must assemble GitHub Release notes explicitly'
+}
+if ($releaseNotesBuild.Value.Contains('.zh-TW.md')) {
     throw 'Published GitHub Release notes must not include the Traditional Chinese document'
 }
-Assert-MatchCount $releaseWorkflow '## Android' 1 'Published GitHub Release warnings must be English-only'
+if ([regex]::IsMatch($releaseNotesBuild.Value, '[\u3400-\u9fff]')) {
+    throw 'Published GitHub Release workflow text must be English-only'
+}
+
+$currentVersion = (Read-RepoFile 'VERSION').Trim()
+$englishReleaseNotes = Read-RepoFile "docs/release-notes-v$currentVersion.md"
+if ([regex]::IsMatch($englishReleaseNotes, '[\u3400-\u9fff]')) {
+    throw 'Published GitHub Release source notes must be English-only'
+}
 
 & (Join-Path $repo 'scripts/prepare-release.ps1') -CheckOnly
 if ($LASTEXITCODE -ne 0) { throw 'Release metadata preflight failed' }
