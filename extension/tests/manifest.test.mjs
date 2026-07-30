@@ -32,8 +32,13 @@ test("小視窗提供內容、網址選項與預設全選設備傳送，且不�
   assert.match(popupCode, /操作太頻繁，請在/);
   assert.doesNotMatch(popupCode, /requestNative|Desktop/);
   assert.match(directCode, /Retry-After/);
-  assert.match(directCode, /clientVersion: "extension-v1\.2"/);
-  assert.match(directCode, /capabilities: supportedCapabilities\.join/);
+  assert.match(directCode, /clientVersion: `extension-v\$\{negotiatedProtocol\}`/);
+  assert.match(directCode, /supportedProtocols = new Set\(\["1\.0", "1\.1", "1\.2"\]\)/);
+  assert.match(directCode, /activeCapabilityDocument = null/);
+  assert.match(directCode, /const status = await directStatus\(\)/);
+  assert.match(directCode, /await refreshCapabilities\(await nodeURL\(\)\)/);
+  assert.match(directCode, /url\.searchParams\.set\("capabilities", supportedCapabilities\.join/);
+  assert.match(directCode, /X-NexDrop-Capabilities/);
   assert.match(directCode, /versionFingerprint/);
   assert.match(workerCode, /connectPresence/);
   assert.match(workerCode, /type: "heartbeat"/);

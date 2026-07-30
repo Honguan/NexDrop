@@ -126,18 +126,19 @@ func CurrentLimits() Limits {
 
 type CapabilityDefinition struct {
 	ID               string
+	SchemaVersion    int
 	Parties          []string
 	Fallback         string
 	UnavailableError string
 }
 
 var capabilityRegistry = []CapabilityDefinition{
-	{ID: CapabilityNegotiation, Parties: []string{"node", "client"}, Fallback: "Use protocol and minimum-client version checks.", UnavailableError: CapabilityUnavailableCode},
-	{ID: StructuredErrors, Parties: []string{"node", "client"}, Fallback: "Parse the legacy string error envelope.", UnavailableError: CapabilityUnavailableCode},
-	{ID: CursorPagination, Parties: []string{"node", "client"}, Fallback: "Use the legacy unpaginated or offset-compatible history response.", UnavailableError: CapabilityUnavailableCode},
-	{ID: IdempotencyReplay, Parties: []string{"node", "client"}, Fallback: "Do not automatically retry a non-idempotent request.", UnavailableError: CapabilityUnavailableCode},
-	{ID: ResumableChunks, Parties: []string{"sender", "receiver", "node"}, Fallback: "Restart the file transfer from the first chunk.", UnavailableError: CapabilityUnavailableCode},
-	{ID: RealtimeVersions, Parties: []string{"node", "client"}, Fallback: "Use the initial HTTP version document and periodic refresh.", UnavailableError: CapabilityUnavailableCode},
+	{ID: CapabilityNegotiation, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use protocol and minimum-client version checks.", UnavailableError: CapabilityUnavailableCode},
+	{ID: StructuredErrors, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Parse the legacy string error envelope.", UnavailableError: CapabilityUnavailableCode},
+	{ID: CursorPagination, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use the legacy unpaginated or offset-compatible history response.", UnavailableError: CapabilityUnavailableCode},
+	{ID: IdempotencyReplay, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Do not automatically retry a non-idempotent request.", UnavailableError: CapabilityUnavailableCode},
+	{ID: ResumableChunks, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"sender", "receiver"}, Fallback: "Restart the file transfer from the first chunk.", UnavailableError: CapabilityUnavailableCode},
+	{ID: RealtimeVersions, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use the initial HTTP version document and periodic refresh.", UnavailableError: CapabilityUnavailableCode},
 }
 
 func Registry() []CapabilityDefinition {
@@ -180,7 +181,7 @@ func NegotiateCapabilities(advertised []string) []string {
 
 func MutualCapabilities(parties ...[]string) []string {
 	if len(parties) == 0 {
-		return nil
+		return []string{}
 	}
 	allowed := make(map[string]struct{}, len(capabilityRegistry))
 	for _, capability := range NegotiateCapabilities(parties[0]) {
@@ -202,9 +203,6 @@ func MutualCapabilities(parties ...[]string) []string {
 		if _, ok := allowed[definition.ID]; ok {
 			result = append(result, definition.ID)
 		}
-	}
-	if len(result) == 0 {
-		return nil
 	}
 	return result
 }

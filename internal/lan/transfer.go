@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -85,10 +86,17 @@ func (server *TransferServer) status(w http.ResponseWriter, r *http.Request) {
 		writeLANError(w, http.StatusInternalServerError, "LAN_STORAGE_FAILED")
 		return
 	}
+	negotiated := version.MutualCapabilities(
+		version.SupportedCapabilities(),
+		strings.Split(r.Header.Get("X-NexDrop-Capabilities"), ","),
+	)
+	if !slices.Contains(negotiated, version.ResumableChunks) {
+		completed = []int{}
+	}
 	writeLANJSON(w, http.StatusOK, map[string]any{
 		"completedChunks": completed,
 		"protocolVersion": ProtocolVersion,
-		"capabilities":    version.NegotiateCapabilities(strings.Split(r.Header.Get("X-NexDrop-Capabilities"), ",")),
+		"capabilities":    negotiated,
 		"limits":          version.CurrentLimits(),
 	})
 }
@@ -157,10 +165,14 @@ func (client *TransferClient) CompletedChunks(ctx context.Context, target Advert
 		return nil, errors.New("invalid LAN transfer identifier")
 	}
 	var response struct {
-		Completed []int `json:"completedChunks"`
+		Completed    []int    `json:"completedChunks"`
+		Capabilities []string `json:"capabilities"`
 	}
 	if err := client.request(ctx, target, http.MethodGet, filePath(transferID, fileID), nil, nil, &response); err != nil {
 		return nil, err
+	}
+	if !slices.Contains(response.Capabilities, version.ResumableChunks) {
+		return []int{}, nil
 	}
 	return response.Completed, nil
 }

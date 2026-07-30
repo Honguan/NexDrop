@@ -456,6 +456,7 @@ func (client *apiClient) requestWithHeaders(ctx context.Context, method, path, t
 		return err
 	}
 	request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
+	request.Header.Set("X-NexDrop-Capabilities", strings.Join(version.SupportedCapabilities(), ","))
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

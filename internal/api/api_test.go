@@ -396,6 +396,35 @@ func TestVersionEndpointPublishesCapabilitiesAndLimits(t *testing.T) {
 	}
 }
 
+func TestVersionEndpointReturnsStableCapabilityUnavailableDetails(t *testing.T) {
+	handler := New(nil, nil, nil, nil, nil, nil).Routes()
+	request := httptest.NewRequest(http.MethodGet, "/api/version?require=future_unknown", nil)
+	request.Header.Set("Accept", versionMediaType)
+	request.Header.Set("X-NexDrop-Capabilities", "capability_negotiation,future_unknown")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("capability status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("X-NexDrop-Capabilities") != "capability_negotiation" {
+		t.Fatalf("negotiated header = %q", response.Header().Get("X-NexDrop-Capabilities"))
+	}
+	var body struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "CAPABILITY_UNAVAILABLE" || body.Error.Details["capability"] != "future_unknown" || body.Error.Details["party"] != "node" {
+		t.Fatalf("capability error = %+v", body.Error)
+	}
+}
+
 func TestTransferRequestLogIncludesCorrelationFields(t *testing.T) {
 	var output bytes.Buffer
 	previous := slog.Default()

@@ -3,11 +3,13 @@ package transfer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/domain"
+	"nexdrop/internal/version"
 )
 
 type fakeStore struct {
@@ -100,6 +102,25 @@ func TestCreateRejectsInvalidPayloads(t *testing.T) {
 		if _, err := service.Create(context.Background(), auth.Session{DeviceID: &deviceID}, request); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("test %d error = %v, want ErrInvalid", index, err)
 		}
+	}
+}
+
+func TestCreateRejectsMoreThanAdvertisedRecipients(t *testing.T) {
+	recipients := make([]string, version.CurrentLimits().MaxRecipients+1)
+	keys := make(map[string][]byte, len(recipients))
+	for index := range recipients {
+		recipients[index] = fmt.Sprintf("device-%03d", index)
+		keys[recipients[index]] = []byte{1}
+	}
+	service := NewService(&fakeStore{resolved: recipients})
+	deviceID := "sender-device"
+
+	_, err := service.Create(context.Background(), auth.Session{DeviceID: &deviceID}, Request{
+		TargetType: TargetAllDevices, ContentType: ContentText, Content: []byte("text"), WrappedContentKeys: keys,
+	})
+
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("recipient limit error = %v, want ErrInvalid", err)
 	}
 }
 

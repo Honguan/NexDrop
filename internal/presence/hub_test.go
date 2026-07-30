@@ -131,3 +131,35 @@ func TestWebSocketHeartbeatAndNotification(t *testing.T) {
 		t.Fatalf("store state = %+v", store)
 	}
 }
+
+func TestPreviousClientConnectsWithLegacyFallback(t *testing.T) {
+	store := &fakeStore{}
+	hub := NewHub(fakeAuthenticator{deviceID: "device-1"}, store)
+	hub.heartbeat = time.Hour
+	hub.pollInterval = time.Hour
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?access_token=valid&protocolVersion=1.1&clientVersion=test-v1.1"
+	connection, _, err := websocket.Dial(context.Background(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	for index := 0; index < 2; index++ {
+		var message Message
+		if err := wsjson.Read(context.Background(), connection, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Type == "connected" {
+			if _, advertised := message.Payload["versions"]; advertised {
+				t.Fatalf("legacy connected payload advertised optional versions = %+v", message.Payload)
+			}
+			if capabilities, ok := message.Payload["negotiatedCapabilities"].([]any); !ok || len(capabilities) != 0 {
+				t.Fatalf("legacy negotiated capabilities = %#v", message.Payload["negotiatedCapabilities"])
+			}
+			return
+		}
+	}
+	t.Fatal("connected message was not received")
+}

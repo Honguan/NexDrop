@@ -38,7 +38,7 @@ LAN clients advertise the same list in `X-NexDrop-Capabilities`. The receiver re
 | `structured_errors` | Node, client | Parse the legacy string error envelope. |
 | `cursor_pagination` | Node, client | Use the legacy list response. |
 | `idempotency_replay` | Node, client | Do not automatically retry a non-idempotent request. |
-| `resumable_chunks` | Sender, receiver, Node | Restart the file from the first chunk. |
+| `resumable_chunks` | Sender and receiver (the Node is the receiver for Node-routed uploads) | Restart the file from the first chunk. |
 | `realtime_versions` | Node, client | Refresh the HTTP version document periodically. |
 
 When a requested behavior has no safe fallback, the initiating side returns or displays `CAPABILITY_UNAVAILABLE` and identifies the required capability in structured details.

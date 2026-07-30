@@ -12,6 +12,7 @@ import 'lan_identity.dart';
 import 'models.dart';
 
 const _serviceType = '_nexdrop._tcp';
+const _discoveryProtocolVersion = '1.1';
 const _protocolVersion = '1.2';
 const _capabilities = <String>[
   'capability_negotiation',
@@ -217,7 +218,7 @@ class LanService {
       attributes: {
         'id': _identity!.shortDeviceId,
         'sv': _serviceVersion,
-        'pv': _protocolVersion,
+        'pv': _discoveryProtocolVersion,
         'port': '${_server!.port}',
         'challenge': _challenge,
       },
@@ -298,7 +299,7 @@ class LanService {
       final advertisement = {
         'deviceId': _identity!.shortDeviceId,
         'serviceVersion': _serviceVersion,
-        'protocolVersion': _protocolVersion,
+        'protocolVersion': _discoveryProtocolVersion,
         'port': _server!.port,
         'challenge': _challenge,
       };
@@ -421,13 +422,16 @@ class LanService {
       final transferId = segments[2];
       final fileId = segments[4];
       if (request.method == 'GET' && segments.length == 5) {
-        final completed = await _completedChunks(transferId, fileId);
+        final negotiated = _negotiatedCapabilities(
+          request.headers.value('X-NexDrop-Capabilities'),
+        );
+        final completed = negotiated.contains('resumable_chunks')
+            ? await _completedChunks(transferId, fileId)
+            : <int>[];
         return _json(request.response, HttpStatus.ok, {
           'completedChunks': completed,
           'protocolVersion': _protocolVersion,
-          'capabilities': _negotiatedCapabilities(
-            request.headers.value('X-NexDrop-Capabilities'),
-          ),
+          'capabilities': negotiated,
           'limits': {
             'maxChunkSize': 8 * 1024 * 1024,
             'maxParallelChunks': 3,
@@ -636,6 +640,12 @@ class LanService {
       'GET',
       '/v1/transfers/$transferId/files/$fileId',
     );
+    final capabilities = (result['capabilities'] as List<dynamic>?)
+        ?.whereType<String>();
+    if (capabilities == null ||
+        !capabilities.contains('resumable_chunks')) {
+      return const [];
+    }
     return (result['completedChunks'] as List<dynamic>).cast<int>();
   }
 

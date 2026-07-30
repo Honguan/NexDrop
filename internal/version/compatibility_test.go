@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"regexp"
 	"testing"
 )
 
@@ -65,14 +66,37 @@ func TestCapabilityRegistryHasFallbackAndStableError(t *testing.T) {
 		t.Fatal("capability registry is empty")
 	}
 	seen := make(map[string]bool, len(definitions))
+	identifier := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	for _, definition := range definitions {
-		if definition.ID == "" || len(definition.Parties) == 0 || definition.Fallback == "" || definition.UnavailableError != CapabilityUnavailableCode {
+		if !identifier.MatchString(definition.ID) || definition.SchemaVersion != CapabilitySchemaVersion || len(definition.Parties) == 0 || definition.Fallback == "" || definition.UnavailableError != CapabilityUnavailableCode {
 			t.Fatalf("incomplete capability definition = %+v", definition)
 		}
 		if seen[definition.ID] {
 			t.Fatalf("duplicate capability %q", definition.ID)
 		}
 		seen[definition.ID] = true
+		parties := make([][]string, len(definition.Parties))
+		for index, party := range definition.Parties {
+			if party != "node" && party != "client" && party != "sender" && party != "receiver" {
+				t.Fatalf("capability %q has unknown party %q", definition.ID, party)
+			}
+			parties[index] = []string{definition.ID}
+		}
+		negotiated := MutualCapabilities(parties...)
+		if len(negotiated) != 1 || negotiated[0] != definition.ID {
+			t.Fatalf("capability %q negotiation = %v", definition.ID, negotiated)
+		}
+		for missing := range parties {
+			incomplete := append([][]string(nil), parties...)
+			incomplete[missing] = nil
+			if got := MutualCapabilities(incomplete...); len(got) != 0 {
+				t.Fatalf("capability %q activated without %s: %v", definition.ID, definition.Parties[missing], got)
+			}
+		}
+		var perCapabilityError CapabilityUnavailableError
+		if err := RequireCapabilities(nil, definition.ID); !errors.As(err, &perCapabilityError) || perCapabilityError.Capability != definition.ID {
+			t.Fatalf("capability %q error behavior = %#v", definition.ID, err)
+		}
 	}
 	if err := RequireCapabilities([]string{CapabilityNegotiation}, CapabilityNegotiation); err != nil {
 		t.Fatalf("supported capability rejected: %v", err)
@@ -101,8 +125,8 @@ func TestMixedVersionFixturesUseSafeCapabilityFallbacks(t *testing.T) {
 		want   []string
 	}{
 		{name: "current/current", node: current, client: []string{CapabilityNegotiation, StructuredErrors}, want: []string{CapabilityNegotiation, StructuredErrors}},
-		{name: "current/previous", node: current, client: nil, want: nil},
-		{name: "previous/current", node: previous, client: []string{CapabilityNegotiation, StructuredErrors}, want: nil},
+		{name: "current/previous", node: current, client: nil, want: []string{}},
+		{name: "previous/current", node: previous, client: []string{CapabilityNegotiation, StructuredErrors}, want: []string{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

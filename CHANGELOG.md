@@ -6,6 +6,10 @@ This file records user-visible NexDrop changes and follows Keep a Changelog and 
 
 ## [Unreleased]
 
+### Added
+
+- Added protocol 1.2 capability negotiation, per-Node versioned caches, mixed-generation handshakes, documented fallbacks, and a release-validated client compatibility matrix.
+
 ## [2.0.4] - 2026-07-22
 
 ### Changed

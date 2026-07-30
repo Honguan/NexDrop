@@ -4,7 +4,11 @@
 
 Current protocol: `1.2`
 
+Compatibility contract fingerprint: `d09bf73c3d0f64b288218f9d9dbeac621283bf5be67ce5b8cfd773b7cd6ee22b`
+
 The Node supports the current protocol and two previous client protocol generations. Capability negotiation is additive: a missing advertisement produces an empty intersection and activates the documented fallback.
+
+LAN discovery continues to advertise the compatible `1.1` baseline so 1.1 clients can discover current devices; authenticated status negotiation upgrades optional behavior to protocol 1.2 capabilities.
 
 | Node | Client | Connection | Optional capabilities | Required behavior |
 | --- | --- | --- | --- | --- |
@@ -16,6 +20,13 @@ The Node supports the current protocol and two previous client protocol generati
 | Earlier or later unsupported protocol | Any | Rejected | None | Return the stable protocol-upgrade result. |
 
 Current first-party clients advertise protocol 1.2. Web, Extension, Android, and Windows ignore unknown additive fields and unknown capability identifiers.
+
+| First-party client | Current generation | Previous generation | Legacy generation | Capability behavior |
+| --- | --- | --- | --- | --- |
+| Windows Desktop | `nexdrop-v1.2` | `nexdrop-v1.1` | `nexdrop-v1.0` | Uses the Node document to select a common handshake and disables unavailable capabilities. |
+| Android | `nexdrop-v1.2` | `nexdrop-v1.1` | `nexdrop-v1.0` | Uses the same Flutter contract and safe background fallback. |
+| Web | `web-v1.2` | `web-v1.1` | `web-v1.0` | Refreshes the same-origin Node document before opening realtime transport. |
+| Chrome/Edge Extension | `extension-v1.2` | `extension-v1.1` | `extension-v1.0` | Refreshes the paired Node document and never activates capabilities from an unverified cache. |
 
 ## Deprecation and removal
 

@@ -38,6 +38,13 @@ func apiContract(next http.Handler) http.Handler {
 		requestID := newRequestID()
 		w.Header().Set("X-Request-ID", requestID)
 		w.Header().Set("X-NexDrop-API-Version", version.APIVersion)
+		negotiated := version.MutualCapabilities(
+			version.SupportedCapabilities(),
+			strings.Split(r.Header.Get("X-NexDrop-Capabilities"), ","),
+		)
+		if len(negotiated) != 0 {
+			w.Header().Set("X-NexDrop-Capabilities", strings.Join(negotiated, ","))
+		}
 		writer := &contractResponseWriter{
 			ResponseWriter: w,
 			requestID:      requestID,

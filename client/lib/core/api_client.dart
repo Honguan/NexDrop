@@ -18,13 +18,27 @@ const nexDropCapabilities = <String>[
   'resumable_chunks',
   'realtime_versions',
 ];
+const nexDropProtocols = <String>{'1.0', '1.1', '1.2'};
+
+String compatibleProtocol(NodeCapabilityDocument? document) {
+  final advertised = document?.protocolVersion;
+  return advertised != null && nexDropProtocols.contains(advertised)
+      ? advertised
+      : '1.0';
+}
 
 class ApiException implements Exception {
-  const ApiException(this.code, this.statusCode, {this.retryAfterSeconds});
+  const ApiException(
+    this.code,
+    this.statusCode, {
+    this.retryAfterSeconds,
+    this.details = const <String, dynamic>{},
+  });
 
   final String code;
   final int statusCode;
   final int? retryAfterSeconds;
+  final Map<String, dynamic> details;
 
   @override
   String toString() => code;
@@ -36,6 +50,13 @@ String apiExceptionMessage(ApiException error) {
         ? '操作過於頻繁，請稍後再試'
         : '操作過於頻繁，請在 ${error.retryAfterSeconds} 秒後再試';
   }
+  if (error.code == 'CAPABILITY_UNAVAILABLE') {
+    final party = error.details['party'] == 'node' ? '節點' : '目標設備';
+    final capability = error.details['capability'] as String?;
+    return capability == null
+        ? '目前的$party版本不支援此功能，請更新後再試'
+        : '目前的$party缺少 $capability 相容能力，請更新後再試';
+  }
   return {
         'INVALID_REQUEST': '請確認所有必填欄位與格式',
         'INVALID_CREDENTIALS': '帳號或密碼不正確',
@@ -44,7 +65,6 @@ String apiExceptionMessage(ApiException error) {
         'INVALID_TOKEN': '登入已失效，請重新登入',
         'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
         'QUOTA_EXCEEDED': '已超過可用配額',
-        'CAPABILITY_UNAVAILABLE': '目前的節點或目標設備版本不支援此功能，請更新後再試',
       }[error.code] ??
       '操作失敗：${error.code}';
 }
@@ -144,11 +164,13 @@ class ApiClient {
   String? _accessToken;
   String? _refreshToken;
   NodeCapabilityDocument? _capabilityDocument;
+  bool _capabilityDocumentVerified = false;
   Future<bool>? _refreshing;
 
   Uri? get node => _node;
   bool get authenticated => _accessToken != null;
-  NodeCapabilityDocument? get capabilityDocument => _capabilityDocument;
+  NodeCapabilityDocument? get capabilityDocument =>
+      _capabilityDocumentVerified ? _capabilityDocument : null;
   String? get nodeJoinUri {
     final node = _node;
     final secret = _nodeSecret?.trim() ?? '';
@@ -201,6 +223,7 @@ class ApiClient {
         'Content-Type': 'application/json',
         'Accept': _accept,
         'X-NexDrop-Node-Key': _nodeSecret!,
+        'X-NexDrop-Capabilities': supportedCapabilities.join(','),
       },
       body: jsonEncode({
         'identifier': identifier.trim(),
@@ -219,7 +242,11 @@ class ApiClient {
     if (refreshToken != null && _node != null) {
       await _client.post(
         _uri('/api/auth/logout'),
-        headers: const {'Content-Type': 'application/json', 'Accept': _accept},
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': _accept,
+          'X-NexDrop-Capabilities': supportedCapabilities.join(','),
+        },
         body: jsonEncode({'refreshToken': refreshToken}),
       );
     }
@@ -255,13 +282,17 @@ class ApiClient {
   }
 
   Future<NodeCapabilityDocument> refreshCapabilities() async {
+    _capabilityDocumentVerified = false;
     final node = _node;
     if (node == null) {
       throw const ApiException('NODE_NOT_CONFIGURED', 0);
     }
     final response = await _client.get(
       node.replace(path: '/api/version', query: null),
-      headers: const {'Accept': _accept},
+      headers: {
+        'Accept': _accept,
+        'X-NexDrop-Capabilities': supportedCapabilities.join(','),
+      },
     );
     if (response.statusCode != HttpStatus.ok) throw _error(response);
     final document = NodeCapabilityDocument.fromJson(
@@ -269,6 +300,7 @@ class ApiClient {
       fallbackNodeIdentity: node.origin,
     );
     _capabilityDocument = document;
+    _capabilityDocumentVerified = true;
     await _storage.write(
       key: _capabilitiesKey,
       value: jsonEncode({
@@ -297,6 +329,7 @@ class ApiClient {
         cached,
         fallbackNodeIdentity: node.origin,
       );
+      _capabilityDocumentVerified = false;
     } catch (_) {
       await _storage.delete(key: _capabilitiesKey);
     }
@@ -343,14 +376,19 @@ class ApiClient {
     if (_node == null || _accessToken == null) {
       throw const ApiException('AUTHENTICATION_REQUIRED', 401);
     }
+    final document = capabilityDocument;
+    final negotiatedProtocol = compatibleProtocol(document);
+    final query = <String, String>{
+      'protocolVersion': negotiatedProtocol,
+      'clientVersion': 'nexdrop-v$negotiatedProtocol',
+    };
+    if (document?.supports('capability_negotiation') == true) {
+      query['capabilities'] = supportedCapabilities.join(',');
+    }
     final uri = _node!.replace(
       scheme: _node!.scheme == 'https' ? 'wss' : 'ws',
       path: '/ws',
-      queryParameters: {
-        'protocolVersion': protocolVersion,
-        'clientVersion': clientVersion,
-        'capabilities': supportedCapabilities.join(','),
-      },
+      queryParameters: query,
     );
     return IOWebSocketChannel.connect(
       uri,
@@ -424,9 +462,10 @@ class ApiClient {
         if (_refreshToken == null) return false;
         final response = await _client.post(
           _uri('/api/auth/refresh'),
-          headers: const {
+          headers: {
             'Content-Type': 'application/json',
             'Accept': _accept,
+            'X-NexDrop-Capabilities': supportedCapabilities.join(','),
           },
           body: jsonEncode({'refreshToken': _refreshToken}),
         );
@@ -446,6 +485,7 @@ class ApiClient {
   Map<String, String> _headers([Map<String, String>? extra]) => {
     'Authorization': 'Bearer $_accessToken',
     'Accept': _accept,
+    'X-NexDrop-Capabilities': supportedCapabilities.join(','),
     if (_nodeSecret?.trim().isNotEmpty == true)
       'X-NexDrop-Node-Key': _nodeSecret!.trim(),
     ...?extra,
@@ -480,6 +520,10 @@ class ApiClient {
     try {
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       final error = json['error'];
+      final details = error is Map<String, dynamic>
+          ? error['details'] as Map<String, dynamic>? ??
+                const <String, dynamic>{}
+          : const <String, dynamic>{};
       return ApiException(
         error is String
             ? error
@@ -487,6 +531,7 @@ class ApiClient {
                   'REQUEST_FAILED',
         response.statusCode,
         retryAfterSeconds: int.tryParse(response.headers['retry-after'] ?? ''),
+        details: details,
       );
     } catch (_) {
       return ApiException(

@@ -162,7 +162,7 @@ func TestLANStatusNegotiatesCapabilitiesAndIgnoresUnknownIdentifiers(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewTransferServer(serverIdentity, StaticTrust{}, func() string { return "challenge-token" }, &memoryChunkStore{chunks: make(map[int][]byte)})
+	server, err := NewTransferServer(serverIdentity, StaticTrust{}, func() string { return "challenge-token" }, &memoryChunkStore{chunks: map[int][]byte{0: []byte("completed")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +178,7 @@ func TestLANStatusNegotiatesCapabilitiesAndIgnoresUnknownIdentifiers(t *testing.
 		t.Fatalf("LAN status = %d, body = %s", response.Code, response.Body.String())
 	}
 	var body struct {
+		Completed    []int          `json:"completedChunks"`
 		Capabilities []string       `json:"capabilities"`
 		Limits       version.Limits `json:"limits"`
 	}
@@ -186,6 +187,9 @@ func TestLANStatusNegotiatesCapabilitiesAndIgnoresUnknownIdentifiers(t *testing.
 	}
 	if !reflect.DeepEqual(body.Capabilities, []string{version.CapabilityNegotiation}) {
 		t.Fatalf("LAN capabilities = %v", body.Capabilities)
+	}
+	if len(body.Completed) != 0 {
+		t.Fatalf("LAN resumed chunks without %q = %v", version.ResumableChunks, body.Completed)
 	}
 	if body.Limits.MaxChunkSize == 0 {
 		t.Fatalf("LAN limits = %+v", body.Limits)

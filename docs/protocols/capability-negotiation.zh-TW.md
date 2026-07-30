@@ -38,7 +38,7 @@ LAN 用戶端以 `X-NexDrop-Capabilities` 送出同一份清單；接收端在�
 | `structured_errors` | 節點、用戶端 | 解析舊版字串錯誤格式。 |
 | `cursor_pagination` | 節點、用戶端 | 使用舊版列表回應。 |
 | `idempotency_replay` | 節點、用戶端 | 不自動重送非冪等請求。 |
-| `resumable_chunks` | 發送端、接收端、節點 | 從第一個分段重新傳輸檔案。 |
+| `resumable_chunks` | 發送端與接收端（經節點路由時由節點擔任接收端） | 從第一個分段重新傳輸檔案。 |
 | `realtime_versions` | 節點、用戶端 | 定期重新取得 HTTP 版本文件。 |
 
 若要求的行為沒有安全降級方式，發起端須回傳或顯示 `CAPABILITY_UNAVAILABLE`，並在結構化詳細資料指出缺少的能力。

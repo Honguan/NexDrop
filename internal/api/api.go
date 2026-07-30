@@ -111,7 +111,22 @@ func (api *API) Routes() http.Handler {
 	return apiContract(mux)
 }
 
-func (api *API) version(w http.ResponseWriter, _ *http.Request) {
+func (api *API) version(w http.ResponseWriter, r *http.Request) {
+	for _, value := range r.URL.Query()["require"] {
+		for _, capability := range strings.Split(value, ",") {
+			capability = strings.TrimSpace(capability)
+			if capability == "" {
+				continue
+			}
+			if err := version.RequireCapabilities(version.SupportedCapabilities(), capability); err != nil {
+				writeErrorDetails(w, http.StatusConflict, version.CapabilityUnavailableCode, map[string]any{
+					"capability": capability,
+					"party":      "node",
+				})
+				return
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, version.Current())
 }
 
