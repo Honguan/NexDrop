@@ -43,6 +43,7 @@ $bilingualDocs = @(
     @('docs/configuration.md', 'docs/configuration.zh-TW.md'),
     @('docs/security.md', 'docs/security.zh-TW.md'),
     @('docs/api.md', 'docs/api.zh-TW.md'),
+    @('docs/compatibility-matrix.md', 'docs/compatibility-matrix.zh-TW.md'),
     @('docs/data-model.md', 'docs/data-model.zh-TW.md'),
     @('docs/performance.md', 'docs/performance.zh-TW.md'),
     @('docs/troubleshooting.md', 'docs/troubleshooting.zh-TW.md'),
@@ -56,7 +57,8 @@ $bilingualDocs = @(
     @('docs/adr/005-independent-extension.md', 'docs/adr/005-independent-extension.zh-TW.md'),
     @('docs/protocols/lan-discovery.md', 'docs/protocols/lan-discovery.zh-TW.md'),
     @('docs/protocols/lan-transfer.md', 'docs/protocols/lan-transfer.zh-TW.md'),
-    @('docs/protocols/node-transfer.md', 'docs/protocols/node-transfer.zh-TW.md')
+    @('docs/protocols/node-transfer.md', 'docs/protocols/node-transfer.zh-TW.md'),
+    @('docs/protocols/capability-negotiation.md', 'docs/protocols/capability-negotiation.zh-TW.md')
 )
 foreach ($pair in $bilingualDocs) {
     $englishPath = Join-Path $repo $pair[0]
@@ -77,6 +79,24 @@ $releaseNotesTemplate = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'docs/r
 $releaseNotesTemplateZhTW = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'docs/release-notes-template.zh-TW.md')
 if (-not $releaseNotesTemplate.Contains('(release-notes-v{{VERSION}}.zh-TW.md)')) { throw 'English release notes template must link to its Traditional Chinese edition' }
 if (-not $releaseNotesTemplateZhTW.Contains('(release-notes-v{{VERSION}}.md)')) { throw 'Traditional Chinese release notes template must link to its English edition' }
+
+$compatibilitySource = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'internal/version/compatibility.go')
+$currentProtocol = ([regex]::Match($compatibilitySource, '(?m)^\s*CurrentProtocol\s*=\s*"([^"]+)"')).Groups[1].Value
+$compatibilityMatrix = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'docs/compatibility-matrix.md')
+if (-not $currentProtocol -or -not $compatibilityMatrix.Contains("Current protocol: ``$currentProtocol``")) {
+    throw 'compatibility matrix does not document the current protocol'
+}
+$capabilityDocument = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'docs/protocols/capability-negotiation.md')
+$constantValues = @{}
+foreach ($match in [regex]::Matches($compatibilitySource, '(?m)^\s*([A-Za-z][A-Za-z0-9]+)\s*=\s*"([^"]+)"')) {
+    $constantValues[$match.Groups[1].Value] = $match.Groups[2].Value
+}
+foreach ($match in [regex]::Matches($compatibilitySource, '\{ID:\s*([A-Za-z][A-Za-z0-9]+),')) {
+    $identifier = $constantValues[$match.Groups[1].Value]
+    if (-not $identifier -or -not $capabilityDocument.Contains("``$identifier``")) {
+        throw "capability document is missing registry identifier $($match.Groups[1].Value)"
+    }
+}
 
 $problems = @()
 Get-ChildItem -LiteralPath $repo -Recurse -Filter '*.md' -File |

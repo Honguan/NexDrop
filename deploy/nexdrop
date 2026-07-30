@@ -113,6 +113,7 @@ validate_env() {
     postgres_password=$(env_value POSTGRES_PASSWORD)
     cursor_secret=$(env_value NEXDROP_CURSOR_SECRET)
     node_key=$(env_value NEXDROP_NODE_KEY)
+    node_id=$(env_value NEXDROP_NODE_ID)
     totp_secret=$(env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)
 
     if ! valid_env_password "$postgres_password" 16; then
@@ -127,6 +128,16 @@ validate_env() {
         echo "NEXDROP_NODE_KEY 必須至少 32 字元；請重新執行 ./deploy/nexdrop update 讓系統自動補齊。" >&2
         return 1
     fi
+    if [ "${#node_id}" -lt 8 ] || [ "${#node_id}" -gt 128 ]; then
+        echo "NEXDROP_NODE_ID 必須為 8–128 字元；請重新執行 ./deploy/nexdrop update 讓系統自動補齊。" >&2
+        return 1
+    fi
+    case "$node_id" in
+        *[!A-Za-z0-9._~-]*)
+            echo "NEXDROP_NODE_ID 只能包含英數及 . _ ~ -。" >&2
+            return 1
+            ;;
+    esac
     if [ "${#totp_secret}" -lt 26 ]; then
         echo "NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET 必須是有效的 Base32 密鑰；請重新執行 ./deploy/nexdrop update 讓系統自動補齊。" >&2
         return 1
@@ -194,6 +205,13 @@ ensure_env() {
             set_env_value NEXDROP_NODE_KEY "$(random_hex 32)"
             GENERATED_DEFAULTS=true
             echo "已自動產生缺少的節點密鑰；後續更新會保留此值。"
+            ;;
+    esac
+    case "$(env_value NEXDROP_NODE_ID)" in
+        ''|change-me|replace-with-stable-node-id)
+            set_env_value NEXDROP_NODE_ID "node-$(random_hex 16)"
+            GENERATED_DEFAULTS=true
+            echo "已自動產生缺少的節點識別碼；能力快取與後續更新會沿用此值。"
             ;;
     esac
     case "$(env_value NEXDROP_BOOTSTRAP_ADMIN_TOTP_SECRET)" in

@@ -20,6 +20,15 @@ const mediaType = "application/vnd.nexdrop.v1+json";
 const tokenKey = "directTokens";
 const deviceKey = "directDeviceId";
 const keyPairKey = "directDeviceKey";
+const capabilityKey = "nodeCapabilities";
+const supportedCapabilities = [
+  "capability_negotiation",
+  "structured_errors",
+  "cursor_pagination",
+  "idempotency_replay",
+  "resumable_chunks",
+  "realtime_versions",
+];
 
 export class DirectError extends Error {
   constructor(code: string, public readonly retryAfterSeconds?: number) {
@@ -38,6 +47,7 @@ export async function pairExtension(
   const origin = normalizeNodeURL(node);
   const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
   if (!granted) throw new Error("PERMISSION_DENIED");
+  await refreshCapabilities(origin).catch(() => undefined);
   const tokens = await raw<TokenPair>(origin, "/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ identifier, password, totp }),
@@ -84,6 +94,7 @@ export async function disconnectExtension() {
 export async function directStatus(): Promise<DirectStatus | null> {
   const stored = await chrome.storage.local.get([tokenKey, deviceKey]);
   if (!stored[tokenKey] || !stored[deviceKey]) return null;
+  await refreshCapabilities(await nodeURL()).catch(() => undefined);
   const devices = await request<DirectDevice[]>("/api/devices");
   const own = devices.find((item) => item.id === stored[deviceKey]);
   if (!own || own.trustStatus === "REVOKED") return null;
@@ -144,10 +155,33 @@ export async function connectPresence() {
   url.pathname = "/ws";
   url.search = new URLSearchParams({
     access_token: tokens.accessToken,
-    protocolVersion: "1.1",
-    clientVersion: "extension-v1.0",
+    protocolVersion: "1.2",
+    clientVersion: "extension-v1.2",
+    capabilities: supportedCapabilities.join(","),
   }).toString();
   return new WebSocket(url, "nexdrop.v1");
+}
+
+async function refreshCapabilities(origin: string) {
+  const response = await fetch(`${origin}/api/version`, {
+    headers: { Accept: mediaType },
+  });
+  if (!response.ok) throw new Error("VERSION_UNAVAILABLE");
+  const raw = await response.json() as Record<string, unknown>;
+  const document = {
+    nodeURL: origin,
+    nodeIdentity: typeof raw.nodeIdentity === "string" ? raw.nodeIdentity : origin,
+    versionFingerprint: typeof raw.versionFingerprint === "string"
+      ? raw.versionFingerprint
+      : [raw.productVersion, raw.buildCommit, raw.protocolVersion].join("|"),
+    protocolVersion: typeof raw.protocolVersion === "string" ? raw.protocolVersion : "1.0",
+    capabilities: Array.isArray(raw.capabilities)
+      ? raw.capabilities.filter((value): value is string => typeof value === "string")
+      : [],
+    limits: typeof raw.limits === "object" && raw.limits !== null ? raw.limits : {},
+  };
+  await chrome.storage.local.set({ [capabilityKey]: document });
+  return document;
 }
 
 async function attachSession(id: string) {

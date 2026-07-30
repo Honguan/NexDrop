@@ -1,0 +1,8 @@
+{
+  "productVersion": "2.0.3",
+  "buildCommit": "previous",
+  "apiVersion": "1",
+  "protocolVersion": "1.1",
+  "previousProtocolVersion": "1.0",
+  "minimumClientVersion": "1.0"
+}

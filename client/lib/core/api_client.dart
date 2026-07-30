@@ -10,6 +10,15 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'models.dart';
 
+const nexDropCapabilities = <String>[
+  'capability_negotiation',
+  'structured_errors',
+  'cursor_pagination',
+  'idempotency_replay',
+  'resumable_chunks',
+  'realtime_versions',
+];
+
 class ApiException implements Exception {
   const ApiException(this.code, this.statusCode, {this.retryAfterSeconds});
 
@@ -35,8 +44,81 @@ String apiExceptionMessage(ApiException error) {
         'INVALID_TOKEN': '登入已失效，請重新登入',
         'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
         'QUOTA_EXCEEDED': '已超過可用配額',
+        'CAPABILITY_UNAVAILABLE': '目前的節點或目標設備版本不支援此功能，請更新後再試',
       }[error.code] ??
       '操作失敗：${error.code}';
+}
+
+class NodeLimits {
+  const NodeLimits({
+    required this.maxChunkSize,
+    required this.maxParallelChunks,
+    required this.maxRecipients,
+  });
+
+  factory NodeLimits.fromJson(Object? value) {
+    final json = value is Map<String, dynamic>
+        ? value
+        : const <String, dynamic>{};
+    return NodeLimits(
+      maxChunkSize: json['maxChunkSize'] is int
+          ? json['maxChunkSize'] as int
+          : 8 * 1024 * 1024,
+      maxParallelChunks: json['maxParallelChunks'] is int
+          ? json['maxParallelChunks'] as int
+          : 3,
+      maxRecipients: json['maxRecipients'] is int
+          ? json['maxRecipients'] as int
+          : 100,
+    );
+  }
+
+  final int maxChunkSize;
+  final int maxParallelChunks;
+  final int maxRecipients;
+}
+
+class NodeCapabilityDocument {
+  const NodeCapabilityDocument({
+    required this.nodeIdentity,
+    required this.versionFingerprint,
+    required this.protocolVersion,
+    required this.capabilities,
+    required this.limits,
+  });
+
+  factory NodeCapabilityDocument.fromJson(
+    Map<String, dynamic> json, {
+    required String fallbackNodeIdentity,
+  }) {
+    final capabilities = json['capabilities'];
+    return NodeCapabilityDocument(
+      nodeIdentity:
+          json['nodeIdentity'] as String? ?? fallbackNodeIdentity,
+      versionFingerprint:
+          json['versionFingerprint'] as String? ??
+          [
+            json['productVersion'],
+            json['buildCommit'],
+            json['protocolVersion'],
+          ].join('|'),
+      protocolVersion: json['protocolVersion'] as String? ?? '1.0',
+      capabilities: capabilities is List<dynamic>
+          ? capabilities.whereType<String>().toSet()
+          : const <String>{},
+      limits: NodeLimits.fromJson(json['limits']),
+    );
+  }
+
+  final String nodeIdentity;
+  final String versionFingerprint;
+  final String protocolVersion;
+  final Set<String> capabilities;
+  final NodeLimits limits;
+
+  bool supports(String capability) =>
+      nexDropCapabilities.contains(capability) &&
+      capabilities.contains(capability);
 }
 
 class ApiClient {
@@ -44,12 +126,14 @@ class ApiClient {
     : _client = client ?? http.Client(),
       _storage = secureStorage ?? const FlutterSecureStorage();
 
-  static const protocolVersion = '1.1';
-  static const clientVersion = 'nexdrop-v1.1';
+  static const protocolVersion = '1.2';
+  static const clientVersion = 'nexdrop-v1.2';
+  static const supportedCapabilities = nexDropCapabilities;
   static const _nodeUrlKey = 'nexdrop.node_url';
   static const _nodeSecretKey = 'nexdrop.node_secret';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
+  static const _capabilitiesKey = 'nexdrop.node_capabilities.v1';
   static const _accept = 'application/vnd.nexdrop.v1+json';
   static const _uuid = Uuid();
 
@@ -59,10 +143,12 @@ class ApiClient {
   String? _nodeSecret;
   String? _accessToken;
   String? _refreshToken;
+  NodeCapabilityDocument? _capabilityDocument;
   Future<bool>? _refreshing;
 
   Uri? get node => _node;
   bool get authenticated => _accessToken != null;
+  NodeCapabilityDocument? get capabilityDocument => _capabilityDocument;
   String? get nodeJoinUri {
     final node = _node;
     final secret = _nodeSecret?.trim() ?? '';
@@ -81,6 +167,12 @@ class ApiClient {
     _refreshToken = await _storage.read(key: _refreshKey);
     if (node == null) return false;
     _node = validateNodeUrl(node);
+    await _restoreCapabilityCache(_node!);
+    try {
+      await refreshCapabilities();
+    } catch (_) {
+      // Legacy or temporarily unavailable Nodes keep the cached-free fallback.
+    }
     return _accessToken != null &&
         _refreshToken != null &&
         _nodeSecret?.trim().isNotEmpty == true;
@@ -97,6 +189,11 @@ class ApiClient {
     _nodeSecret = nodeSecret.trim();
     if (_nodeSecret!.isEmpty) {
       throw const ApiException('NODE_KEY_REQUIRED', 401);
+    }
+    try {
+      await refreshCapabilities();
+    } catch (_) {
+      // Capability negotiation is additive; login remains compatible with 1.x.
     }
     final response = await _client.post(
       _uri('/api/auth/login'),
@@ -157,6 +254,54 @@ class ApiClient {
         .toList();
   }
 
+  Future<NodeCapabilityDocument> refreshCapabilities() async {
+    final node = _node;
+    if (node == null) {
+      throw const ApiException('NODE_NOT_CONFIGURED', 0);
+    }
+    final response = await _client.get(
+      node.replace(path: '/api/version', query: null),
+      headers: const {'Accept': _accept},
+    );
+    if (response.statusCode != HttpStatus.ok) throw _error(response);
+    final document = NodeCapabilityDocument.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+      fallbackNodeIdentity: node.origin,
+    );
+    _capabilityDocument = document;
+    await _storage.write(
+      key: _capabilitiesKey,
+      value: jsonEncode({
+        'nodeUrl': node.toString(),
+        'nodeIdentity': document.nodeIdentity,
+        'versionFingerprint': document.versionFingerprint,
+        'protocolVersion': document.protocolVersion,
+        'capabilities': document.capabilities.toList(),
+        'limits': {
+          'maxChunkSize': document.limits.maxChunkSize,
+          'maxParallelChunks': document.limits.maxParallelChunks,
+          'maxRecipients': document.limits.maxRecipients,
+        },
+      }),
+    );
+    return document;
+  }
+
+  Future<void> _restoreCapabilityCache(Uri node) async {
+    final encoded = await _storage.read(key: _capabilitiesKey);
+    if (encoded == null) return;
+    try {
+      final cached = jsonDecode(encoded) as Map<String, dynamic>;
+      if (cached['nodeUrl'] != node.toString()) return;
+      _capabilityDocument = NodeCapabilityDocument.fromJson(
+        cached,
+        fallbackNodeIdentity: node.origin,
+      );
+    } catch (_) {
+      await _storage.delete(key: _capabilitiesKey);
+    }
+  }
+
   Future<dynamic> getJson(String path) => _request(path, method: 'GET');
 
   Future<dynamic> sendJson(String path, String method, [Object? body]) =>
@@ -204,6 +349,7 @@ class ApiClient {
       queryParameters: {
         'protocolVersion': protocolVersion,
         'clientVersion': clientVersion,
+        'capabilities': supportedCapabilities.join(','),
       },
     );
     return IOWebSocketChannel.connect(

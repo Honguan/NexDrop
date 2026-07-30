@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"nexdrop/internal/version"
@@ -84,7 +85,12 @@ func (server *TransferServer) status(w http.ResponseWriter, r *http.Request) {
 		writeLANError(w, http.StatusInternalServerError, "LAN_STORAGE_FAILED")
 		return
 	}
-	writeLANJSON(w, http.StatusOK, map[string]any{"completedChunks": completed, "protocolVersion": ProtocolVersion})
+	writeLANJSON(w, http.StatusOK, map[string]any{
+		"completedChunks": completed,
+		"protocolVersion": ProtocolVersion,
+		"capabilities":    version.NegotiateCapabilities(strings.Split(r.Header.Get("X-NexDrop-Capabilities"), ",")),
+		"limits":          version.CurrentLimits(),
+	})
 }
 
 func (server *TransferServer) putChunk(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +203,7 @@ func (client *TransferClient) request(ctx context.Context, target Advertisement,
 	}
 	request.Header.Set("X-NexDrop-Protocol", target.Protocol)
 	request.Header.Set("X-NexDrop-Challenge", target.Challenge)
+	request.Header.Set("X-NexDrop-Capabilities", strings.Join(version.SupportedCapabilities(), ","))
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("LAN request failed: %w", err)

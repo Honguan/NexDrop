@@ -63,6 +63,7 @@ export default function App() {
   const [loading, setLoading] = useState(api.hasSession());
 
   useEffect(() => {
+    void api.refreshCapabilities().catch(() => undefined);
     if (!api.hasSession()) return;
     api
       .get<User>("/api/account")

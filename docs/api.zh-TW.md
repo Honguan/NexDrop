@@ -29,7 +29,9 @@ X-NexDrop-API-Version: 1
 
 游標以 HMAC 綁定 UTC 建立時間與穩定 UUID 排序鍵；用戶端不得解析或修改，簽章不符會回傳 `INVALID_PAGE`。管理端失敗列表的 `status` 篩選目標狀態，稽核列表則以 `status` 篩選稽核動作。
 
-主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、介面、協議、最低用戶端與建置 Commit 版本。
+主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、介面、協議、最低用戶端與建置 Commit 版本，並提供不透明節點身分、能力結構版本、版本指紋、穩定能力識別碼及可協商數值限制；詳見[能力協商](protocols/capability-negotiation.zh-TW.md)。
+
+用戶端遇到缺少能力欄位的舊節點時，視為不支援可選能力；未知的新增欄位須忽略，能力快取依回傳的節點身分隔離。沒有安全降級方式的功能回傳 `CAPABILITY_UNAVAILABLE`。
 
 ## 裝置狀態與信任
 

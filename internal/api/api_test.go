@@ -363,6 +363,39 @@ func TestAPIVersionHeadersAndNegotiatedError(t *testing.T) {
 	}
 }
 
+func TestVersionEndpointPublishesCapabilitiesAndLimits(t *testing.T) {
+	t.Setenv("NEXDROP_NODE_ID", "node-0123456789abcdef0123456789abcdef")
+	handler := New(nil, nil, nil, nil, nil, nil).Routes()
+	request := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("version status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		NodeIdentity            string   `json:"nodeIdentity"`
+		Capabilities            []string `json:"capabilities"`
+		CapabilitySchemaVersion int      `json:"capabilitySchemaVersion"`
+		VersionFingerprint      string   `json:"versionFingerprint"`
+		Limits                  struct {
+			MaxChunkSize      int64 `json:"maxChunkSize"`
+			MaxParallelChunks int   `json:"maxParallelChunks"`
+			MaxRecipients     int   `json:"maxRecipients"`
+		} `json:"limits"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.NodeIdentity == "" || body.CapabilitySchemaVersion != 1 || body.VersionFingerprint == "" || len(body.Capabilities) == 0 {
+		t.Fatalf("version capability document = %+v", body)
+	}
+	if body.Limits.MaxChunkSize != 8*1024*1024 || body.Limits.MaxParallelChunks != 3 || body.Limits.MaxRecipients != 100 {
+		t.Fatalf("version limits = %+v", body.Limits)
+	}
+}
+
 func TestTransferRequestLogIncludesCorrelationFields(t *testing.T) {
 	var output bytes.Buffer
 	previous := slog.Default()

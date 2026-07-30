@@ -118,6 +118,18 @@ type TokenPair = {
   refreshExpiresAt: string;
 };
 
+export type NodeCapabilityDocument = {
+  nodeIdentity: string;
+  versionFingerprint: string;
+  protocolVersion: string;
+  capabilities: string[];
+  limits: {
+    maxChunkSize: number;
+    maxParallelChunks: number;
+    maxRecipients: number;
+  };
+};
+
 export class APIError extends Error {
   constructor(
     public readonly code: string,
@@ -130,7 +142,16 @@ export class APIError extends Error {
 
 const tokenKey = "nexdrop.tokens.v1";
 const nodeKeyStorage = "nexdrop.node_key.v2";
+const capabilityStorage = "nexdrop.node_capabilities.v1";
 const versionMediaType = "application/vnd.nexdrop.v1+json";
+const supportedCapabilities = [
+  "capability_negotiation",
+  "structured_errors",
+  "cursor_pagination",
+  "idempotency_replay",
+  "resumable_chunks",
+  "realtime_versions",
+] as const;
 
 class APIClient {
   private tokens: TokenPair | null = this.readTokens();
@@ -149,13 +170,15 @@ class APIClient {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const query = new URLSearchParams({
       access_token: this.tokens.accessToken,
-      protocolVersion: "1.1",
-      clientVersion: "web-v1.1",
+      protocolVersion: "1.2",
+      clientVersion: "web-v1.2",
+      capabilities: supportedCapabilities.join(","),
     });
     return `${protocol}//${location.host}/ws?${query}`;
   }
 
   async login(identifier: string, password: string, totp = "") {
+    await this.refreshCapabilities().catch(() => undefined);
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: versionMediaType },
@@ -163,6 +186,31 @@ class APIClient {
     });
     if (!response.ok) throw await this.error(response);
     this.saveTokens((await response.json()) as TokenPair);
+  }
+
+  async refreshCapabilities() {
+    const response = await fetch("/api/version", {
+      headers: { Accept: versionMediaType },
+    });
+    if (!response.ok) throw await this.error(response);
+    const raw = (await response.json()) as Record<string, unknown>;
+    const document = parseCapabilityDocument(raw, location.origin);
+    localStorage.setItem(capabilityStorage, JSON.stringify(document));
+    return document;
+  }
+
+  cachedCapabilities() {
+    try {
+      const value = localStorage.getItem(capabilityStorage);
+      return value ? parseCapabilityDocument(JSON.parse(value) as Record<string, unknown>, location.origin) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  supports(capability: string) {
+    return supportedCapabilities.includes(capability as typeof supportedCapabilities[number])
+      && Boolean(this.cachedCapabilities()?.capabilities.includes(capability));
   }
 
   async logout() {
@@ -277,6 +325,31 @@ class APIClient {
 }
 
 export const api = new APIClient();
+
+export function parseCapabilityDocument(
+  raw: Record<string, unknown>,
+  fallbackNodeIdentity: string,
+): NodeCapabilityDocument {
+  const limits = typeof raw.limits === "object" && raw.limits !== null
+    ? raw.limits as Record<string, unknown>
+    : {};
+  const capabilities = Array.isArray(raw.capabilities)
+    ? raw.capabilities.filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    nodeIdentity: typeof raw.nodeIdentity === "string" ? raw.nodeIdentity : fallbackNodeIdentity,
+    versionFingerprint: typeof raw.versionFingerprint === "string"
+      ? raw.versionFingerprint
+      : [raw.productVersion, raw.buildCommit, raw.protocolVersion].join("|"),
+    protocolVersion: typeof raw.protocolVersion === "string" ? raw.protocolVersion : "1.0",
+    capabilities,
+    limits: {
+      maxChunkSize: typeof limits.maxChunkSize === "number" ? limits.maxChunkSize : 8 * 1024 * 1024,
+      maxParallelChunks: typeof limits.maxParallelChunks === "number" ? limits.maxParallelChunks : 3,
+      maxRecipients: typeof limits.maxRecipients === "number" ? limits.maxRecipients : 100,
+    },
+  };
+}
 
 export function statisticsPath(path: string, days = 7) {
   const to = new Date();

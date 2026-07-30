@@ -26,6 +26,7 @@ const apiMessages: Record<string, string> = {
   INVALID_TRANSFER: "傳輸內容或目的地無效",
   QUOTA_EXCEEDED: "已超過可用配額",
   STORAGE_FULL: "節點儲存空間不足",
+  CAPABILITY_UNAVAILABLE: "目前的節點或目標設備版本不支援此功能，請更新後再試",
 };
 
 export function messageFor(reason: unknown) {

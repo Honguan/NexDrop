@@ -12,7 +12,15 @@ import 'lan_identity.dart';
 import 'models.dart';
 
 const _serviceType = '_nexdrop._tcp';
-const _protocolVersion = '1.1';
+const _protocolVersion = '1.2';
+const _capabilities = <String>[
+  'capability_negotiation',
+  'structured_errors',
+  'cursor_pagination',
+  'idempotency_replay',
+  'resumable_chunks',
+  'realtime_versions',
+];
 const _serviceVersion = '2.0.4';
 const _fallbackPort = 53317;
 const _discoveryMagic = 'NEXDROP_DISCOVERY_V1';
@@ -336,7 +344,7 @@ class LanService {
         port != servicePort ||
         port < 1 ||
         port > 65535 ||
-        !const {'1.0', '1.1'}.contains(protocol) ||
+        !const {'1.0', '1.1', '1.2'}.contains(protocol) ||
         attributes['sv'] == null ||
         !_validChallenge(challenge)) {
       return;
@@ -384,6 +392,7 @@ class LanService {
           !const {
             '1.0',
             '1.1',
+            '1.2',
           }.contains(request.headers.value('X-NexDrop-Protocol')) ||
           request.headers.value('X-NexDrop-Challenge') != _challenge) {
         return _json(request.response, HttpStatus.unauthorized, {
@@ -416,6 +425,14 @@ class LanService {
         return _json(request.response, HttpStatus.ok, {
           'completedChunks': completed,
           'protocolVersion': _protocolVersion,
+          'capabilities': _negotiatedCapabilities(
+            request.headers.value('X-NexDrop-Capabilities'),
+          ),
+          'limits': {
+            'maxChunkSize': 8 * 1024 * 1024,
+            'maxParallelChunks': 3,
+            'maxRecipients': 100,
+          },
         });
       }
       if (request.method == 'PUT' &&
@@ -703,6 +720,7 @@ class LanService {
       final request = await client.openUrl(method, uri);
       request.headers.set('X-NexDrop-Protocol', target.protocol);
       request.headers.set('X-NexDrop-Challenge', target.challenge);
+      request.headers.set('X-NexDrop-Capabilities', _capabilities.join(','));
       headers.forEach(request.headers.set);
       if (body != null) {
         request.headers.contentType = ContentType.json;
@@ -725,6 +743,17 @@ class LanService {
     } finally {
       client.close(force: true);
     }
+  }
+
+  List<String> _negotiatedCapabilities(String? advertised) {
+    if (advertised == null || advertised.isEmpty) return const [];
+    final supported = _capabilities.toSet();
+    return advertised
+        .split(',')
+        .map((value) => value.trim())
+        .where(supported.contains)
+        .toSet()
+        .toList();
   }
 
   Future<void> dispose() async {

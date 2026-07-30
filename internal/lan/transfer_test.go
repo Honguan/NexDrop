@@ -3,14 +3,18 @@ package lan
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"sync"
 	"testing"
 	"time"
+
+	"nexdrop/internal/version"
 )
 
 type memoryChunkStore struct {
@@ -150,5 +154,40 @@ func TestTLSChunkTransferRejectsStaleChallenge(t *testing.T) {
 	client, _ := NewTransferClient(sender, StaticCertificateTrust{"receive1": receiver})
 	if err := client.PutChunk(context.Background(), target, "transfer01", "file0001", 0, []byte("content")); err == nil {
 		t.Fatal("stale discovery challenge was accepted")
+	}
+}
+
+func TestLANStatusNegotiatesCapabilitiesAndIgnoresUnknownIdentifiers(t *testing.T) {
+	serverIdentity, err := GenerateIdentity("receive1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewTransferServer(serverIdentity, StaticTrust{}, func() string { return "challenge-token" }, &memoryChunkStore{chunks: make(map[int][]byte)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/transfers/transfer01/files/file0001", nil)
+	request.Header.Set("X-NexDrop-Protocol", version.CurrentProtocol)
+	request.Header.Set("X-NexDrop-Challenge", "challenge-token")
+	request.Header.Set("X-NexDrop-Capabilities", version.CapabilityNegotiation+",future_unknown")
+	response := httptest.NewRecorder()
+
+	server.routes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("LAN status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Capabilities []string       `json:"capabilities"`
+		Limits       version.Limits `json:"limits"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(body.Capabilities, []string{version.CapabilityNegotiation}) {
+		t.Fatalf("LAN capabilities = %v", body.Capabilities)
+	}
+	if body.Limits.MaxChunkSize == 0 {
+		t.Fatalf("LAN limits = %+v", body.Limits)
 	}
 }

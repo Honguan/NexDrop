@@ -91,6 +91,7 @@ func (hub *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "client version unsupported", http.StatusUpgradeRequired)
 		return
 	}
+	negotiatedCapabilities := version.NegotiateCapabilities(strings.Split(r.URL.Query().Get("capabilities"), ","))
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"nexdrop.v1"}})
 	if err != nil {
 		return
@@ -115,7 +116,11 @@ func (hub *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	writeErrors := make(chan error, 1)
 	go func() { writeErrors <- hub.writeLoop(ctx, deviceID, current) }()
-	if !hub.enqueue(current, Message{Type: "connected", Payload: map[string]any{"heartbeatIntervalSeconds": int(hub.heartbeat.Seconds()), "versions": version.Current()}}) {
+	if !hub.enqueue(current, Message{Type: "connected", Payload: map[string]any{
+		"heartbeatIntervalSeconds": int(hub.heartbeat.Seconds()),
+		"versions":                 version.Current(),
+		"negotiatedCapabilities":   negotiatedCapabilities,
+	}}) {
 		return
 	}
 
