@@ -118,11 +118,24 @@ type TokenPair = {
   refreshExpiresAt: string;
 };
 
+export type NodeCapabilityDocument = {
+  nodeIdentity: string;
+  versionFingerprint: string;
+  protocolVersion: string;
+  capabilities: string[];
+  limits: {
+    maxChunkSize: number;
+    maxParallelChunks: number;
+    maxRecipients: number;
+  };
+};
+
 export class APIError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
     public readonly retryAfterSeconds?: number,
+    public readonly details: Record<string, unknown> = {},
   ) {
     super(code);
   }
@@ -130,11 +143,22 @@ export class APIError extends Error {
 
 const tokenKey = "nexdrop.tokens.v1";
 const nodeKeyStorage = "nexdrop.node_key.v2";
+const capabilityStorage = "nexdrop.node_capabilities.v1";
 const versionMediaType = "application/vnd.nexdrop.v1+json";
+const supportedCapabilities = [
+  "capability_negotiation",
+  "structured_errors",
+  "cursor_pagination",
+  "idempotency_replay",
+  "resumable_chunks",
+  "realtime_versions",
+] as const;
+const supportedProtocols = new Set(["1.0", "1.1", "1.2"]);
 
 class APIClient {
   private tokens: TokenPair | null = this.readTokens();
   private refreshing: Promise<boolean> | null = null;
+  private capabilityDocument: NodeCapabilityDocument | null = null;
 
   nodeKey() { return localStorage.getItem(nodeKeyStorage) ?? ""; }
 
@@ -147,22 +171,61 @@ class APIClient {
   webSocketURL() {
     if (!this.tokens) return null;
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const nodeProtocol = compatibleProtocol(this.capabilityDocument);
     const query = new URLSearchParams({
       access_token: this.tokens.accessToken,
-      protocolVersion: "1.1",
-      clientVersion: "web-v1.1",
+      protocolVersion: nodeProtocol,
+      clientVersion: `web-v${nodeProtocol}`,
     });
+    if (this.supports("capability_negotiation")) {
+      query.set("capabilities", supportedCapabilities.join(","));
+    }
     return `${protocol}//${location.host}/ws?${query}`;
   }
 
   async login(identifier: string, password: string, totp = "") {
+    await this.refreshCapabilities().catch(() => undefined);
     const response = await fetch("/api/auth/login", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: versionMediaType },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: versionMediaType,
+        "X-NexDrop-Capabilities": supportedCapabilities.join(","),
+      },
       body: JSON.stringify({ identifier, password, totp }),
     });
     if (!response.ok) throw await this.error(response);
     this.saveTokens((await response.json()) as TokenPair);
+  }
+
+  async refreshCapabilities() {
+    this.capabilityDocument = null;
+    const response = await fetch("/api/version", {
+      headers: {
+        Accept: versionMediaType,
+        "X-NexDrop-Capabilities": supportedCapabilities.join(","),
+      },
+    });
+    if (!response.ok) throw await this.error(response);
+    const raw = (await response.json()) as Record<string, unknown>;
+    const document = parseCapabilityDocument(raw, location.origin);
+    this.capabilityDocument = document;
+    localStorage.setItem(capabilityStorage, JSON.stringify(document));
+    return document;
+  }
+
+  cachedCapabilities() {
+    try {
+      const value = localStorage.getItem(capabilityStorage);
+      return value ? parseCapabilityDocument(JSON.parse(value) as Record<string, unknown>, location.origin) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  supports(capability: string) {
+    return supportedCapabilities.includes(capability as typeof supportedCapabilities[number])
+      && Boolean(this.capabilityDocument?.capabilities.includes(capability));
   }
 
   async logout() {
@@ -171,7 +234,11 @@ class APIClient {
     if (!refreshToken) return;
     await fetch("/api/auth/logout", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: versionMediaType },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: versionMediaType,
+        "X-NexDrop-Capabilities": supportedCapabilities.join(","),
+      },
       body: JSON.stringify({ refreshToken }),
     });
   }
@@ -207,6 +274,7 @@ class APIClient {
   private async requestRaw(path: string, init: RequestInit, retry = true): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("Accept", versionMediaType);
+    headers.set("X-NexDrop-Capabilities", supportedCapabilities.join(","));
     if (init.method !== "GET" && !headers.has("Idempotency-Key")) {
       headers.set("Idempotency-Key", crypto.randomUUID());
     }
@@ -228,7 +296,10 @@ class APIClient {
       try {
         const response = await fetch("/api/auth/refresh", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-NexDrop-Capabilities": supportedCapabilities.join(","),
+          },
           body: JSON.stringify({ refreshToken: this.tokens?.refreshToken }),
         });
         if (!response.ok) throw new Error("refresh failed");
@@ -246,13 +317,14 @@ class APIClient {
 
   private async error(response: Response) {
     const body = (await response.json().catch(() => ({}))) as {
-      error?: string | { code?: string };
+      error?: string | { code?: string; details?: Record<string, unknown> };
     };
     const code = typeof body.error === "string" ? body.error : body.error?.code;
     return new APIError(
       code ?? "INTERNAL_ERROR",
       response.status,
       retryAfterSeconds(response.headers.get("Retry-After")),
+      typeof body.error === "object" ? body.error.details : undefined,
     );
   }
 
@@ -277,6 +349,37 @@ class APIClient {
 }
 
 export const api = new APIClient();
+
+export function compatibleProtocol(document: NodeCapabilityDocument | null) {
+  return document && supportedProtocols.has(document.protocolVersion)
+    ? document.protocolVersion
+    : "1.0";
+}
+
+export function parseCapabilityDocument(
+  raw: Record<string, unknown>,
+  fallbackNodeIdentity: string,
+): NodeCapabilityDocument {
+  const limits = typeof raw.limits === "object" && raw.limits !== null
+    ? raw.limits as Record<string, unknown>
+    : {};
+  const capabilities = Array.isArray(raw.capabilities)
+    ? raw.capabilities.filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    nodeIdentity: typeof raw.nodeIdentity === "string" ? raw.nodeIdentity : fallbackNodeIdentity,
+    versionFingerprint: typeof raw.versionFingerprint === "string"
+      ? raw.versionFingerprint
+      : [raw.productVersion, raw.buildCommit, raw.protocolVersion].join("|"),
+    protocolVersion: typeof raw.protocolVersion === "string" ? raw.protocolVersion : "1.0",
+    capabilities,
+    limits: {
+      maxChunkSize: typeof limits.maxChunkSize === "number" ? limits.maxChunkSize : 8 * 1024 * 1024,
+      maxParallelChunks: typeof limits.maxParallelChunks === "number" ? limits.maxParallelChunks : 3,
+      maxRecipients: typeof limits.maxRecipients === "number" ? limits.maxRecipients : 100,
+    },
+  };
+}
 
 export function statisticsPath(path: string, days = 7) {
   const to = new Date();

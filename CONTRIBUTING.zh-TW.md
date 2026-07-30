@@ -7,5 +7,6 @@
 3. 資料庫變更只新增遞增編號 migration，不修改已發布 migration。
 4. 公開介面變更須更新 `docs/api.md`、相容性測試及 CHANGELOG。
 5. PR 應描述行為、測試證據、遷移／回滾影響與已知限制；不可提交秘密或產物。
+6. 協議相關變更須同步更新能力登錄表、每項能力的降級方式、`docs/compatibility-matrix.zh-TW.md`、混合版本 fixture 與發布說明；不得以精確產品版本比較啟用可選功能。
 
 提交訊息使用 `feat:`、`fix:` 或 `chore:` 的簡短命令式摘要。

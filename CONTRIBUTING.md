@@ -7,5 +7,6 @@
 3. Add a new incrementally numbered migration for database changes; never rewrite a published migration.
 4. Update `docs/api.md`, compatibility tests, and CHANGELOG for public interface changes.
 5. Describe behavior, test evidence, migration or rollback effects, and known limitations in the pull request. Never commit secrets or generated artifacts.
+6. For protocol-affecting changes, update the capability registry, each capability fallback, `docs/compatibility-matrix.md`, mixed-version fixtures, and release notes. Never enable optional behavior by exact product-version comparison.
 
 Use a short imperative commit summary prefixed with `feat:`, `fix:`, or `chore:`.

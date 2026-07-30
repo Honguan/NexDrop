@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"nexdrop/internal/auth"
+	"nexdrop/internal/version"
 )
 
 func TestWebSocketTokenSources(t *testing.T) {
@@ -83,7 +84,7 @@ func TestWebSocketHeartbeatAndNotification(t *testing.T) {
 	hub.pollInterval = time.Hour
 	server := httptest.NewServer(hub)
 	defer server.Close()
-	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?access_token=valid&protocolVersion=1&clientVersion=test-v1.1"
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?access_token=valid&protocolVersion=1.2&clientVersion=test-v1.2&capabilities=" + version.CapabilityNegotiation + ",future_unknown"
 	connection, _, err := websocket.Dial(context.Background(), url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +101,14 @@ func TestWebSocketHeartbeatAndNotification(t *testing.T) {
 	}
 	if first.Type != "notification" && second.Type != "notification" {
 		t.Fatalf("messages = %+v, %+v", first, second)
+	}
+	connected := first
+	if connected.Type != "connected" {
+		connected = second
+	}
+	negotiated, ok := connected.Payload["negotiatedCapabilities"].([]any)
+	if !ok || len(negotiated) != 1 || negotiated[0] != version.CapabilityNegotiation {
+		t.Fatalf("connected capabilities = %#v", connected.Payload["negotiatedCapabilities"])
 	}
 	if err := wsjson.Write(context.Background(), connection, Message{Type: "heartbeat"}); err != nil {
 		t.Fatal(err)
@@ -121,4 +130,36 @@ func TestWebSocketHeartbeatAndNotification(t *testing.T) {
 	if !store.connected || store.heartbeats != 1 || !store.acknowledged || !store.disconnected {
 		t.Fatalf("store state = %+v", store)
 	}
+}
+
+func TestPreviousClientConnectsWithLegacyFallback(t *testing.T) {
+	store := &fakeStore{}
+	hub := NewHub(fakeAuthenticator{deviceID: "device-1"}, store)
+	hub.heartbeat = time.Hour
+	hub.pollInterval = time.Hour
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?access_token=valid&protocolVersion=1.1&clientVersion=test-v1.1"
+	connection, _, err := websocket.Dial(context.Background(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	for index := 0; index < 2; index++ {
+		var message Message
+		if err := wsjson.Read(context.Background(), connection, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Type == "connected" {
+			if _, advertised := message.Payload["versions"]; advertised {
+				t.Fatalf("legacy connected payload advertised optional versions = %+v", message.Payload)
+			}
+			if capabilities, ok := message.Payload["negotiatedCapabilities"].([]any); !ok || len(capabilities) != 0 {
+				t.Fatalf("legacy negotiated capabilities = %#v", message.Payload["negotiatedCapabilities"])
+			}
+			return
+		}
+	}
+	t.Fatal("connected message was not received")
 }

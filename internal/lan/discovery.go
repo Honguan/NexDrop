@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	ServiceType       = "_nexdrop._tcp"
-	ProtocolVersion   = version.CurrentProtocol
-	FallbackPort      = 53317
-	discoveryMagic    = "NEXDROP_DISCOVERY_V1"
-	defaultDiscoverIn = 5 * time.Second
+	ServiceType              = "_nexdrop._tcp"
+	DiscoveryProtocolVersion = version.PreviousProtocol
+	ProtocolVersion          = version.CurrentProtocol
+	FallbackPort             = 53317
+	discoveryMagic           = "NEXDROP_DISCOVERY_V1"
+	defaultDiscoverIn        = 5 * time.Second
 )
 
 type Advertisement struct {
@@ -39,7 +40,7 @@ func NewAdvertisement(shortDeviceID, serviceVersion string, port int) (Advertise
 	if _, err := rand.Read(challenge); err != nil {
 		return Advertisement{}, fmt.Errorf("generate discovery challenge: %w", err)
 	}
-	value := Advertisement{ShortDeviceID: shortDeviceID, ServiceVersion: serviceVersion, Protocol: ProtocolVersion, Port: port, Challenge: base64.RawURLEncoding.EncodeToString(challenge)}
+	value := Advertisement{ShortDeviceID: shortDeviceID, ServiceVersion: serviceVersion, Protocol: DiscoveryProtocolVersion, Port: port, Challenge: base64.RawURLEncoding.EncodeToString(challenge)}
 	if err := value.Validate(); err != nil {
 		return Advertisement{}, err
 	}

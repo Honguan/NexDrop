@@ -10,6 +10,7 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/domain"
+	"nexdrop/internal/version"
 )
 
 var (
@@ -190,7 +191,7 @@ func (service *Service) Create(ctx context.Context, session auth.Session, reques
 	if err != nil {
 		return Transfer{}, err
 	}
-	if len(resolved) == 0 {
+	if len(resolved) == 0 || len(resolved) > version.CurrentLimits().MaxRecipients {
 		return Transfer{}, ErrInvalid
 	}
 	for _, deviceID := range resolved {

@@ -20,6 +20,22 @@ const mediaType = "application/vnd.nexdrop.v1+json";
 const tokenKey = "directTokens";
 const deviceKey = "directDeviceId";
 const keyPairKey = "directDeviceKey";
+const capabilityKey = "nodeCapabilities";
+const supportedCapabilities = [
+  "capability_negotiation",
+  "structured_errors",
+  "cursor_pagination",
+  "idempotency_replay",
+  "resumable_chunks",
+  "realtime_versions",
+];
+const supportedProtocols = new Set(["1.0", "1.1", "1.2"]);
+let activeCapabilityDocument: {
+  nodeIdentity: string;
+  versionFingerprint: string;
+  protocolVersion: string;
+  capabilities: string[];
+} | null = null;
 
 export class DirectError extends Error {
   constructor(code: string, public readonly retryAfterSeconds?: number) {
@@ -38,6 +54,9 @@ export async function pairExtension(
   const origin = normalizeNodeURL(node);
   const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
   if (!granted) throw new Error("PERMISSION_DENIED");
+  await refreshCapabilities(origin).catch(() => {
+    activeCapabilityDocument = null;
+  });
   const tokens = await raw<TokenPair>(origin, "/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ identifier, password, totp }),
@@ -77,6 +96,7 @@ export async function disconnectExtension() {
     tokenKey,
     deviceKey,
     keyPairKey,
+    capabilityKey,
     "directUserId",
   ]);
 }
@@ -84,6 +104,9 @@ export async function disconnectExtension() {
 export async function directStatus(): Promise<DirectStatus | null> {
   const stored = await chrome.storage.local.get([tokenKey, deviceKey]);
   if (!stored[tokenKey] || !stored[deviceKey]) return null;
+  await refreshCapabilities(await nodeURL()).catch(() => {
+    activeCapabilityDocument = null;
+  });
   const devices = await request<DirectDevice[]>("/api/devices");
   const own = devices.find((item) => item.id === stored[deviceKey]);
   if (!own || own.trustStatus === "REVOKED") return null;
@@ -139,15 +162,46 @@ export async function connectPresence() {
   const stored = await chrome.storage.local.get(tokenKey);
   const tokens = stored[tokenKey] as TokenPair | undefined;
   if (!tokens) throw new Error("NOT_PAIRED");
+  const advertisedProtocol = activeCapabilityDocument?.protocolVersion;
+  const negotiatedProtocol = advertisedProtocol && supportedProtocols.has(advertisedProtocol)
+    ? advertisedProtocol
+    : "1.0";
   const url = new URL(origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/ws";
   url.search = new URLSearchParams({
     access_token: tokens.accessToken,
-    protocolVersion: "1.1",
-    clientVersion: "extension-v1.0",
+    protocolVersion: negotiatedProtocol,
+    clientVersion: `extension-v${negotiatedProtocol}`,
   }).toString();
+  if (activeCapabilityDocument?.capabilities.includes("capability_negotiation")) {
+    url.searchParams.set("capabilities", supportedCapabilities.join(","));
+  }
   return new WebSocket(url, "nexdrop.v1");
+}
+
+async function refreshCapabilities(origin: string) {
+  activeCapabilityDocument = null;
+  const response = await fetch(`${origin}/api/version`, {
+    headers: { Accept: mediaType },
+  });
+  if (!response.ok) throw new Error("VERSION_UNAVAILABLE");
+  const raw = await response.json() as Record<string, unknown>;
+  const document = {
+    nodeURL: origin,
+    nodeIdentity: typeof raw.nodeIdentity === "string" ? raw.nodeIdentity : origin,
+    versionFingerprint: typeof raw.versionFingerprint === "string"
+      ? raw.versionFingerprint
+      : [raw.productVersion, raw.buildCommit, raw.protocolVersion].join("|"),
+    protocolVersion: typeof raw.protocolVersion === "string" ? raw.protocolVersion : "1.0",
+    capabilities: Array.isArray(raw.capabilities)
+      ? raw.capabilities.filter((value): value is string => typeof value === "string")
+      : [],
+    limits: typeof raw.limits === "object" && raw.limits !== null ? raw.limits : {},
+  };
+  activeCapabilityDocument = document;
+  await chrome.storage.local.set({ [capabilityKey]: document });
+  return document;
 }
 
 async function attachSession(id: string) {
@@ -236,6 +290,7 @@ async function raw<T>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", mediaType);
+  headers.set("X-NexDrop-Capabilities", supportedCapabilities.join(","));
   if (init.body) headers.set("Content-Type", "application/json");
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   if (init.method && init.method !== "GET") {

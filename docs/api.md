@@ -9,6 +9,8 @@ X-Request-ID: <UUID>
 X-NexDrop-API-Version: 1
 ```
 
+Current clients advertise `X-NexDrop-Capabilities: <comma-separated identifiers>`. The Node returns the negotiated intersection in the same response header. Legacy clients can omit it.
+
 First-party clients send `Accept: application/vnd.nexdrop.v1+json`. Versioned errors use:
 
 ```json
@@ -29,7 +31,11 @@ Cursor-based lists use:
 
 The HMAC-protected cursor binds a UTC creation time to a stable UUID ordering key. Clients must neither parse nor modify it. An invalid signature returns `INVALID_PAGE`. The administration failure list applies `status` to target state; the audit list applies it to the audit action.
 
-Primary resources include auth, account, devices, groups, transfers, files, metrics, statistics, and admin. `GET /api/version` returns product, interface, protocol, minimum-client, and build-commit versions.
+Primary resources include auth, account, devices, groups, transfers, files, metrics, statistics, and admin. `GET /api/version` returns product, interface, protocol, minimum-client, and build-commit versions. It also returns an opaque Node identity, capability-schema version, version fingerprint, stable capability identifiers, and negotiated numeric limits. See [capability negotiation](protocols/capability-negotiation.md).
+
+Clients treat absent capability fields as a legacy Node with no optional capabilities, ignore unknown additive fields, and scope cached capability data to the returned Node identity. A feature without a safe fallback returns `CAPABILITY_UNAVAILABLE`.
+
+Clients may repeat `require=<capability>` on `GET /api/version` before exposing a feature. An unavailable requirement returns HTTP 409 with `CAPABILITY_UNAVAILABLE` and `details.capability` plus `details.party`.
 
 ## Device state and trust
 

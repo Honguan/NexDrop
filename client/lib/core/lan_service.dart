@@ -12,8 +12,17 @@ import 'lan_identity.dart';
 import 'models.dart';
 
 const _serviceType = '_nexdrop._tcp';
-const _protocolVersion = '1.1';
-const _serviceVersion = '2.0.4';
+const _discoveryProtocolVersion = '1.1';
+const _protocolVersion = '1.2';
+const _capabilities = <String>[
+  'capability_negotiation',
+  'structured_errors',
+  'cursor_pagination',
+  'idempotency_replay',
+  'resumable_chunks',
+  'realtime_versions',
+];
+const _serviceVersion = '2.1.0';
 const _fallbackPort = 53317;
 const _discoveryMagic = 'NEXDROP_DISCOVERY_V1';
 const _maxChunkSize = 9 * 1024 * 1024;
@@ -209,7 +218,7 @@ class LanService {
       attributes: {
         'id': _identity!.shortDeviceId,
         'sv': _serviceVersion,
-        'pv': _protocolVersion,
+        'pv': _discoveryProtocolVersion,
         'port': '${_server!.port}',
         'challenge': _challenge,
       },
@@ -290,7 +299,7 @@ class LanService {
       final advertisement = {
         'deviceId': _identity!.shortDeviceId,
         'serviceVersion': _serviceVersion,
-        'protocolVersion': _protocolVersion,
+        'protocolVersion': _discoveryProtocolVersion,
         'port': _server!.port,
         'challenge': _challenge,
       };
@@ -336,7 +345,7 @@ class LanService {
         port != servicePort ||
         port < 1 ||
         port > 65535 ||
-        !const {'1.0', '1.1'}.contains(protocol) ||
+        !const {'1.0', '1.1', '1.2'}.contains(protocol) ||
         attributes['sv'] == null ||
         !_validChallenge(challenge)) {
       return;
@@ -384,6 +393,7 @@ class LanService {
           !const {
             '1.0',
             '1.1',
+            '1.2',
           }.contains(request.headers.value('X-NexDrop-Protocol')) ||
           request.headers.value('X-NexDrop-Challenge') != _challenge) {
         return _json(request.response, HttpStatus.unauthorized, {
@@ -412,10 +422,21 @@ class LanService {
       final transferId = segments[2];
       final fileId = segments[4];
       if (request.method == 'GET' && segments.length == 5) {
-        final completed = await _completedChunks(transferId, fileId);
+        final negotiated = _negotiatedCapabilities(
+          request.headers.value('X-NexDrop-Capabilities'),
+        );
+        final completed = negotiated.contains('resumable_chunks')
+            ? await _completedChunks(transferId, fileId)
+            : <int>[];
         return _json(request.response, HttpStatus.ok, {
           'completedChunks': completed,
           'protocolVersion': _protocolVersion,
+          'capabilities': negotiated,
+          'limits': {
+            'maxChunkSize': 8 * 1024 * 1024,
+            'maxParallelChunks': 3,
+            'maxRecipients': 100,
+          },
         });
       }
       if (request.method == 'PUT' &&
@@ -619,6 +640,12 @@ class LanService {
       'GET',
       '/v1/transfers/$transferId/files/$fileId',
     );
+    final capabilities = (result['capabilities'] as List<dynamic>?)
+        ?.whereType<String>();
+    if (capabilities == null ||
+        !capabilities.contains('resumable_chunks')) {
+      return const [];
+    }
     return (result['completedChunks'] as List<dynamic>).cast<int>();
   }
 
@@ -703,6 +730,7 @@ class LanService {
       final request = await client.openUrl(method, uri);
       request.headers.set('X-NexDrop-Protocol', target.protocol);
       request.headers.set('X-NexDrop-Challenge', target.challenge);
+      request.headers.set('X-NexDrop-Capabilities', _capabilities.join(','));
       headers.forEach(request.headers.set);
       if (body != null) {
         request.headers.contentType = ContentType.json;
@@ -725,6 +753,17 @@ class LanService {
     } finally {
       client.close(force: true);
     }
+  }
+
+  List<String> _negotiatedCapabilities(String? advertised) {
+    if (advertised == null || advertised.isEmpty) return const [];
+    final supported = _capabilities.toSet();
+    return advertised
+        .split(',')
+        .map((value) => value.trim())
+        .where(supported.contains)
+        .toSet()
+        .toList();
   }
 
   Future<void> dispose() async {

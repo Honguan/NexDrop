@@ -10,12 +10,35 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'models.dart';
 
+const nexDropCapabilities = <String>[
+  'capability_negotiation',
+  'structured_errors',
+  'cursor_pagination',
+  'idempotency_replay',
+  'resumable_chunks',
+  'realtime_versions',
+];
+const nexDropProtocols = <String>{'1.0', '1.1', '1.2'};
+
+String compatibleProtocol(NodeCapabilityDocument? document) {
+  final advertised = document?.protocolVersion;
+  return advertised != null && nexDropProtocols.contains(advertised)
+      ? advertised
+      : '1.0';
+}
+
 class ApiException implements Exception {
-  const ApiException(this.code, this.statusCode, {this.retryAfterSeconds});
+  const ApiException(
+    this.code,
+    this.statusCode, {
+    this.retryAfterSeconds,
+    this.details = const <String, dynamic>{},
+  });
 
   final String code;
   final int statusCode;
   final int? retryAfterSeconds;
+  final Map<String, dynamic> details;
 
   @override
   String toString() => code;
@@ -26,6 +49,13 @@ String apiExceptionMessage(ApiException error) {
     return error.retryAfterSeconds == null
         ? '操作過於頻繁，請稍後再試'
         : '操作過於頻繁，請在 ${error.retryAfterSeconds} 秒後再試';
+  }
+  if (error.code == 'CAPABILITY_UNAVAILABLE') {
+    final party = error.details['party'] == 'node' ? '節點' : '目標設備';
+    final capability = error.details['capability'] as String?;
+    return capability == null
+        ? '目前的$party版本不支援此功能，請更新後再試'
+        : '目前的$party缺少 $capability 相容能力，請更新後再試';
   }
   return {
         'INVALID_REQUEST': '請確認所有必填欄位與格式',
@@ -39,17 +69,91 @@ String apiExceptionMessage(ApiException error) {
       '操作失敗：${error.code}';
 }
 
+class NodeLimits {
+  const NodeLimits({
+    required this.maxChunkSize,
+    required this.maxParallelChunks,
+    required this.maxRecipients,
+  });
+
+  factory NodeLimits.fromJson(Object? value) {
+    final json = value is Map<String, dynamic>
+        ? value
+        : const <String, dynamic>{};
+    return NodeLimits(
+      maxChunkSize: json['maxChunkSize'] is int
+          ? json['maxChunkSize'] as int
+          : 8 * 1024 * 1024,
+      maxParallelChunks: json['maxParallelChunks'] is int
+          ? json['maxParallelChunks'] as int
+          : 3,
+      maxRecipients: json['maxRecipients'] is int
+          ? json['maxRecipients'] as int
+          : 100,
+    );
+  }
+
+  final int maxChunkSize;
+  final int maxParallelChunks;
+  final int maxRecipients;
+}
+
+class NodeCapabilityDocument {
+  const NodeCapabilityDocument({
+    required this.nodeIdentity,
+    required this.versionFingerprint,
+    required this.protocolVersion,
+    required this.capabilities,
+    required this.limits,
+  });
+
+  factory NodeCapabilityDocument.fromJson(
+    Map<String, dynamic> json, {
+    required String fallbackNodeIdentity,
+  }) {
+    final capabilities = json['capabilities'];
+    return NodeCapabilityDocument(
+      nodeIdentity:
+          json['nodeIdentity'] as String? ?? fallbackNodeIdentity,
+      versionFingerprint:
+          json['versionFingerprint'] as String? ??
+          [
+            json['productVersion'],
+            json['buildCommit'],
+            json['protocolVersion'],
+          ].join('|'),
+      protocolVersion: json['protocolVersion'] as String? ?? '1.0',
+      capabilities: capabilities is List<dynamic>
+          ? capabilities.whereType<String>().toSet()
+          : const <String>{},
+      limits: NodeLimits.fromJson(json['limits']),
+    );
+  }
+
+  final String nodeIdentity;
+  final String versionFingerprint;
+  final String protocolVersion;
+  final Set<String> capabilities;
+  final NodeLimits limits;
+
+  bool supports(String capability) =>
+      nexDropCapabilities.contains(capability) &&
+      capabilities.contains(capability);
+}
+
 class ApiClient {
   ApiClient({http.Client? client, FlutterSecureStorage? secureStorage})
     : _client = client ?? http.Client(),
       _storage = secureStorage ?? const FlutterSecureStorage();
 
-  static const protocolVersion = '1.1';
-  static const clientVersion = 'nexdrop-v1.1';
+  static const protocolVersion = '1.2';
+  static const clientVersion = 'nexdrop-v1.2';
+  static const supportedCapabilities = nexDropCapabilities;
   static const _nodeUrlKey = 'nexdrop.node_url';
   static const _nodeSecretKey = 'nexdrop.node_secret';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
+  static const _capabilitiesKey = 'nexdrop.node_capabilities.v1';
   static const _accept = 'application/vnd.nexdrop.v1+json';
   static const _uuid = Uuid();
 
@@ -59,10 +163,14 @@ class ApiClient {
   String? _nodeSecret;
   String? _accessToken;
   String? _refreshToken;
+  NodeCapabilityDocument? _capabilityDocument;
+  bool _capabilityDocumentVerified = false;
   Future<bool>? _refreshing;
 
   Uri? get node => _node;
   bool get authenticated => _accessToken != null;
+  NodeCapabilityDocument? get capabilityDocument =>
+      _capabilityDocumentVerified ? _capabilityDocument : null;
   String? get nodeJoinUri {
     final node = _node;
     final secret = _nodeSecret?.trim() ?? '';
@@ -81,6 +189,12 @@ class ApiClient {
     _refreshToken = await _storage.read(key: _refreshKey);
     if (node == null) return false;
     _node = validateNodeUrl(node);
+    await _restoreCapabilityCache(_node!);
+    try {
+      await refreshCapabilities();
+    } catch (_) {
+      // Legacy or temporarily unavailable Nodes keep the cached-free fallback.
+    }
     return _accessToken != null &&
         _refreshToken != null &&
         _nodeSecret?.trim().isNotEmpty == true;
@@ -98,12 +212,18 @@ class ApiClient {
     if (_nodeSecret!.isEmpty) {
       throw const ApiException('NODE_KEY_REQUIRED', 401);
     }
+    try {
+      await refreshCapabilities();
+    } catch (_) {
+      // Capability negotiation is additive; login remains compatible with 1.x.
+    }
     final response = await _client.post(
       _uri('/api/auth/login'),
       headers: {
         'Content-Type': 'application/json',
         'Accept': _accept,
         'X-NexDrop-Node-Key': _nodeSecret!,
+        'X-NexDrop-Capabilities': supportedCapabilities.join(','),
       },
       body: jsonEncode({
         'identifier': identifier.trim(),
@@ -122,7 +242,11 @@ class ApiClient {
     if (refreshToken != null && _node != null) {
       await _client.post(
         _uri('/api/auth/logout'),
-        headers: const {'Content-Type': 'application/json', 'Accept': _accept},
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': _accept,
+          'X-NexDrop-Capabilities': supportedCapabilities.join(','),
+        },
         body: jsonEncode({'refreshToken': refreshToken}),
       );
     }
@@ -155,6 +279,60 @@ class ApiClient {
     return (response['items'] as List<dynamic>)
         .map((value) => TransferSummary.fromJson(value as Map<String, dynamic>))
         .toList();
+  }
+
+  Future<NodeCapabilityDocument> refreshCapabilities() async {
+    _capabilityDocumentVerified = false;
+    final node = _node;
+    if (node == null) {
+      throw const ApiException('NODE_NOT_CONFIGURED', 0);
+    }
+    final response = await _client.get(
+      node.replace(path: '/api/version', query: null),
+      headers: {
+        'Accept': _accept,
+        'X-NexDrop-Capabilities': supportedCapabilities.join(','),
+      },
+    );
+    if (response.statusCode != HttpStatus.ok) throw _error(response);
+    final document = NodeCapabilityDocument.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+      fallbackNodeIdentity: node.origin,
+    );
+    _capabilityDocument = document;
+    _capabilityDocumentVerified = true;
+    await _storage.write(
+      key: _capabilitiesKey,
+      value: jsonEncode({
+        'nodeUrl': node.toString(),
+        'nodeIdentity': document.nodeIdentity,
+        'versionFingerprint': document.versionFingerprint,
+        'protocolVersion': document.protocolVersion,
+        'capabilities': document.capabilities.toList(),
+        'limits': {
+          'maxChunkSize': document.limits.maxChunkSize,
+          'maxParallelChunks': document.limits.maxParallelChunks,
+          'maxRecipients': document.limits.maxRecipients,
+        },
+      }),
+    );
+    return document;
+  }
+
+  Future<void> _restoreCapabilityCache(Uri node) async {
+    final encoded = await _storage.read(key: _capabilitiesKey);
+    if (encoded == null) return;
+    try {
+      final cached = jsonDecode(encoded) as Map<String, dynamic>;
+      if (cached['nodeUrl'] != node.toString()) return;
+      _capabilityDocument = NodeCapabilityDocument.fromJson(
+        cached,
+        fallbackNodeIdentity: node.origin,
+      );
+      _capabilityDocumentVerified = false;
+    } catch (_) {
+      await _storage.delete(key: _capabilitiesKey);
+    }
   }
 
   Future<dynamic> getJson(String path) => _request(path, method: 'GET');
@@ -198,13 +376,19 @@ class ApiClient {
     if (_node == null || _accessToken == null) {
       throw const ApiException('AUTHENTICATION_REQUIRED', 401);
     }
+    final document = capabilityDocument;
+    final negotiatedProtocol = compatibleProtocol(document);
+    final query = <String, String>{
+      'protocolVersion': negotiatedProtocol,
+      'clientVersion': 'nexdrop-v$negotiatedProtocol',
+    };
+    if (document?.supports('capability_negotiation') == true) {
+      query['capabilities'] = supportedCapabilities.join(',');
+    }
     final uri = _node!.replace(
       scheme: _node!.scheme == 'https' ? 'wss' : 'ws',
       path: '/ws',
-      queryParameters: {
-        'protocolVersion': protocolVersion,
-        'clientVersion': clientVersion,
-      },
+      queryParameters: query,
     );
     return IOWebSocketChannel.connect(
       uri,
@@ -278,9 +462,10 @@ class ApiClient {
         if (_refreshToken == null) return false;
         final response = await _client.post(
           _uri('/api/auth/refresh'),
-          headers: const {
+          headers: {
             'Content-Type': 'application/json',
             'Accept': _accept,
+            'X-NexDrop-Capabilities': supportedCapabilities.join(','),
           },
           body: jsonEncode({'refreshToken': _refreshToken}),
         );
@@ -300,6 +485,7 @@ class ApiClient {
   Map<String, String> _headers([Map<String, String>? extra]) => {
     'Authorization': 'Bearer $_accessToken',
     'Accept': _accept,
+    'X-NexDrop-Capabilities': supportedCapabilities.join(','),
     if (_nodeSecret?.trim().isNotEmpty == true)
       'X-NexDrop-Node-Key': _nodeSecret!.trim(),
     ...?extra,
@@ -334,6 +520,10 @@ class ApiClient {
     try {
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       final error = json['error'];
+      final details = error is Map<String, dynamic>
+          ? error['details'] as Map<String, dynamic>? ??
+                const <String, dynamic>{}
+          : const <String, dynamic>{};
       return ApiException(
         error is String
             ? error
@@ -341,6 +531,7 @@ class ApiClient {
                   'REQUEST_FAILED',
         response.statusCode,
         retryAfterSeconds: int.tryParse(response.headers['retry-after'] ?? ''),
+        details: details,
       );
     } catch (_) {
       return ApiException(

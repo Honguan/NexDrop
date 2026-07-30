@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"nexdrop/internal/version"
 )
 
 type configuration struct {
@@ -343,8 +344,9 @@ func (client *apiClient) connectPresence(ctx context.Context, token string) (*pr
 	endpoint.Path = "/ws"
 	query := endpoint.Query()
 	query.Set("access_token", token)
-	query.Set("protocolVersion", "1.1")
-	query.Set("clientVersion", "loadtest-v1.1")
+	query.Set("protocolVersion", "1.2")
+	query.Set("clientVersion", "loadtest-v1.2")
+	query.Set("capabilities", strings.Join(version.SupportedCapabilities(), ","))
 	endpoint.RawQuery = query.Encode()
 	connection, _, err := websocket.Dial(ctx, endpoint.String(), &websocket.DialOptions{Subprotocols: []string{"nexdrop.v1"}})
 	if err != nil {
@@ -454,6 +456,7 @@ func (client *apiClient) requestWithHeaders(ctx context.Context, method, path, t
 		return err
 	}
 	request.Header.Set("Accept", "application/vnd.nexdrop.v1+json")
+	request.Header.Set("X-NexDrop-Capabilities", strings.Join(version.SupportedCapabilities(), ","))
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

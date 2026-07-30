@@ -63,9 +63,13 @@ export default function App() {
   const [loading, setLoading] = useState(api.hasSession());
 
   useEffect(() => {
-    if (!api.hasSession()) return;
-    api
-      .get<User>("/api/account")
+    if (!api.hasSession()) {
+      void api.refreshCapabilities().catch(() => undefined);
+      return;
+    }
+    api.refreshCapabilities()
+      .catch(() => undefined)
+      .then(() => api.get<User>("/api/account"))
       .then(setUser)
       .catch(() => setUser(null))
       .finally(() => setLoading(false));

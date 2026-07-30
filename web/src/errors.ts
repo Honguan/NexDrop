@@ -26,19 +26,32 @@ const apiMessages: Record<string, string> = {
   INVALID_TRANSFER: "傳輸內容或目的地無效",
   QUOTA_EXCEEDED: "已超過可用配額",
   STORAGE_FULL: "節點儲存空間不足",
+  CAPABILITY_UNAVAILABLE: "目前的節點或目標設備版本不支援此功能，請更新後再試",
 };
 
 export function messageFor(reason: unknown) {
   if (isAPIError(reason)) {
     const limited = rateLimitMessage(reason);
     if (limited) return limited;
+    if (reason.code === "CAPABILITY_UNAVAILABLE") {
+      const capability = typeof reason.details?.capability === "string"
+        ? reason.details.capability
+        : null;
+      const party = reason.details?.party === "node" ? "節點" : "目標設備";
+      return capability
+        ? `目前的${party}缺少 ${capability} 相容能力，請更新後再試。`
+        : `目前的${party}版本不支援此功能，請更新後再試。`;
+    }
     return apiMessages[reason.code] ?? `操作失敗：${reason.code}`;
   }
   if (reason instanceof Error) return reason.message;
   return "操作失敗，請稍後再試";
 }
 
-function isAPIError(reason: unknown): reason is Error & RateLimitError & { status: number } {
+function isAPIError(reason: unknown): reason is Error & RateLimitError & {
+  status: number;
+  details?: Record<string, unknown>;
+} {
   if (!(reason instanceof Error)) return false;
   const candidate = reason as Error & Partial<RateLimitError> & { status?: unknown };
   return typeof candidate.code === "string" && typeof candidate.status === "number";

@@ -23,6 +23,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
+	writeErrorDetails(w, status, code, map[string]any{})
+}
+
+func writeErrorDetails(w http.ResponseWriter, status int, code string, details map[string]any) {
 	writer, versioned := w.(*contractResponseWriter)
 	if versioned {
 		writer.errorCode = code
@@ -33,7 +37,7 @@ func writeError(w http.ResponseWriter, status int, code string) {
 				"code":       code,
 				"message":    errorMessage(code),
 				"request_id": writer.requestID,
-				"details":    map[string]any{},
+				"details":    details,
 			},
 		})
 		return
