@@ -4,16 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"nexdrop/internal/logging"
+	"nexdrop/internal/monitoring"
 )
 
 var ErrUnsafePath = errors.New("storage path escapes root")
 
 type ExpiredFile struct {
 	ID          string
+	TransferID  string
 	StoragePath string
 	ChunkPaths  []string
 }
@@ -44,6 +49,13 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context, limit int) (int, error) {
 	if limit <= 0 {
 		return 0, nil
 	}
+	result := "failure"
+	defer func() {
+		_ = monitoring.DefaultRegistry.Add("nexdrop_worker_runs_total", 1, map[string]string{
+			"worker": "cleanup",
+			"result": result,
+		})
+	}()
 	now := cleaner.now().UTC()
 	files, err := cleaner.store.ExpiredFiles(ctx, now, limit)
 	if err != nil {
@@ -74,8 +86,11 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context, limit int) (int, error) {
 		if err := cleaner.store.MarkFileExpired(ctx, file.ID, now); err != nil {
 			return cleaned, err
 		}
+		attributes := append([]any{"module", "cleanup_worker", "file_id", file.ID}, logging.CorrelationAttributes(ctx, file.TransferID)...)
+		slog.Info("expired file cleaned", attributes...)
 		cleaned++
 	}
+	result = "success"
 	return cleaned, nil
 }
 

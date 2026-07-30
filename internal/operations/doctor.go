@@ -29,6 +29,26 @@ func Doctor(ctx context.Context, database Database, storagePath string) []Check 
 	return checks
 }
 
+func Inspect(ctx context.Context, database Database, storagePath string) []Check {
+	return inspect(storagePath, database.Ping(ctx))
+}
+
+func InspectUnavailable(storagePath string, databaseErr error) []Check {
+	return inspect(storagePath, databaseErr)
+}
+
+func inspect(storagePath string, databaseErr error) []Check {
+	checks := make([]Check, 0, 4)
+	checks = append(checks, check("database", databaseErr))
+	_, storageErr := os.Stat(storagePath)
+	checks = append(checks, check("storage", storageErr))
+	_, dumpErr := exec.LookPath("pg_dump")
+	checks = append(checks, check("pg_dump", dumpErr))
+	_, restoreErr := exec.LookPath("pg_restore")
+	checks = append(checks, check("pg_restore", restoreErr))
+	return checks
+}
+
 func Healthy(checks []Check) bool {
 	for _, item := range checks {
 		if !item.OK {

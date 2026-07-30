@@ -22,3 +22,17 @@ test("Web 會定期刷新設備與傳輸並維持即時狀態", async () => {
   assert.match(realtime, /type: "heartbeat"/);
   assert.doesNotMatch(app, /\/api\/admin\//);
 });
+
+test("Web 回報不含內容的傳輸階段事件", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
+  assert.match(api, /\/api\/transfers\/\$\{transferID\}\/timeline/);
+  for (const code of [
+    "ENCRYPTION_PREPARED",
+    "ROUTE_CANDIDATES_DISCOVERED",
+    "CHUNK_UPLOAD_STARTED",
+    "CHUNK_DOWNLOAD_STARTED",
+  ]) {
+    assert.match(app, new RegExp(code));
+  }
+});

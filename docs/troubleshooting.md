@@ -15,3 +15,18 @@
 11. If Android reports an invalid application package, run `apksigner verify --verbose` against the APK. NexDrop release APKs require v1/v2 signatures and `armeabi-v7a`. If the same application ID is already installed with another certificate, back up local data and remove the older build, or rebuild with its original persistent signing key.
 
 After an upgrade failure, preserve all data volumes and backups. Never run `docker compose down --volumes` as a recovery shortcut.
+
+## Stable error-code runbooks
+
+| Code | Action |
+| --- | --- |
+| `RATE_LIMITED` | Stop immediate retries and wait for `Retry-After`. |
+| `IDEMPOTENCY_CONFLICT` | Do not reuse the key with changed content; generate a new UUID only for a new logical operation. |
+| `CAPABILITY_UNAVAILABLE` | Read `details.capability` and `details.party`, then use the documented legacy fallback or upgrade that party. |
+| `SOURCE_FILE_MISSING` | Restore the original source and explicitly retry; do not revive the terminal execution. |
+| `SOURCE_FILE_CHANGED` | Verify the changed source and start an explicit retry or a new transfer. |
+| `CHECKSUM_MISMATCH` | Discard the incomplete result, verify source stability and storage health, then retry. |
+| `QUOTA_EXCEEDED` | Free storage or change the applicable file, user, group, daily, or Node quota. |
+| `SERVICE_UNAVAILABLE` | Check `/readyz`, PostgreSQL, storage, and the [diagnostic bundle](operations/diagnostics.md). |
+
+Use the [transfer event reference](operations/transfer-events.md) to identify the phase before applying a runbook.

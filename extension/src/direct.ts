@@ -140,7 +140,10 @@ export async function sendDirect(payload: SharePayload) {
   const plaintext = payload.text?.trim() || payload.url || payload.title || "";
   if (!plaintext) throw new Error("CONTENT_REQUIRED");
   const encrypted = await encryptText(plaintext, recipients);
-  return request("/api/transfers", {
+  const transfer = await request<{
+    id: string;
+    targets: Array<{ deviceId: string; selectedRoute: string }>;
+  }>("/api/transfers", {
     method: "POST",
     body: JSON.stringify({
       targetType:
@@ -153,6 +156,36 @@ export async function sendDirect(payload: SharePayload) {
       wrappedContentKeys: encrypted.wrappedContentKeys,
     }),
   });
+  for (const target of transfer.targets) {
+    await reportTimelineEvent(transfer.id, {
+      code: "ENCRYPTION_PREPARED",
+      targetDeviceId: target.deviceId,
+      route: target.selectedRoute,
+    });
+    await reportTimelineEvent(transfer.id, {
+      code: "ROUTE_CANDIDATES_DISCOVERED",
+      targetDeviceId: target.deviceId,
+      route: target.selectedRoute,
+    });
+  }
+  return transfer;
+}
+
+async function reportTimelineEvent(
+  transferID: string,
+  event: { code: string; targetDeviceId: string; route: string },
+) {
+  try {
+    await request(`/api/transfers/${transferID}/timeline`, {
+      method: "POST",
+      body: JSON.stringify(event),
+    });
+  } catch (error) {
+    if (error instanceof DirectError && (error.message === "HTTP_404" || error.message === "HTTP_405")) {
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function connectPresence() {

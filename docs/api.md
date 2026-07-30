@@ -33,6 +33,8 @@ The HMAC-protected cursor binds a UTC creation time to a stable UUID ordering ke
 
 Primary resources include auth, account, devices, groups, transfers, files, metrics, statistics, and admin. `GET /api/version` returns product, interface, protocol, minimum-client, and build-commit versions. It also returns an opaque Node identity, capability-schema version, version fingerprint, stable capability identifiers, and negotiated numeric limits. See [capability negotiation](protocols/capability-negotiation.md).
 
+`GET /api/transfers/{id}/timeline` returns the authorized transfer's content-free ordered event history. `POST /api/transfers/{id}/timeline` appends a documented client-observed phase and requires a UUID `Idempotency-Key`. See the [stable transfer event codes](operations/transfer-events.md).
+
 Clients treat absent capability fields as a legacy Node with no optional capabilities, ignore unknown additive fields, and scope cached capability data to the returned Node identity. A feature without a safe fallback returns `CAPABILITY_UNAVAILABLE`.
 
 Clients may repeat `require=<capability>` on `GET /api/version` before exposing a feature. An unavailable requirement returns HTTP 409 with `CAPABILITY_UNAVAILABLE` and `details.capability` plus `details.party`.

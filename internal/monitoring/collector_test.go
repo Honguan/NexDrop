@@ -3,8 +3,10 @@ package monitoring
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,15 +20,23 @@ type fakeSampler struct {
 
 func (sampler fakeSampler) Sample(string) (Sample, error) { return sampler.sample, sampler.err }
 
-type fakeStore struct{ metric analytics.NodeMetric }
+type fakeStore struct {
+	metric      analytics.NodeMetric
+	operational OperationalSnapshot
+}
 
 func (store *fakeStore) RecordSystemMetric(_ context.Context, metric analytics.NodeMetric) error {
 	store.metric = metric
 	return nil
 }
 
+func (store *fakeStore) OperationalSnapshot(context.Context) (OperationalSnapshot, error) {
+	return store.operational, nil
+}
+
 func TestCollectorRecordsResourceSample(t *testing.T) {
-	store := &fakeStore{}
+	DefaultRegistry = NewRegistry()
+	store := &fakeStore{operational: OperationalSnapshot{Queued: 2, Stalled: 3, Unacknowledged: 4, DeadLetter: 5}}
 	collector := NewCollector(store, fakeSampler{sample: Sample{CPUPercent: 25.5, MemoryBytes: 10, DiskBytes: 20, CacheBytes: 30, NetworkUploadBytes: 40, NetworkDownloadBytes: 50}}, "/storage")
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.FixedZone("test", 8*60*60))
 	collector.now = func() time.Time { return now }
@@ -35,6 +45,18 @@ func TestCollectorRecordsResourceSample(t *testing.T) {
 	}
 	if store.metric.RecordedAt != now.UTC() || store.metric.CPUPercent != 25.5 || store.metric.CacheBytes != 30 || store.metric.NetworkDownloadBytes != 50 {
 		t.Fatalf("metric = %+v", store.metric)
+	}
+	for name, sample := range map[string]string{
+		"nexdrop_transfer_queue_current":          `status="QUEUED"} 2`,
+		"nexdrop_transfer_stalled_current":        `status="PAUSED"} 3`,
+		"nexdrop_transfer_unacknowledged_current": `status="DELIVERED"} 4`,
+		"nexdrop_dead_letter_current":             `worker="transfer"} 5`,
+	} {
+		response := httptest.NewRecorder()
+		DefaultRegistry.ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+		if !strings.Contains(response.Body.String(), name+"{"+sample) {
+			t.Fatalf("%s missing from metrics: %s", name, response.Body.String())
+		}
 	}
 }
 

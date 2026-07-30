@@ -22,6 +22,7 @@ import (
 	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/logging"
 	"nexdrop/internal/transfer"
 )
 
@@ -38,6 +39,7 @@ type testStore struct {
 	chunks          map[int]filetransfer.ChunkRecord
 	page            transfer.Page
 	pageOptions     transfer.PageOptions
+	timeline        []transfer.TimelineEvent
 }
 
 func (store *testStore) CredentialByIdentifier(context.Context, string) (auth.Credential, error) {
@@ -221,6 +223,22 @@ func (*testStore) GetTransfer(context.Context, auth.Session, string) (transfer.T
 	return transfer.Transfer{ID: "transfer-1"}, nil
 }
 
+func (store *testStore) TransferTimeline(ctx context.Context, _ auth.Session, _ string) ([]transfer.TimelineEvent, error) {
+	result := append([]transfer.TimelineEvent(nil), store.timeline...)
+	for index := range result {
+		result[index].RequestID = logging.RequestID(ctx)
+	}
+	return result, nil
+}
+
+func (*testStore) ReportTransferTimelineEvent(ctx context.Context, _ auth.Session, transferID string, report transfer.TimelineEventReport, occurredAt time.Time) (transfer.TimelineEvent, error) {
+	return transfer.TimelineEvent{
+		Sequence: 2, TransferID: transferID, Code: report.Code, RequestID: logging.RequestID(ctx),
+		FileID: report.FileID, TargetDeviceID: report.TargetDeviceID, ExecutionID: report.ExecutionID,
+		Route: report.Route, ErrorCode: report.ErrorCode, OccurredAt: occurredAt,
+	}, nil
+}
+
 func (*testStore) CancelTransfer(context.Context, auth.Session, string, time.Time) (transfer.Transfer, error) {
 	return transfer.Transfer{ID: "transfer-1", Status: domain.TransferCancelled}, nil
 }
@@ -360,6 +378,71 @@ func TestAPIVersionHeadersAndNegotiatedError(t *testing.T) {
 	}
 	if body.Error.Code != "INVALID_TOKEN" || body.Error.Message == "" || body.Error.RequestID != requestID || body.Error.Details == nil {
 		t.Fatalf("error response = %+v", body.Error)
+	}
+}
+
+func TestTransferTimelineEndpoint(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID := "11111111-1111-4111-8111-111111111111"
+	store := &testStore{
+		credential: auth.Credential{
+			User:         auth.User{ID: "user-1", Username: "owner", Email: "owner@example.com"},
+			PasswordHash: string(passwordHash),
+		},
+		sessionDeviceID: &deviceID,
+		timeline: []transfer.TimelineEvent{{
+			Sequence: 1, Code: transfer.EventTaskCreated, Status: domain.TransferCheckingRoute,
+			OccurredAt: time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC),
+		}},
+	}
+	handler := New(auth.NewService(store, time.Minute, time.Hour), nil, nil, transfer.NewService(store), nil, nil).Routes()
+	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"identifier":"owner","password":"password"}`))
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, login)
+	var pair auth.TokenPair
+	if err := json.NewDecoder(loginResponse.Body).Decode(&pair); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/transfers/transfer-1/timeline", nil)
+	request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("timeline status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var events []transfer.TimelineEvent
+	if err := json.NewDecoder(response.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Code != transfer.EventTaskCreated {
+		t.Fatalf("timeline = %+v", events)
+	}
+	if events[0].RequestID == "" || events[0].RequestID != response.Header().Get("X-Request-ID") {
+		t.Fatalf("timeline request ID = %q, header = %q", events[0].RequestID, response.Header().Get("X-Request-ID"))
+	}
+
+	reportRequest := httptest.NewRequest(http.MethodPost, "/api/transfers/transfer-1/timeline", bytes.NewBufferString(
+		`{"code":"DIRECT_CONNECTION_ATTEMPTED","targetDeviceId":"22222222-2222-4222-8222-222222222222","route":"LAN"}`,
+	))
+	reportRequest.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	reportRequest.Header.Set("Accept", versionMediaType)
+	reportRequest.Header.Set("Idempotency-Key", "33333333-3333-4333-8333-333333333333")
+	reportResponse := httptest.NewRecorder()
+	handler.ServeHTTP(reportResponse, reportRequest)
+	if reportResponse.Code != http.StatusOK {
+		t.Fatalf("report timeline status = %d, body = %s", reportResponse.Code, reportResponse.Body.String())
+	}
+	var reported transfer.TimelineEvent
+	if err := json.NewDecoder(reportResponse.Body).Decode(&reported); err != nil {
+		t.Fatal(err)
+	}
+	if reported.Code != transfer.EventDirectAttempted || reported.RequestID != reportResponse.Header().Get("X-Request-ID") {
+		t.Fatalf("reported timeline event = %+v", reported)
 	}
 }
 

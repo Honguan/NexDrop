@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"nexdrop/internal/logging"
+	"nexdrop/internal/monitoring"
 	"nexdrop/internal/version"
 )
 
@@ -15,10 +17,11 @@ const versionMediaType = "application/vnd.nexdrop.v1+json"
 
 type contractResponseWriter struct {
 	http.ResponseWriter
-	requestID string
-	versioned bool
-	status    int
-	errorCode string
+	requestID  string
+	versioned  bool
+	status     int
+	errorCode  string
+	transferID string
 }
 
 func (writer *contractResponseWriter) WriteHeader(status int) {
@@ -51,6 +54,7 @@ func apiContract(next http.Handler) http.Handler {
 			versioned:      strings.Contains(r.Header.Get("Accept"), versionMediaType),
 		}
 		started := time.Now()
+		r = r.WithContext(logging.WithRequestID(r.Context(), requestID))
 		next.ServeHTTP(writer, r)
 		status := writer.status
 		if status == 0 {
@@ -65,10 +69,35 @@ func apiContract(next http.Handler) http.Handler {
 			"error_code", writer.errorCode,
 			"duration_ms", time.Since(started).Milliseconds(),
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/transfers/") {
-			if transferID := r.PathValue("id"); transferID != "" {
-				attributes = append(attributes, "transfer_id", transferID)
-			}
+		transferID := writer.transferID
+		if transferID == "" && strings.HasPrefix(r.URL.Path, "/api/transfers/") {
+			transferID = r.PathValue("id")
+		}
+		if transferID != "" {
+			attributes = append(attributes, "transfer_id", transferID)
+		}
+		result := "success"
+		if status >= http.StatusBadRequest {
+			result = "failure"
+		}
+		errorCode := writer.errorCode
+		if errorCode == "" {
+			errorCode = "NONE"
+		}
+		_ = monitoring.DefaultRegistry.Add("nexdrop_api_requests_total", 1, map[string]string{
+			"operation":  "request",
+			"result":     result,
+			"error_code": errorCode,
+		})
+		_ = monitoring.DefaultRegistry.Observe("nexdrop_api_request_seconds", time.Since(started).Seconds(), map[string]string{
+			"operation": "request",
+			"result":    result,
+		})
+		if errorCode == "STORAGE_FULL" || errorCode == "QUOTA_EXCEEDED" {
+			_ = monitoring.DefaultRegistry.Add("nexdrop_storage_rejection_total", 1, map[string]string{
+				"error_code": errorCode,
+				"result":     "rejected",
+			})
 		}
 		slog.Info("API request", attributes...)
 	})

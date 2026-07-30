@@ -15,8 +15,23 @@ import (
 )
 
 type serviceStore struct {
-	file   FileRecord
-	chunks map[int]ChunkRecord
+	file        FileRecord
+	chunks      map[int]ChunkRecord
+	recordDelay time.Duration
+	recordErr   error
+}
+
+type failingReader struct {
+	data []byte
+	read bool
+}
+
+func (reader *failingReader) Read(destination []byte) (int, error) {
+	if reader.read {
+		return 0, errors.New("injected connection reset")
+	}
+	reader.read = true
+	return copy(destination, reader.data), nil
 }
 
 func (store *serviceStore) PrepareChunkUpload(_ context.Context, _ auth.Session, _ string, index int) (FileRecord, *ChunkRecord, error) {
@@ -26,6 +41,12 @@ func (store *serviceStore) PrepareChunkUpload(_ context.Context, _ auth.Session,
 	return store.file, nil, nil
 }
 func (store *serviceStore) RecordChunk(_ context.Context, _ auth.Session, chunk ChunkRecord) error {
+	if store.recordDelay > 0 {
+		time.Sleep(store.recordDelay)
+	}
+	if store.recordErr != nil {
+		return store.recordErr
+	}
 	store.chunks[chunk.Index] = chunk
 	return nil
 }
@@ -99,5 +120,68 @@ func TestUploadRejectsWrongHashAndSize(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(root, "chunks", "file-1"))
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("temporary chunks remain: %v, %v", entries, err)
+	}
+}
+
+func TestUploadConnectionResetLeavesNoDurableChunk(t *testing.T) {
+	store := &serviceStore{file: FileRecord{ID: "file-1", Size: 4, SHA256: make([]byte, 32), ChunkSize: 4, ChunkCount: 1}, chunks: make(map[int]ChunkRecord)}
+	root := t.TempDir()
+	service, _ := NewService(store, root)
+	digest := sha256.Sum256([]byte("data"))
+
+	if _, err := service.UploadChunk(context.Background(), auth.Session{}, "file-1", 0, digest[:], &failingReader{data: []byte("da")}); err == nil {
+		t.Fatal("connection reset upload succeeded")
+	}
+	if len(store.chunks) != 0 {
+		t.Fatalf("durable chunks = %d, want 0", len(store.chunks))
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "chunks", "file-1"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("temporary chunks remain: %v, %v", entries, err)
+	}
+}
+
+func TestSlowStoragePublishesOneChunk(t *testing.T) {
+	store := &serviceStore{
+		file:   FileRecord{ID: "file-1", Size: 4, SHA256: make([]byte, 32), ChunkSize: 4, ChunkCount: 1},
+		chunks: make(map[int]ChunkRecord), recordDelay: time.Millisecond,
+	}
+	service, _ := NewService(store, t.TempDir())
+	digest := sha256.Sum256([]byte("data"))
+	if _, err := service.UploadChunk(context.Background(), auth.Session{}, "file-1", 0, digest[:], bytes.NewReader([]byte("data"))); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.chunks) != 1 {
+		t.Fatalf("durable chunks = %d, want 1", len(store.chunks))
+	}
+}
+
+func TestStorageRecordFailureRemovesPublishedChunk(t *testing.T) {
+	store := &serviceStore{
+		file:   FileRecord{ID: "file-1", Size: 4, SHA256: make([]byte, 32), ChunkSize: 4, ChunkCount: 1},
+		chunks: make(map[int]ChunkRecord), recordErr: errors.New("injected storage rejection"),
+	}
+	root := t.TempDir()
+	service, _ := NewService(store, root)
+	digest := sha256.Sum256([]byte("data"))
+	if _, err := service.UploadChunk(context.Background(), auth.Session{}, "file-1", 0, digest[:], bytes.NewReader([]byte("data"))); err == nil {
+		t.Fatal("storage rejection upload succeeded")
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "chunks", "file-1"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("published chunks remain: %v, %v", entries, err)
+	}
+}
+
+func TestDownloadResetReturnsNotFound(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "removed.chunk")
+	store := &serviceStore{
+		file:   FileRecord{ID: "file-1"},
+		chunks: map[int]ChunkRecord{0: {FileID: "file-1", Index: 0, StoragePath: path}},
+	}
+	service, _ := NewService(store, root)
+	if _, _, err := service.OpenChunk(context.Background(), auth.Session{}, "file-1", 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("download reset error = %v, want ErrNotFound", err)
 	}
 }

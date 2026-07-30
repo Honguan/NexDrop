@@ -476,10 +476,32 @@ function SendView({
         });
         cancelledTransfers.delete(transfer.id);
         onTransferCreated(transfer);
+        for (const target of transfer.targets) {
+          await api.reportTimelineEvent(transfer.id, {
+            code: "ENCRYPTION_PREPARED",
+            targetDeviceId: target.deviceId,
+            route: target.selectedRoute,
+          });
+          await api.reportTimelineEvent(transfer.id, {
+            code: "ROUTE_CANDIDATES_DISCOVERED",
+            targetDeviceId: target.deviceId,
+            route: target.selectedRoute,
+          });
+        }
         for (const [fileIndex, file] of encrypted.files.entries()) {
           const fileID = transfer.files[fileIndex].id;
           for (const [chunkIndex, chunk] of file.chunks.entries()) {
             await waitWhilePaused(transfer.id);
+            for (const target of transfer.targets.filter(
+              (item) => item.selectedRoute === "NODE",
+            )) {
+              await api.reportTimelineEvent(transfer.id, {
+                code: "CHUNK_UPLOAD_STARTED",
+                targetDeviceId: target.deviceId,
+                fileId: fileID,
+                route: "NODE",
+              });
+            }
             await api.uploadChunk(
               `/api/files/${fileID}/chunks/${chunkIndex}`,
               chunk.data,
@@ -491,7 +513,7 @@ function SendView({
         cancelledTransfers.delete(transfer.id);
       } else {
         const encrypted = await encryptText(content.trim(), recipients);
-        await api.send<Transfer>("/api/transfers", "POST", {
+        const transfer = await api.send<Transfer>("/api/transfers", "POST", {
           targetType:
             selected.length === 1 ? "SINGLE_DEVICE" : "MULTIPLE_DEVICES",
           targetDeviceIds: selected,
@@ -504,6 +526,18 @@ function SendView({
           content: encrypted.content,
           wrappedContentKeys: encrypted.wrappedContentKeys,
         });
+        for (const target of transfer.targets) {
+          await api.reportTimelineEvent(transfer.id, {
+            code: "ENCRYPTION_PREPARED",
+            targetDeviceId: target.deviceId,
+            route: target.selectedRoute,
+          });
+          await api.reportTimelineEvent(transfer.id, {
+            code: "ROUTE_CANDIDATES_DISCOVERED",
+            targetDeviceId: target.deviceId,
+            route: target.selectedRoute,
+          });
+        }
       }
       setContent("");
       setNotification(false);
@@ -687,6 +721,14 @@ function ActivityView({
       const chunks: ArrayBuffer[] = [];
       for (let index = 0; index < transfer.files[fileIndex].chunkCount; index++) {
         await waitWhilePaused(transfer.id);
+        if (localDeviceID) {
+          await api.reportTimelineEvent(transfer.id, {
+            code: "CHUNK_DOWNLOAD_STARTED",
+            targetDeviceId: localDeviceID,
+            fileId: transfer.files[fileIndex].id,
+            route: "NODE",
+          });
+        }
         chunks.push(await api.downloadChunk(`/api/files/${transfer.files[fileIndex].id}/chunks/${index}`));
       }
       const plaintext = await decryptFileChunks(user.id, wrapped, chunks);

@@ -6,6 +6,19 @@ This file records user-visible NexDrop changes and follows Keep a Changelog and 
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-30
+
+### Added
+
+- Added content-free transfer timelines with stable event codes and file, target, route, execution, and error correlation.
+- Added a read-only, automatically redacted `diagnostics.zip` command and privacy-safe support workflow.
+- Added bounded operational metric definitions, initial SLOs, failure-injection automation, and idempotent recovery assertions.
+
+### Changed
+
+- Load reports now identify the product version, build commit, environment, success rate, and latency percentiles.
+- HTTP, WebSocket, storage, and cleanup logs now share request or transfer correlation identifiers where available.
+
 ## [2.1.0] - 2026-07-30
 
 ### Changed

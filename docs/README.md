@@ -13,6 +13,8 @@
 - [1.0.0 release-readiness evidence](release-readiness-v1.0.0.md)
 - [Troubleshooting](troubleshooting.md)
 - [Performance validation](performance.md)
+- Operations: [service-level objectives](operations/slo.md), [diagnostic bundles](operations/diagnostics.md), [diagnostic privacy](operations/diagnostics-privacy.md), [transfer event codes](operations/transfer-events.md)
+- Testing: [failure injection](testing/failure-injection.md)
 - Protocols: [capability negotiation](protocols/capability-negotiation.md), [LAN discovery](protocols/lan-discovery.md), [LAN transfer](protocols/lan-transfer.md), [Node transfer](protocols/node-transfer.md)
 - Architecture decisions: [ADR index](adr/README.md)
 

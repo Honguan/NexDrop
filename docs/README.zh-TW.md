@@ -13,6 +13,8 @@
 - [1.0.0 發布就緒證據](release-readiness-v1.0.0.zh-TW.md)
 - [故障排除](troubleshooting.zh-TW.md)
 - [效能驗證](performance.zh-TW.md)
+- 操作：[服務等級目標](operations/slo.zh-TW.md)、[診斷包](operations/diagnostics.zh-TW.md)、[診斷隱私](operations/diagnostics-privacy.zh-TW.md)、[傳輸事件碼](operations/transfer-events.zh-TW.md)
+- 測試：[故障注入](testing/failure-injection.zh-TW.md)
 - 協議：[能力協商](protocols/capability-negotiation.zh-TW.md)、[區網發現](protocols/lan-discovery.zh-TW.md)、[區網傳輸](protocols/lan-transfer.zh-TW.md)、[Node 傳輸](protocols/node-transfer.zh-TW.md)
 - 架構決策：[ADR 索引](adr/README.zh-TW.md)
 

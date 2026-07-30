@@ -62,14 +62,16 @@ type scenarioResult struct {
 }
 
 type report struct {
-	GeneratedAt time.Time      `json:"generatedAt"`
-	Node        map[string]any `json:"node"`
-	Environment string         `json:"environment"`
-	PostgreSQL  string         `json:"postgresql"`
-	Runtime     map[string]any `json:"runtime"`
-	Scenario    scenarioResult `json:"scenario"`
-	Latency     latencyResult  `json:"latency"`
-	Acceptance  map[string]any `json:"acceptance"`
+	GeneratedAt    time.Time      `json:"generatedAt"`
+	ProductVersion string         `json:"productVersion"`
+	BuildCommit    string         `json:"buildCommit"`
+	Node           map[string]any `json:"node"`
+	Environment    string         `json:"environment"`
+	PostgreSQL     string         `json:"postgresql"`
+	Runtime        map[string]any `json:"runtime"`
+	Scenario       scenarioResult `json:"scenario"`
+	Latency        latencyResult  `json:"latency"`
+	Acceptance     map[string]any `json:"acceptance"`
 }
 
 type apiClient struct {
@@ -154,7 +156,8 @@ func main() {
 	capacityPassed := !config.setup || (scenario.RegisteredDevices >= config.devices && scenario.OnlineDevices >= config.online && scenario.ActiveTransfers >= config.transfers)
 	latencyPassed := meetsLatencyTarget(latency, config.maximumP95)
 	result := report{
-		GeneratedAt: time.Now().UTC(), Node: node, Environment: config.environment, PostgreSQL: config.postgresInfo,
+		GeneratedAt: time.Now().UTC(), ProductVersion: version.ProductVersion, BuildCommit: version.BuildCommit,
+		Node: node, Environment: config.environment, PostgreSQL: config.postgresInfo,
 		Runtime:  map[string]any{"goVersion": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH, "logicalCPUs": runtime.NumCPU()},
 		Scenario: scenario, Latency: latency,
 		Acceptance: map[string]any{
