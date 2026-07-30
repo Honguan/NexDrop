@@ -94,6 +94,8 @@ func (api *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/transfers", api.createTransfer)
 	mux.HandleFunc("GET /api/transfers", api.listTransfers)
 	mux.HandleFunc("GET /api/transfers/{id}", api.getTransfer)
+	mux.HandleFunc("GET /api/transfers/{id}/timeline", api.getTransferTimeline)
+	mux.HandleFunc("POST /api/transfers/{id}/timeline", api.reportTransferTimelineEvent)
 	mux.HandleFunc("POST /api/transfers/{id}/cancel", api.cancelTransfer)
 	mux.HandleFunc("DELETE /api/transfers/{id}", api.hideTransfer)
 	mux.HandleFunc("POST /api/transfers/{id}/read", api.readTransfer)
@@ -507,6 +509,9 @@ func (api *API) createTransfer(w http.ResponseWriter, r *http.Request) {
 		writeTransferError(w, err)
 		return
 	}
+	if writer, ok := w.(*contractResponseWriter); ok {
+		writer.transferID = result.ID
+	}
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -573,6 +578,46 @@ func (api *API) getTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := api.transfers.Get(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) getTransferTimeline(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	result, err := api.transfers.Timeline(r.Context(), session, r.PathValue("id"))
+	if err != nil {
+		writeTransferError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api *API) reportTransferTimelineEvent(w http.ResponseWriter, r *http.Request) {
+	session, ok := api.authenticate(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED")
+		return
+	}
+	var report transfer.TimelineEventReport
+	if decodeJSON(r, &report) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	report.IdempotencyKey = key
+	result, err := api.transfers.ReportTimelineEvent(r.Context(), session, r.PathValue("id"), report)
 	if err != nil {
 		writeTransferError(w, err)
 		return

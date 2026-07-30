@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/domain"
+	"nexdrop/internal/monitoring"
 	"nexdrop/internal/version"
 )
 
@@ -16,6 +19,8 @@ type fakeStore struct {
 	resolved []string
 	prepared Prepared
 	progress Progress
+	timeline []TimelineEvent
+	report   TimelineEventReport
 }
 
 func (store *fakeStore) ResolveTransferTargets(context.Context, auth.Session, TargetType, string, []string) ([]string, error) {
@@ -42,6 +47,21 @@ func (*fakeStore) ReadTransfer(context.Context, auth.Session, string, time.Time)
 func (store *fakeStore) ReportTransferProgress(_ context.Context, _ auth.Session, id string, progress Progress, _ time.Time) (Transfer, error) {
 	store.progress = progress
 	return Transfer{ID: id, Status: progress.Status}, nil
+}
+func (store *fakeStore) TransferTimeline(context.Context, auth.Session, string) ([]TimelineEvent, error) {
+	return store.timeline, nil
+}
+func (store *fakeStore) ReportTransferTimelineEvent(_ context.Context, _ auth.Session, transferID string, report TimelineEventReport, occurredAt time.Time) (TimelineEvent, error) {
+	store.report = report
+	durationMillis := int64(0)
+	if report.Code == EventTLSAuthenticated || report.Code == EventFallbackSelected {
+		durationMillis = 250
+	}
+	return TimelineEvent{
+		Sequence: 1, TransferID: transferID, Code: report.Code, FileID: report.FileID,
+		TargetDeviceID: report.TargetDeviceID, ExecutionID: report.ExecutionID,
+		Route: report.Route, ErrorCode: report.ErrorCode, DurationMillis: durationMillis, OccurredAt: occurredAt,
+	}, nil
 }
 
 func TestCreateTextUsesLANBeforeNode(t *testing.T) {
@@ -137,5 +157,77 @@ func TestReportProgressValidatesClientState(t *testing.T) {
 	}
 	if _, err := service.ReportProgress(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", Progress{DeviceID: "target-device", Status: domain.TransferCancelled}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("cancel report error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestTimelineReturnsStableContentFreeEvents(t *testing.T) {
+	occurredAt := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
+	store := &fakeStore{timeline: []TimelineEvent{{
+		Sequence: 1, Code: EventTaskCreated, Status: domain.TransferCheckingRoute, OccurredAt: occurredAt,
+	}}}
+	service := NewService(store)
+
+	events, err := service.Timeline(context.Background(), auth.Session{User: auth.User{ID: "user-1"}}, "transfer-1")
+
+	if err != nil || len(events) != 1 {
+		t.Fatalf("Timeline() = %+v, %v", events, err)
+	}
+	if events[0].Code != EventTaskCreated || !events[0].Code.Valid() {
+		t.Fatalf("timeline event code = %q", events[0].Code)
+	}
+	if _, ok := EventCodeForStatus(domain.TransferDelivered); !ok {
+		t.Fatal("DELIVERED status has no stable timeline event code")
+	}
+	if _, ok := EventCodeForStatus(domain.TransferWaitingForLAN); !ok {
+		t.Fatal("WAITING_LAN status has no stable timeline event code")
+	}
+}
+
+func TestReportTimelineEventAllowsOnlyStableClientPhases(t *testing.T) {
+	monitoring.DefaultRegistry = monitoring.NewRegistry()
+	store := &fakeStore{}
+	service := NewService(store)
+	deviceID := "sender-device"
+	event, err := service.ReportTimelineEvent(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", TimelineEventReport{
+		IdempotencyKey: "11111111-1111-1111-1111-111111111111",
+		Code:           EventDirectAttempted, TargetDeviceID: "target-device", Route: domain.SelectedRouteLAN,
+	})
+	if err != nil || event.Code != EventDirectAttempted || store.report.Code != EventDirectAttempted {
+		t.Fatalf("ReportTimelineEvent() = %+v, %v; stored = %+v", event, err, store.report)
+	}
+	if _, err := service.ReportTimelineEvent(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", TimelineEventReport{
+		IdempotencyKey: "22222222-2222-4222-8222-222222222222",
+		Code:           EventRoutesDiscovered, TargetDeviceID: "target-device", Route: domain.SelectedRouteMixed,
+	}); err != nil {
+		t.Fatalf("mixed route timeline error = %v", err)
+	}
+	for index, code := range []EventCode{
+		EventDirectAttempted, EventTLSAuthenticated, EventFallbackSelected, EventEncryptionReady,
+		EventChunkUpload, EventChunkDownload, EventChunkRetry, EventWSInterrupted,
+		EventReceiverLimited, EventNetworkChanged,
+	} {
+		if _, err := service.ReportTimelineEvent(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", TimelineEventReport{
+			IdempotencyKey: fmt.Sprintf("33333333-3333-4333-8333-%012d", index),
+			Code:           code, TargetDeviceID: "target-device", Route: domain.SelectedRouteLAN,
+		}); err != nil {
+			t.Fatalf("client event %q error = %v", code, err)
+		}
+	}
+	response := httptest.NewRecorder()
+	monitoring.DefaultRegistry.ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+	metrics := response.Body.String()
+	for _, name := range []string{"nexdrop_direct_handshake_seconds_sum", "nexdrop_chunk_retry_total"} {
+		if !strings.Contains(metrics, name) {
+			t.Fatalf("metrics do not contain %q: %s", name, metrics)
+		}
+	}
+	for _, code := range []EventCode{EventTaskCreated, EventTargetDelivered, EventRetryStarted} {
+		_, err := service.ReportTimelineEvent(context.Background(), auth.Session{DeviceID: &deviceID}, "transfer-1", TimelineEventReport{
+			IdempotencyKey: "11111111-1111-1111-1111-111111111111",
+			Code:           code, TargetDeviceID: "target-device",
+		})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("server-owned event %q error = %v, want ErrInvalid", code, err)
+		}
 	}
 }

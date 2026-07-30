@@ -9,9 +9,12 @@
 ./deploy/nexdrop status
 ./deploy/nexdrop info
 ./deploy/nexdrop doctor
+./deploy/nexdrop diagnostics --output diagnostics.zip
 ```
 
 安裝精靈會說明每個條件、建立權限為 `600` 的 `.env`、產生安全預設值，並讓操作者接受、修改或重新產生公開設定、管理員資料及秘密。自動化部署使用 `./deploy/nexdrop install --non-interactive`；之後可執行 `./deploy/nexdrop configure` 更新網域與 bootstrap 管理員欄位。
+
+`diagnostics` 會建立僅擁有者可讀的 ZIP，包含產品、執行環境、健康狀態與已遮蔽設定。收集流程為唯讀，且排除內容、檔名、使用者檔案與秘密。
 
 `./deploy/nexdrop info` 只顯示 Node 網址、設定映像、bootstrap 識別資料、設定檔路徑與原始碼版本，不會洩漏秘密。只有確實需要秘密時才執行 `credentials --show-secrets`。
 

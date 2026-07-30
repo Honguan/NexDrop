@@ -1,6 +1,6 @@
 #define MyAppName "NexDrop Desktop"
 #ifndef MyAppVersion
-  #define MyAppVersion "2.1.0"
+  #define MyAppVersion "2.2.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "build\windows\x64\runner\Release"

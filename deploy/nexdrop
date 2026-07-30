@@ -20,7 +20,7 @@ ensure_administrator_access() {
             echo "無法讀取 .env；請確認檔案權限或以 sudo 執行此命令。" >&2
             exit 1
             ;;
-        install|configure|configure-secrets|update|status|logs|backup|restore|doctor|cleanup|reset-password|uninstall) ;;
+        install|configure|configure-secrets|update|status|logs|backup|restore|doctor|diagnostics|cleanup|reset-password|uninstall) ;;
         *) return ;;
     esac
     if docker info >/dev/null 2>&1; then
@@ -583,6 +583,27 @@ case "$command" in
         docker compose config >/dev/null
         docker compose run --rm nexdrop doctor
         ;;
+    diagnostics)
+        output=diagnostics.zip
+        if [ "${1:-}" = "--output" ]; then
+            output=${2:-}
+            shift 2
+        fi
+        if [ "$#" -ne 0 ] || [ -z "$output" ] || [ "$output" = "-" ]; then
+            echo "usage: nexdrop diagnostics [--output diagnostics.zip]" >&2
+            exit 2
+        fi
+        ensure_env
+        validate_env
+        docker compose config >/dev/null
+        umask 077
+        docker compose run --rm -T nexdrop diagnostics --output - >"$output"
+        if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+            chown "$SUDO_USER${SUDO_GID:+:$SUDO_GID}" "$output"
+        fi
+        chmod 600 "$output"
+        echo "診斷包已建立：$output（內容已自動遮蔽秘密與連線憑證）。"
+        ;;
     cleanup) docker compose run --rm nexdrop cleanup "$@" ;;
     reset-password) docker compose run --rm -T nexdrop reset-password "$@" ;;
     uninstall)
@@ -593,7 +614,7 @@ case "$command" in
         fi
         ;;
     *)
-        echo "usage: nexdrop {install|configure|configure-secrets|credentials [--show-secrets]|info|update [VERSION]|status|logs|backup|restore|cleanup|doctor|reset-password|uninstall}" >&2
+        echo "usage: nexdrop {install|configure|configure-secrets|credentials [--show-secrets]|info|update [VERSION]|status|logs|backup|restore|cleanup|doctor|diagnostics [--output diagnostics.zip]|reset-password|uninstall}" >&2
         exit 2
         ;;
 esac

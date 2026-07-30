@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
 	"nexdrop/internal/auth"
+	"nexdrop/internal/logging"
+	"nexdrop/internal/monitoring"
 )
 
 var (
@@ -26,6 +29,7 @@ var (
 
 type FileRecord struct {
 	ID          string `json:"id"`
+	TransferID  string `json:"transferId,omitempty"`
 	Size        int64  `json:"size"`
 	SHA256      []byte `json:"sha256"`
 	ChunkSize   int    `json:"chunkSize"`
@@ -69,6 +73,14 @@ func NewService(store Store, root string) (*Service, error) {
 }
 
 func (service *Service) UploadChunk(ctx context.Context, session auth.Session, fileID string, index int, expectedSHA256 []byte, reader io.Reader) (ChunkRecord, error) {
+	started := time.Now()
+	resultLabel := "failure"
+	defer func() {
+		_ = monitoring.DefaultRegistry.Observe("nexdrop_storage_operation_seconds", time.Since(started).Seconds(), map[string]string{
+			"operation": "upload",
+			"result":    resultLabel,
+		})
+	}()
 	if fileID == "" || index < 0 || len(expectedSHA256) != sha256.Size || reader == nil {
 		return ChunkRecord{}, ErrInvalid
 	}
@@ -78,6 +90,7 @@ func (service *Service) UploadChunk(ctx context.Context, session auth.Session, f
 	}
 	if existing != nil {
 		if string(existing.SHA256) == string(expectedSHA256) {
+			resultLabel = "success"
 			return *existing, nil
 		}
 		return ChunkRecord{}, ErrConflict
@@ -112,6 +125,10 @@ func (service *Service) UploadChunk(ctx context.Context, session auth.Session, f
 	}
 	digest := hash.Sum(nil)
 	if string(digest) != string(expectedSHA256) {
+		_ = monitoring.DefaultRegistry.Add("nexdrop_checksum_failure_total", 1, map[string]string{
+			"operation": "upload",
+			"result":    "failure",
+		})
 		return ChunkRecord{}, ErrHash
 	}
 	if err := temporary.Sync(); err != nil {
@@ -133,10 +150,21 @@ func (service *Service) UploadChunk(ctx context.Context, session auth.Session, f
 		_ = os.Remove(finalPath)
 		return ChunkRecord{}, err
 	}
+	attributes := append([]any{"module", "storage", "file_id", fileID, "chunk_index", index}, logging.CorrelationAttributes(ctx, file.TransferID)...)
+	slog.Info("file chunk stored", attributes...)
+	resultLabel = "success"
 	return record, nil
 }
 
 func (service *Service) OpenChunk(ctx context.Context, session auth.Session, fileID string, index int) (ChunkRecord, *os.File, error) {
+	started := time.Now()
+	resultLabel := "failure"
+	defer func() {
+		_ = monitoring.DefaultRegistry.Observe("nexdrop_storage_operation_seconds", time.Since(started).Seconds(), map[string]string{
+			"operation": "download",
+			"result":    resultLabel,
+		})
+	}()
 	if fileID == "" || index < 0 {
 		return ChunkRecord{}, nil, ErrInvalid
 	}
@@ -151,10 +179,19 @@ func (service *Service) OpenChunk(ctx context.Context, session auth.Session, fil
 	if err != nil {
 		return ChunkRecord{}, nil, fmt.Errorf("open chunk: %w", err)
 	}
+	resultLabel = "success"
 	return record, file, nil
 }
 
 func (service *Service) Complete(ctx context.Context, session auth.Session, fileID string) (FileRecord, error) {
+	started := time.Now()
+	resultLabel := "failure"
+	defer func() {
+		_ = monitoring.DefaultRegistry.Observe("nexdrop_storage_operation_seconds", time.Since(started).Seconds(), map[string]string{
+			"operation": "complete",
+			"result":    resultLabel,
+		})
+	}()
 	if fileID == "" {
 		return FileRecord{}, ErrInvalid
 	}
@@ -163,6 +200,7 @@ func (service *Service) Complete(ctx context.Context, session auth.Session, file
 		return FileRecord{}, err
 	}
 	if file.Status == "AVAILABLE_ON_NODE" {
+		resultLabel = "success"
 		return file, nil
 	}
 	if len(chunks) != file.ChunkCount {
@@ -201,6 +239,10 @@ func (service *Service) Complete(ctx context.Context, session auth.Session, file
 		}
 	}
 	if string(wholeHash.Sum(nil)) != string(file.SHA256) {
+		_ = monitoring.DefaultRegistry.Add("nexdrop_checksum_failure_total", 1, map[string]string{
+			"operation": "complete",
+			"result":    "failure",
+		})
 		return FileRecord{}, ErrHash
 	}
 	if err := temporary.Sync(); err != nil {
@@ -220,6 +262,9 @@ func (service *Service) Complete(ctx context.Context, session auth.Session, file
 	}
 	file.Status = "AVAILABLE_ON_NODE"
 	file.StoragePath = finalPath
+	attributes := append([]any{"module", "storage", "file_id", fileID}, logging.CorrelationAttributes(ctx, file.TransferID)...)
+	slog.Info("file completed", attributes...)
+	resultLabel = "success"
 	return file, nil
 }
 

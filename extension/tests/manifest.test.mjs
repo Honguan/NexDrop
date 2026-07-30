@@ -40,6 +40,9 @@ test("小視窗提供內容、網址選項與預設全選設備傳送，且不�
   assert.match(directCode, /url\.searchParams\.set\("capabilities", supportedCapabilities\.join/);
   assert.match(directCode, /X-NexDrop-Capabilities/);
   assert.match(directCode, /versionFingerprint/);
+  assert.match(directCode, /\/api\/transfers\/\$\{transferID\}\/timeline/);
+  assert.match(directCode, /ENCRYPTION_PREPARED/);
+  assert.match(directCode, /ROUTE_CANDIDATES_DISCOVERED/);
   assert.match(workerCode, /connectPresence/);
   assert.match(workerCode, /type: "heartbeat"/);
   assert.match(options, /將擴充功能登記為獨立設備/);

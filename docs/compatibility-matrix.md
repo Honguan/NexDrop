@@ -4,7 +4,7 @@
 
 Current protocol: `1.2`
 
-Compatibility contract fingerprint: `54b88b95057a44d8671769888215641b86ba5268319fac37d20c44fb22db735f`
+Compatibility contract fingerprint: `59ee15a60302034d3d89aad553d18c208f5b1398228e123edf308be5864e953b`
 
 The Node supports the current protocol and two previous client protocol generations. Capability negotiation is additive: a missing advertisement produces an empty intersection and activates the documented fallback.
 

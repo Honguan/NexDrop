@@ -15,3 +15,18 @@
 11. Android 顯示「應用程式套件無效」時，先用 `apksigner verify --verbose` 檢查 APK。NexDrop 發布 APK 必須具 v1/v2 簽章並包含 `armeabi-v7a`；若同一 application ID 已安裝不同簽章版本，須先備份本機資料並移除舊版，或改用原本的固定簽章重新建置。
 
 升級失敗先保留資料卷與備份，不要執行 `docker compose down --volumes`。
+
+## 穩定錯誤碼處置
+
+| 錯誤碼 | 處置 |
+| --- | --- |
+| `RATE_LIMITED` | 停止立即重送，等待 `Retry-After` 指定時間。 |
+| `IDEMPOTENCY_CONFLICT` | 不得用相同鍵傳送不同內容；只有新的邏輯操作才能產生新 UUID。 |
+| `CAPABILITY_UNAVAILABLE` | 讀取 `details.capability` 與 `details.party`，使用文件列出的舊版降級路徑或升級該端。 |
+| `SOURCE_FILE_MISSING` | 還原原始來源後明確重試，不得復活終止的 execution。 |
+| `SOURCE_FILE_CHANGED` | 驗證已變更來源，再明確重試或建立新傳輸。 |
+| `CHECKSUM_MISMATCH` | 丟棄未完成結果，確認來源穩定及儲存健康後重試。 |
+| `QUOTA_EXCEEDED` | 釋放空間或調整適用的檔案、使用者、群組、每日或節點配額。 |
+| `SERVICE_UNAVAILABLE` | 檢查 `/readyz`、PostgreSQL、儲存及[診斷包](operations/diagnostics.zh-TW.md)。 |
+
+先用[傳輸事件參考](operations/transfer-events.zh-TW.md)確認失敗階段，再套用處置流程。

@@ -73,6 +73,8 @@ text_request="$(jq -nc --arg target "$target_id" --arg key "$wrapped_key" \
 text_transfer="$(api "$admin_token" -H 'Content-Type: application/json' -H "Idempotency-Key: $text_key" \
   --data "$text_request" "$base_url/api/transfers")"
 text_transfer_id="$(jq -er '.id' <<<"$text_transfer")"
+timeline="$(api "$admin_token" "$base_url/api/transfers/$text_transfer_id/timeline")"
+jq -e 'length >= 2 and .[0].code == "TASK_CREATED" and all(.[]; (.code | test("^[A-Z][A-Z0-9_]+$")))' <<<"$timeline" >/dev/null
 replayed_id="$(api "$admin_token" -H 'Content-Type: application/json' -H "Idempotency-Key: $text_key" \
   --data "$text_request" "$base_url/api/transfers" | jq -er '.id')"
 [[ "$replayed_id" == "$text_transfer_id" ]]

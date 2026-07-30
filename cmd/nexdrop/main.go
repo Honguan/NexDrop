@@ -29,6 +29,7 @@ import (
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
+	internalversion "nexdrop/internal/version"
 	"nexdrop/internal/webui"
 )
 
@@ -137,6 +138,7 @@ func main() {
 		healthHandler(w, r)
 	})
 	mux.Handle("/api/", applicationAPI.Routes())
+	mux.Handle("/metrics", monitoring.DefaultRegistry)
 	mux.Handle("/ws", presenceHub)
 	mux.Handle("/", webHandler)
 
@@ -167,21 +169,14 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		return true, nil
 	}
 	databaseURL := os.Getenv("NEXDROP_DATABASE_URL")
-	if databaseURL == "" {
+	if databaseURL == "" && arguments[0] != "diagnostics" {
 		return true, errors.New("NEXDROP_DATABASE_URL is required")
 	}
 	databasePassword := os.Getenv("NEXDROP_DATABASE_PASSWORD")
-	databaseCommandURL, err := postgres.DatabaseURLWithPassword(databaseURL, databasePassword)
-	if err != nil {
-		return true, fmt.Errorf("configure PostgreSQL credentials: %w", err)
-	}
 	storagePath := os.Getenv("NEXDROP_STORAGE_PATH")
 	if storagePath == "" {
 		storagePath = "/var/lib/nexdrop"
 	}
-	service := backup.NewService(func(ctx context.Context, databaseURL string) (backup.SecurityStore, error) {
-		return postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
-	})
 	switch arguments[0] {
 	case "status":
 		store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
@@ -207,6 +202,50 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 			return true, errors.New("one or more checks failed")
 		}
 		return true, nil
+	case "diagnostics":
+		flags := flag.NewFlagSet("diagnostics", flag.ContinueOnError)
+		output := flags.String("output", "diagnostics.zip", "diagnostics ZIP output path, or - for stdout")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return true, err
+		}
+		if flags.NArg() != 0 || strings.TrimSpace(*output) == "" {
+			return true, errors.New("usage: diagnostics [--output diagnostics.zip|-]")
+		}
+		store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
+		var checks []operations.Check
+		if err != nil {
+			checks = operations.InspectUnavailable(storagePath, err)
+		} else {
+			defer store.Close()
+			checks = operations.Inspect(ctx, store, storagePath)
+		}
+		environment := make(map[string]string)
+		for _, entry := range os.Environ() {
+			key, value, found := strings.Cut(entry, "=")
+			if found && (strings.HasPrefix(key, "NEXDROP_") || strings.HasPrefix(key, "POSTGRES_")) {
+				environment[key] = value
+			}
+		}
+		options := operations.DiagnosticsOptions{
+			Version:     version,
+			Commit:      internalversion.BuildCommit,
+			GeneratedAt: time.Now().UTC(),
+			Checks:      checks,
+			Environment: environment,
+		}
+		if *output == "-" {
+			return true, operations.WriteDiagnostics(ctx, os.Stdout, options)
+		}
+		file, err := os.OpenFile(*output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return true, err
+		}
+		writeErr := operations.WriteDiagnostics(ctx, file, options)
+		closeErr := file.Close()
+		if writeErr != nil {
+			return true, writeErr
+		}
+		return true, closeErr
 	case "cleanup":
 		flags := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 		limit := flags.Int("limit", 100, "maximum files to clean")
@@ -256,6 +295,13 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		if *output == "" {
 			*output = filepath.Join(storagePath, "backups", "nexdrop-"+time.Now().UTC().Format("20060102T150405Z")+".tar.gz")
 		}
+		databaseCommandURL, err := postgres.DatabaseURLWithPassword(databaseURL, databasePassword)
+		if err != nil {
+			return true, fmt.Errorf("configure PostgreSQL credentials: %w", err)
+		}
+		service := backup.NewService(func(ctx context.Context, databaseURL string) (backup.SecurityStore, error) {
+			return postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
+		})
 		if err := service.Create(ctx, databaseCommandURL, storagePath, *output, *includeFiles); err != nil {
 			return true, err
 		}
@@ -271,6 +317,13 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 		if *archive == "" || !*confirmed {
 			return true, errors.New("restore requires --file and --confirm")
 		}
+		databaseCommandURL, err := postgres.DatabaseURLWithPassword(databaseURL, databasePassword)
+		if err != nil {
+			return true, fmt.Errorf("configure PostgreSQL credentials: %w", err)
+		}
+		service := backup.NewService(func(ctx context.Context, databaseURL string) (backup.SecurityStore, error) {
+			return postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
+		})
 		return true, service.Restore(ctx, databaseCommandURL, storagePath, *archive)
 	default:
 		return true, fmt.Errorf("unknown command %q", arguments[0])

@@ -195,6 +195,27 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	initialTimeline, err := transferService.Timeline(ctx, session, textTransfer.ID)
+	if err != nil || len(initialTimeline) < 2 || initialTimeline[0].Code != transfer.EventTaskCreated {
+		t.Fatalf("initial transfer timeline = %+v, %v", initialTimeline, err)
+	}
+	timelineReport := transfer.TimelineEventReport{
+		IdempotencyKey: "6b9de43e-5903-4d29-ab44-cebe100daf4e",
+		Code:           transfer.EventDirectAttempted, TargetDeviceID: targetDevice.ID, Route: domain.SelectedRouteLAN,
+	}
+	reportedEvent, err := transferService.ReportTimelineEvent(ctx, targetSession, textTransfer.ID, timelineReport)
+	if err != nil || reportedEvent.Code != transfer.EventDirectAttempted {
+		t.Fatalf("reported timeline event = %+v, %v", reportedEvent, err)
+	}
+	replayedEvent, err := transferService.ReportTimelineEvent(ctx, targetSession, textTransfer.ID, timelineReport)
+	if err != nil || replayedEvent.Sequence != reportedEvent.Sequence {
+		t.Fatalf("replayed timeline event = %+v, %v", replayedEvent, err)
+	}
+	conflictingReport := timelineReport
+	conflictingReport.Code = transfer.EventTLSAuthenticated
+	if _, err := transferService.ReportTimelineEvent(ctx, targetSession, textTransfer.ID, conflictingReport); !errors.Is(err, transfer.ErrIdempotencyConflict) {
+		t.Fatalf("timeline idempotency conflict error = %v", err)
+	}
 	replayedTransfer, err := transferService.Create(ctx, session, request)
 	if err != nil || replayedTransfer.ID != textTransfer.ID {
 		t.Fatalf("idempotent transfer = %+v, %v", replayedTransfer, err)
@@ -278,6 +299,10 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	if err != nil || readTransfer.Targets[0].Status != domain.TransferRead {
 		t.Fatalf("Read() = %+v, %v", readTransfer, err)
 	}
+	readTimeline, err := transferService.Timeline(ctx, targetSession, textTransfer.ID)
+	if err != nil || readTimeline[len(readTimeline)-1].Code != transfer.EventTargetRead {
+		t.Fatalf("read transfer timeline = %+v, %v", readTimeline, err)
+	}
 	if replayedRead, err := transferService.Read(ctx, targetSession, textTransfer.ID); err != nil || replayedRead.Targets[0].Status != domain.TransferRead {
 		t.Fatalf("replayed Read() = %+v, %v", replayedRead, err)
 	}
@@ -338,9 +363,30 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 		if !errors.Is(err, transfer.ErrConflict) {
 			t.Fatalf("%s progress recovery error = %v, want ErrConflict", testCase.status, err)
 		}
-		retried, err := transferService.Retry(ctx, session, fileTransfer.ID, targetDevice.ID, testCase.retryKey)
-		if err != nil || retried.Targets[0].Status != domain.TransferCheckingRoute {
-			t.Fatalf("%s Retry() = %+v, %v", testCase.status, retried, err)
+		retryResults := make(chan error, 4)
+		for range 4 {
+			go func() {
+				retried, retryErr := transferService.Retry(ctx, session, fileTransfer.ID, targetDevice.ID, testCase.retryKey)
+				if retryErr == nil && retried.Targets[0].Status != domain.TransferCheckingRoute {
+					retryErr = fmt.Errorf("status = %s", retried.Targets[0].Status)
+				}
+				retryResults <- retryErr
+			}()
+		}
+		for range 4 {
+			if retryErr := <-retryResults; retryErr != nil {
+				t.Fatalf("%s concurrent Retry() error = %v", testCase.status, retryErr)
+			}
+		}
+		var executionCount int
+		if err := store.pool.QueryRow(ctx, `
+			SELECT count(*) FROM transfer_executions
+			WHERE transfer_id = $1 AND target_device_id = $2 AND idempotency_key = $3
+		`, fileTransfer.ID, targetDevice.ID, testCase.retryKey).Scan(&executionCount); err != nil {
+			t.Fatal(err)
+		}
+		if executionCount != 1 {
+			t.Fatalf("%s retry executions = %d, want 1", testCase.status, executionCount)
 		}
 	}
 	var smallFileID string
@@ -366,6 +412,20 @@ func TestDeviceLifecycleIntegration(t *testing.T) {
 	completedFile, err := fileService.Complete(ctx, session, smallFileID)
 	if err != nil || completedFile.Status != "AVAILABLE_ON_NODE" {
 		t.Fatalf("Complete() = %+v, %v", completedFile, err)
+	}
+	fileTimeline, err := transferService.Timeline(ctx, session, fileTransfer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundHashVerified := false
+	for _, event := range fileTimeline {
+		if event.Code == transfer.EventHashVerified && event.FileID == smallFileID {
+			foundHashVerified = true
+			break
+		}
+	}
+	if !foundHashVerified {
+		t.Fatalf("file timeline does not contain hash verification: %+v", fileTimeline)
 	}
 	_, downloadedChunk, err := fileService.OpenChunk(ctx, targetSession, smallFileID, 0)
 	if err != nil {

@@ -57,4 +57,22 @@ void main() {
     expect(models, contains('final bool online'));
     expect(models, contains('final DateTime? lastSeenAt'));
   });
+
+  test('桌面與 Android 回報不含內容的傳輸階段事件', () {
+    final transfer = File(
+      'lib/core/transfer_service.dart',
+    ).readAsStringSync();
+    expect(transfer, contains('/timeline'));
+    for (final code in <String>[
+      'ENCRYPTION_PREPARED',
+      'ROUTE_CANDIDATES_DISCOVERED',
+      'DIRECT_CONNECTION_ATTEMPTED',
+      'TLS_AUTHENTICATION_COMPLETED',
+      'ROUTE_FALLBACK_SELECTED',
+      'CHUNK_UPLOAD_STARTED',
+      'CHUNK_DOWNLOAD_STARTED',
+    ]) {
+      expect(transfer, contains(code));
+    }
+  });
 }

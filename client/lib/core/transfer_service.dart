@@ -174,6 +174,7 @@ class TransferService {
         await api.sendJson('/api/transfers', 'POST', request)
             as Map<String, dynamic>;
     var transfer = TransferSummary.fromJson(response);
+    await _reportPreparedTimeline(transfer);
     try {
       for (final target in transfer.targets.where(
         (target) => target.route == 'LAN',
@@ -183,12 +184,24 @@ class TransferService {
         if (endpoint == null || wrappedKey == null) {
           throw const HttpException('區網目標已離線');
         }
+        await _reportTimelineEvent(
+          transfer.id,
+          target.deviceId,
+          'DIRECT_CONNECTION_ATTEMPTED',
+          route: 'LAN',
+        );
         await lan.sendMessage(
           endpoint,
           transfer.id,
           contentType: request['contentType'] as String,
           content: encrypted.content,
           wrappedContentKey: wrappedKey,
+        );
+        await _reportTimelineEvent(
+          transfer.id,
+          target.deviceId,
+          'TLS_AUTHENTICATION_COMPLETED',
+          route: 'LAN',
         );
         await _reportProgress(
           transfer.id,
@@ -197,14 +210,26 @@ class TransferService {
           utf8.encode(encrypted.content).length,
         );
       }
-    } on Exception {
+    } on Exception catch (error) {
       if (routeMode != 'AUTOMATIC') rethrow;
+      for (final target in transfer.targets.where(
+        (target) => target.route == 'LAN',
+      )) {
+        await _reportTimelineEvent(
+          transfer.id,
+          target.deviceId,
+          'ROUTE_FALLBACK_SELECTED',
+          route: 'NODE',
+          errorCode: _timelineErrorCode(error),
+        );
+      }
       await _discardFailedLanTransfer(transfer.id);
       request['lanAvailableDeviceIds'] = <String>[];
       transfer = TransferSummary.fromJson(
         await api.sendJson('/api/transfers', 'POST', request)
             as Map<String, dynamic>,
       );
+      await _reportPreparedTimeline(transfer);
     }
     await _cache(transfer);
     return transfer;
@@ -333,6 +358,7 @@ class TransferService {
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>;
       var transfer = TransferSummary.fromJson(response);
+      await _reportPreparedTimeline(transfer);
       onCreated?.call(transfer);
       await _saveServerWaitingTargets(transfer, encrypted, sourcePaths);
       final lanBytes = <String, int>{};
@@ -344,6 +370,13 @@ class TransferService {
           if (endpoint == null) {
             throw const HttpException('區網目標已離線');
           }
+          await _reportTimelineEvent(
+            transfer.id,
+            target.deviceId,
+            'DIRECT_CONNECTION_ATTEMPTED',
+            fileId: transfer.files[target.fileIndex].id,
+            route: 'LAN',
+          );
           final encryptedFile = encrypted.files[target.fileIndex];
           final remoteFile = transfer.files[target.fileIndex];
           await _reportProgress(
@@ -358,17 +391,36 @@ class TransferService {
             remoteFile.id,
             encryptedFile,
           );
+          await _reportTimelineEvent(
+            transfer.id,
+            target.deviceId,
+            'TLS_AUTHENTICATION_COMPLETED',
+            fileId: remoteFile.id,
+            route: 'LAN',
+          );
           lanBytes[target.deviceId] = (lanBytes[target.deviceId] ?? 0) + sent;
         }
-      } on Exception {
+      } on Exception catch (error) {
         if (_cancelledTransfers.contains(transfer.id)) rethrow;
         if (routeMode != 'AUTOMATIC') rethrow;
+        for (final target in transfer.targets.where(
+          (target) => target.route == 'LAN',
+        )) {
+          await _reportTimelineEvent(
+            transfer.id,
+            target.deviceId,
+            'ROUTE_FALLBACK_SELECTED',
+            route: 'NODE',
+            errorCode: _timelineErrorCode(error),
+          );
+        }
         await _discardFailedLanTransfer(transfer.id);
         request['lanAvailableDeviceIds'] = <String>[];
         transfer = TransferSummary.fromJson(
           await api.sendJson('/api/transfers', 'POST', request)
               as Map<String, dynamic>,
         );
+        await _reportPreparedTimeline(transfer);
         onCreated?.call(transfer);
         lanBytes.clear();
         await _saveServerWaitingTargets(transfer, encrypted, sourcePaths);
@@ -385,6 +437,18 @@ class TransferService {
           for (final (chunkIndex, chunk) in encryptedFile.chunks.indexed) {
             await _waitWhilePaused(transfer.id);
             final bytes = await input.read(chunk.size);
+            for (final target in transfer.fileTargets.where(
+              (target) =>
+                  target.fileIndex == fileIndex && target.route == 'NODE',
+            )) {
+              await _reportTimelineEvent(
+                transfer.id,
+                target.deviceId,
+                'CHUNK_UPLOAD_STARTED',
+                fileId: remoteFile.id,
+                route: 'NODE',
+              );
+            }
             await api.uploadChunk(
               remoteFile.id,
               chunkIndex,
@@ -925,9 +989,19 @@ class TransferService {
       try {
         for (var index = 0; index < remoteFile.chunkCount; index++) {
           await _waitWhilePaused(transfer.id);
-          final encrypted = localInput == null
-              ? await api.downloadChunk(remoteFile.id, index)
-              : await localInput.read(remoteFile.chunkSize);
+          late final List<int> encrypted;
+          if (localInput == null) {
+            await _reportTimelineEvent(
+              transfer.id,
+              currentDevice.id,
+              'CHUNK_DOWNLOAD_STARTED',
+              fileId: remoteFile.id,
+              route: 'NODE',
+            );
+            encrypted = await api.downloadChunk(remoteFile.id, index);
+          } else {
+            encrypted = await localInput.read(remoteFile.chunkSize);
+          }
           if (encrypted.isEmpty) {
             throw const FileSystemException('加密檔案分段遺失');
           }
@@ -1499,6 +1573,57 @@ class TransferService {
       'status': status,
       'bytesTransferred': bytes,
     });
+  }
+
+  Future<void> _reportPreparedTimeline(TransferSummary transfer) async {
+    for (final target in transfer.targets) {
+      await _reportTimelineEvent(
+        transfer.id,
+        target.deviceId,
+        'ENCRYPTION_PREPARED',
+        route: target.route,
+      );
+      await _reportTimelineEvent(
+        transfer.id,
+        target.deviceId,
+        'ROUTE_CANDIDATES_DISCOVERED',
+        route: target.route,
+      );
+    }
+  }
+
+  Future<void> _reportTimelineEvent(
+    String transferId,
+    String targetDeviceId,
+    String code, {
+    String? fileId,
+    String? route,
+    String? errorCode,
+  }) async {
+    try {
+      await api.sendJson('/api/transfers/$transferId/timeline', 'POST', {
+        'code': code,
+        'targetDeviceId': targetDeviceId,
+        'fileId': ?fileId,
+        'route': ?route,
+        'errorCode': ?errorCode,
+      });
+    } on ApiException catch (error) {
+      if (error.statusCode != HttpStatus.notFound &&
+          error.statusCode != HttpStatus.methodNotAllowed) {
+        rethrow;
+      }
+    }
+  }
+
+  String _timelineErrorCode(Object error) {
+    if (error is ApiException) return error.code;
+    if (error is HandshakeException) return 'TLS_AUTH_FAILED';
+    if (error is SocketException || error is HttpException) {
+      return 'NETWORK_UNAVAILABLE';
+    }
+    if (error is TimeoutException) return 'TIMEOUT';
+    return 'OTHER';
   }
 
   Future<void> _waitWhilePaused(String transferId) async {

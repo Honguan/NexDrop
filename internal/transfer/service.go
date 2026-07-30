@@ -10,6 +10,7 @@ import (
 
 	"nexdrop/internal/auth"
 	"nexdrop/internal/domain"
+	"nexdrop/internal/monitoring"
 	"nexdrop/internal/version"
 )
 
@@ -239,7 +240,18 @@ func (service *Service) Create(ctx context.Context, session auth.Session, reques
 		}
 	}
 	prepared.Status = aggregateStatus(prepared.Targets)
-	return service.store.CreateTransfer(ctx, session, prepared)
+	result, err := service.store.CreateTransfer(ctx, session, prepared)
+	for _, target := range prepared.Targets {
+		metricResult := "success"
+		if err != nil {
+			metricResult = "failure"
+		}
+		_ = monitoring.DefaultRegistry.Add("nexdrop_route_selection_total", 1, map[string]string{
+			"route":  string(target.SelectedRoute),
+			"result": metricResult,
+		})
+	}
+	return result, err
 }
 
 func (service *Service) List(ctx context.Context, session auth.Session) ([]Transfer, error) {
@@ -269,6 +281,64 @@ func (service *Service) Get(ctx context.Context, session auth.Session, id string
 		return Transfer{}, ErrInvalid
 	}
 	return service.store.GetTransfer(ctx, session, id)
+}
+
+func (service *Service) Timeline(ctx context.Context, session auth.Session, id string) ([]TimelineEvent, error) {
+	if id == "" {
+		return nil, ErrInvalid
+	}
+	store, ok := service.store.(TimelineStore)
+	if !ok {
+		return []TimelineEvent{}, nil
+	}
+	return store.TransferTimeline(ctx, session, id)
+}
+
+func (service *Service) ReportTimelineEvent(ctx context.Context, session auth.Session, transferID string, report TimelineEventReport) (TimelineEvent, error) {
+	if transferID == "" || session.DeviceID == nil || report.IdempotencyKey == "" || !report.Code.ClientReportable() ||
+		report.TargetDeviceID == "" || !reportableTimelineRoute(report.Route) || len(report.ErrorCode) > 100 {
+		return TimelineEvent{}, ErrInvalid
+	}
+	for _, character := range report.ErrorCode {
+		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
+			return TimelineEvent{}, ErrInvalid
+		}
+	}
+	store, ok := service.store.(TimelineEventReporter)
+	if !ok {
+		return TimelineEvent{}, ErrConflict
+	}
+	event, err := store.ReportTransferTimelineEvent(ctx, session, transferID, report, service.now().UTC())
+	if err != nil {
+		return TimelineEvent{}, err
+	}
+	errorCode := report.ErrorCode
+	if errorCode == "" {
+		errorCode = "NONE"
+	}
+	switch report.Code {
+	case EventTLSAuthenticated:
+		if event.DurationMillis > 0 {
+			_ = monitoring.DefaultRegistry.Observe("nexdrop_direct_handshake_seconds", float64(event.DurationMillis)/1000, map[string]string{
+				"result": "success", "error_code": errorCode,
+			})
+		}
+	case EventFallbackSelected:
+		if event.DurationMillis > 0 {
+			_ = monitoring.DefaultRegistry.Observe("nexdrop_direct_handshake_seconds", float64(event.DurationMillis)/1000, map[string]string{
+				"result": "failure", "error_code": errorCode,
+			})
+		}
+	case EventChunkRetry:
+		route := report.Route
+		if route == "" {
+			route = domain.SelectedRouteNone
+		}
+		_ = monitoring.DefaultRegistry.Add("nexdrop_chunk_retry_total", 1, map[string]string{
+			"route": string(route), "result": "retry", "error_code": errorCode,
+		})
+	}
+	return event, nil
 }
 
 func (service *Service) Cancel(ctx context.Context, session auth.Session, id string) (Transfer, error) {
@@ -301,7 +371,40 @@ func (service *Service) ReportProgress(ctx context.Context, session auth.Session
 			return Transfer{}, ErrInvalid
 		}
 	}
-	return service.store.ReportTransferProgress(ctx, session, id, progress, service.now().UTC())
+	result, err := service.store.ReportTransferProgress(ctx, session, id, progress, service.now().UTC())
+	if err == nil {
+		_ = monitoring.DefaultRegistry.Add("nexdrop_transfer_state_total", 1, map[string]string{
+			"status": string(progress.Status),
+		})
+		if (progress.Status == domain.TransferDelivered || progress.Status == domain.TransferRead) && !result.CreatedAt.IsZero() {
+			deliveryRoute := progress.Route
+			for _, target := range result.Targets {
+				if deliveryRoute == "" && target.DeviceID == progress.DeviceID {
+					deliveryRoute = target.SelectedRoute
+				}
+			}
+			if deliveryRoute == "" {
+				deliveryRoute = domain.SelectedRouteNone
+			}
+			_ = monitoring.DefaultRegistry.Observe("nexdrop_transfer_delivery_seconds", service.now().UTC().Sub(result.CreatedAt).Seconds(), map[string]string{
+				"route":  string(deliveryRoute),
+				"result": "success",
+			})
+		}
+		if progress.BytesTransferred > 0 && !result.CreatedAt.IsZero() {
+			elapsed := service.now().UTC().Sub(result.CreatedAt).Seconds()
+			if elapsed > 0 {
+				route := progress.Route
+				if route == "" {
+					route = domain.SelectedRouteNone
+				}
+				_ = monitoring.DefaultRegistry.Observe("nexdrop_transfer_throughput_bytes_per_second", float64(progress.BytesTransferred)/elapsed, map[string]string{
+					"route": string(route),
+				})
+			}
+		}
+	}
+	return result, err
 }
 
 func (service *Service) Retry(ctx context.Context, session auth.Session, transferID, deviceID, idempotencyKey string) (Transfer, error) {
@@ -312,7 +415,16 @@ func (service *Service) Retry(ctx context.Context, session auth.Session, transfe
 	if !ok {
 		return Transfer{}, ErrConflict
 	}
-	return store.RetryTransferTarget(ctx, session, transferID, deviceID, idempotencyKey, service.now().UTC())
+	result, err := store.RetryTransferTarget(ctx, session, transferID, deviceID, idempotencyKey, service.now().UTC())
+	metricResult := "retry"
+	if err != nil {
+		metricResult = "failure"
+	}
+	_ = monitoring.DefaultRegistry.Add("nexdrop_worker_recovery_total", 1, map[string]string{
+		"worker": "transfer",
+		"result": metricResult,
+	})
+	return result, err
 }
 
 func validateRequest(request Request) error {
@@ -386,6 +498,10 @@ func reportableRoute(value domain.SelectedRoute) bool {
 	default:
 		return false
 	}
+}
+
+func reportableTimelineRoute(value domain.SelectedRoute) bool {
+	return reportableRoute(value) || value == domain.SelectedRouteNone || value == domain.SelectedRouteMixed
 }
 
 func hasDuplicates(values []string) bool {

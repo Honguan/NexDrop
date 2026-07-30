@@ -19,7 +19,9 @@ import (
 	"nexdrop/internal/domain"
 	"nexdrop/internal/filetransfer"
 	"nexdrop/internal/group"
+	"nexdrop/internal/logging"
 	"nexdrop/internal/maintenance"
+	"nexdrop/internal/monitoring"
 	"nexdrop/internal/pairing"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
@@ -80,7 +82,34 @@ func (store *Store) Close() {
 }
 
 func (store *Store) Ping(ctx context.Context) error {
-	return store.pool.Ping(ctx)
+	started := time.Now()
+	err := store.pool.Ping(ctx)
+	result := "success"
+	if err != nil {
+		result = "failure"
+	}
+	_ = monitoring.DefaultRegistry.Observe("nexdrop_database_operation_seconds", time.Since(started).Seconds(), map[string]string{
+		"operation": "query",
+		"result":    result,
+	})
+	return err
+}
+
+func (store *Store) OperationalSnapshot(ctx context.Context) (monitoring.OperationalSnapshot, error) {
+	var snapshot monitoring.OperationalSnapshot
+	err := store.pool.QueryRow(ctx, `
+		SELECT
+		  count(*) FILTER (WHERE status IN ('WAITING_FOR_TARGET', 'WAITING_FOR_NODE', 'WAITING_FOR_LAN', 'QUEUED')),
+		  count(*) FILTER (
+		    WHERE status = 'PAUSED'
+		       OR (status IN ('UPLOADING_TO_NODE', 'DOWNLOADING_FROM_NODE', 'TRANSFERRING_LAN', 'VERIFYING')
+		           AND started_at < now() - interval '5 minutes')
+		  ),
+		  count(*) FILTER (WHERE status = 'DELIVERED'),
+		  count(*) FILTER (WHERE status = 'FAILED')
+		FROM transfer_targets
+	`).Scan(&snapshot.Queued, &snapshot.Stalled, &snapshot.Unacknowledged, &snapshot.DeadLetter)
+	return snapshot, err
 }
 
 func (store *Store) CredentialByIdentifier(ctx context.Context, identifier string) (auth.Credential, error) {
@@ -821,6 +850,11 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
+	if err := insertTransferTimelineEvent(ctx, tx, transfer.TimelineEvent{
+		TransferID: result.ID, Code: transfer.EventTaskCreated, Status: prepared.Status, OccurredAt: prepared.CreatedAt,
+	}); err != nil {
+		return transfer.Transfer{}, err
+	}
 	for _, deviceID := range prepared.ResolvedDeviceIDs {
 		wrappedKey := prepared.WrappedContentKeys[deviceID]
 		if len(wrappedKey) == 0 {
@@ -886,6 +920,7 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 			return transfer.Transfer{}, err
 		}
 	}
+	executionIDs := make(map[string]string, len(prepared.Targets))
 	for _, target := range prepared.Targets {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO transfer_targets (
@@ -895,12 +930,29 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 		if err != nil {
 			return transfer.Transfer{}, err
 		}
-		_, err = tx.Exec(ctx, `
+		var executionID string
+		err = tx.QueryRow(ctx, `
 			INSERT INTO transfer_executions (transfer_id, target_device_id, attempt, status, started_at)
 			VALUES ($1, $2, 1, $3, $4)
-		`, result.ID, target.DeviceID, target.Status, prepared.CreatedAt)
+			RETURNING id::text
+		`, result.ID, target.DeviceID, target.Status, prepared.CreatedAt).Scan(&executionID)
 		if err != nil {
 			return transfer.Transfer{}, err
+		}
+		executionIDs[target.DeviceID] = executionID
+		event := transfer.TimelineEvent{
+			TransferID: result.ID, TargetDeviceID: target.DeviceID, ExecutionID: executionID,
+			Route: target.SelectedRoute, Status: target.Status, OccurredAt: prepared.CreatedAt,
+		}
+		event.Code = transfer.EventTargetResolved
+		if err := insertTransferTimelineEvent(ctx, tx, event); err != nil {
+			return transfer.Transfer{}, err
+		}
+		if code, ok := transfer.EventCodeForStatus(target.Status); ok {
+			event.Code = code
+			if err := insertTransferTimelineEvent(ctx, tx, event); err != nil {
+				return transfer.Transfer{}, err
+			}
 		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO notifications (device_id, notification_type, payload, created_at)
@@ -917,6 +969,20 @@ func (store *Store) CreateTransfer(ctx context.Context, session auth.Session, pr
 		`, fileIDs[target.FileIndex], target.DeviceID, target.SelectedRoute, target.Status)
 		if err != nil {
 			return transfer.Transfer{}, err
+		}
+		event := transfer.TimelineEvent{
+			TransferID: result.ID, FileID: fileIDs[target.FileIndex], TargetDeviceID: target.DeviceID,
+			ExecutionID: executionIDs[target.DeviceID], Code: transfer.EventTargetResolved,
+			Route: target.SelectedRoute, Status: target.Status, OccurredAt: prepared.CreatedAt,
+		}
+		if err := insertTransferTimelineEvent(ctx, tx, event); err != nil {
+			return transfer.Transfer{}, err
+		}
+		if code, ok := transfer.EventCodeForStatus(target.Status); ok {
+			event.Code = code
+			if err := insertTransferTimelineEvent(ctx, tx, event); err != nil {
+				return transfer.Transfer{}, err
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -977,14 +1043,20 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	}
 	var currentRoute domain.SelectedRoute
 	var currentStatus domain.TransferStatus
+	var executionID string
 	err = tx.QueryRow(ctx, `
-		SELECT target.selected_route, target.status
+		SELECT target.selected_route, target.status, execution.id::text
 		FROM transfer_targets target
 		JOIN transfer_tasks task ON task.id = target.transfer_id
+		JOIN LATERAL (
+			SELECT id FROM transfer_executions
+			WHERE transfer_id = target.transfer_id AND target_device_id = target.target_device_id
+			ORDER BY attempt DESC LIMIT 1
+		) execution ON true
 		WHERE task.id = $1 AND target.target_device_id = $2
 		  AND ($3::uuid = target.target_device_id OR $3::uuid = task.sender_device_id)
 		FOR UPDATE OF target
-	`, transferID, progress.DeviceID, *session.DeviceID).Scan(&currentRoute, &currentStatus)
+	`, transferID, progress.DeviceID, *session.DeviceID).Scan(&currentRoute, &currentStatus, &executionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return transfer.Transfer{}, transfer.ErrForbidden
 	}
@@ -1035,6 +1107,12 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 		if err != nil {
 			return transfer.Transfer{}, err
 		}
+		if err := insertTransferTimelineEvent(ctx, tx, transfer.TimelineEvent{
+			TransferID: transferID, TargetDeviceID: progress.DeviceID, ExecutionID: executionID,
+			Code: transfer.EventRouteMigrated, Route: nextRoute, Status: progress.Status, OccurredAt: now,
+		}); err != nil {
+			return transfer.Transfer{}, err
+		}
 	}
 	var completedAt any
 	if progress.Status == domain.TransferDelivered || progress.Status == domain.TransferRead || progress.Status == domain.TransferFailed {
@@ -1052,6 +1130,16 @@ func (store *Store) ReportTransferProgress(ctx context.Context, session auth.Ses
 	`, transferID, progress.DeviceID, nextRoute, progress.Status, progress.BytesTransferred, now, completedAt, progress.ErrorCode)
 	if err != nil {
 		return transfer.Transfer{}, err
+	}
+	if currentStatus != progress.Status {
+		if code, ok := transfer.EventCodeForStatus(progress.Status); ok {
+			if err := insertTransferTimelineEvent(ctx, tx, transfer.TimelineEvent{
+				TransferID: transferID, TargetDeviceID: progress.DeviceID, ExecutionID: executionID,
+				Code: code, Route: nextRoute, Status: progress.Status, ErrorCode: progress.ErrorCode, OccurredAt: now,
+			}); err != nil {
+				return transfer.Transfer{}, err
+			}
+		}
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE transfer_executions SET status = $3,
@@ -1157,12 +1245,20 @@ func (store *Store) RetryTransferTarget(ctx context.Context, session auth.Sessio
 		return transfer.Transfer{}, transfer.ErrConflict
 	}
 	if !existing {
-		_, err = tx.Exec(ctx, `
+		var executionID string
+		err = tx.QueryRow(ctx, `
 			INSERT INTO transfer_executions (transfer_id, target_device_id, attempt, status, started_at, idempotency_key)
 			SELECT $1, $2, COALESCE(MAX(attempt), 0) + 1, 'CHECKING_ROUTE', $3, $4
 			FROM transfer_executions WHERE transfer_id = $1 AND target_device_id = $2
-		`, transferID, deviceID, now, idempotencyKey)
+			RETURNING id::text
+		`, transferID, deviceID, now, idempotencyKey).Scan(&executionID)
 		if err != nil {
+			return transfer.Transfer{}, err
+		}
+		if err := insertTransferTimelineEvent(ctx, tx, transfer.TimelineEvent{
+			TransferID: transferID, TargetDeviceID: deviceID, ExecutionID: executionID,
+			Code: transfer.EventRetryStarted, Status: domain.TransferCheckingRoute, OccurredAt: now,
+		}); err != nil {
 			return transfer.Transfer{}, err
 		}
 		_, err = tx.Exec(ctx, `
@@ -1414,6 +1510,174 @@ func (store *Store) GetTransfer(ctx context.Context, session auth.Session, trans
 	return store.getTransfer(ctx, store.pool, session, transferID)
 }
 
+func (store *Store) TransferTimeline(ctx context.Context, session auth.Session, transferID string) ([]transfer.TimelineEvent, error) {
+	if _, err := store.GetTransfer(ctx, session, transferID); err != nil {
+		return nil, err
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT id, event_code, COALESCE(request_id, ''), COALESCE(file_id::text, ''), COALESCE(target_device_id::text, ''), COALESCE(execution_id::text, ''),
+		       COALESCE(route, ''), COALESCE(status, ''), COALESCE(error_code, ''), COALESCE(duration_ms, 0), occurred_at
+		FROM transfer_timeline_events
+		WHERE transfer_id = $1
+		ORDER BY occurred_at, id
+	`, transferID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]transfer.TimelineEvent, 0)
+	for rows.Next() {
+		var event transfer.TimelineEvent
+		if err := rows.Scan(
+			&event.Sequence, &event.Code, &event.RequestID, &event.FileID, &event.TargetDeviceID, &event.ExecutionID,
+			&event.Route, &event.Status, &event.ErrorCode, &event.DurationMillis, &event.OccurredAt,
+		); err != nil {
+			return nil, err
+		}
+		event.TransferID = transferID
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func (store *Store) ReportTransferTimelineEvent(
+	ctx context.Context,
+	session auth.Session,
+	transferID string,
+	report transfer.TimelineEventReport,
+	occurredAt time.Time,
+) (transfer.TimelineEvent, error) {
+	if session.DeviceID == nil {
+		return transfer.TimelineEvent{}, transfer.ErrForbidden
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	resource := "/api/transfers/" + transferID + "/timeline"
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))`, session.DeviceID, report.IdempotencyKey); err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	var storedHash []byte
+	var state string
+	var responseBody []byte
+	err = tx.QueryRow(ctx, `
+		SELECT request_hash, state, COALESCE(response_body::text::bytea, ''::bytea)
+		FROM idempotency_records
+		WHERE actor_device_id = $1 AND method = 'POST' AND resource = $2 AND idempotency_key = $3
+	`, session.DeviceID, resource, report.IdempotencyKey).Scan(&storedHash, &state, &responseBody)
+	if err == nil {
+		if !bytes.Equal(storedHash, digest[:]) || state != "COMPLETED" {
+			return transfer.TimelineEvent{}, transfer.ErrIdempotencyConflict
+		}
+		var replay transfer.TimelineEvent
+		if err := json.Unmarshal(responseBody, &replay); err != nil {
+			return transfer.TimelineEvent{}, err
+		}
+		return replay, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return transfer.TimelineEvent{}, err
+	}
+
+	var authorized bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM transfer_tasks task
+			JOIN transfer_targets target
+			  ON target.transfer_id = task.id AND target.target_device_id = $3
+			WHERE task.id = $1
+			  AND (task.sender_device_id = $2 OR target.target_device_id = $2)
+			  AND ($4::text = '' OR EXISTS (
+			      SELECT 1 FROM files file WHERE file.id = $4::uuid AND file.transfer_id = task.id
+			  ))
+			  AND ($5::text = '' OR EXISTS (
+			      SELECT 1 FROM transfer_executions execution
+			      WHERE execution.id = $5::uuid AND execution.transfer_id = task.id
+			        AND execution.target_device_id = target.target_device_id
+			  ))
+		)
+	`, transferID, session.DeviceID, report.TargetDeviceID, report.FileID, report.ExecutionID).Scan(&authorized)
+	if err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	if !authorized {
+		return transfer.TimelineEvent{}, transfer.ErrForbidden
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO idempotency_records (
+			actor_user_id, actor_device_id, method, resource, idempotency_key, request_hash, state
+		) VALUES ($1, $2, 'POST', $3, $4, $5, 'PROCESSING')
+	`, session.ID, session.DeviceID, resource, report.IdempotencyKey, digest[:]); err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+
+	event := transfer.TimelineEvent{
+		TransferID: transferID, Code: report.Code, FileID: report.FileID,
+		TargetDeviceID: report.TargetDeviceID, ExecutionID: report.ExecutionID,
+		Route: report.Route, ErrorCode: report.ErrorCode, OccurredAt: occurredAt,
+	}
+	if report.Code == transfer.EventTLSAuthenticated || report.Code == transfer.EventFallbackSelected {
+		var startedAt time.Time
+		err := tx.QueryRow(ctx, `
+			SELECT occurred_at
+			FROM transfer_timeline_events
+			WHERE transfer_id = $1 AND target_device_id = $2
+			  AND event_code = 'DIRECT_CONNECTION_ATTEMPTED'
+			ORDER BY occurred_at DESC, id DESC
+			LIMIT 1
+		`, transferID, report.TargetDeviceID).Scan(&startedAt)
+		if err == nil && occurredAt.After(startedAt) {
+			event.DurationMillis = occurredAt.Sub(startedAt).Milliseconds()
+		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return transfer.TimelineEvent{}, err
+		}
+	}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO transfer_timeline_events (
+			transfer_id, request_id, file_id, target_device_id, execution_id, event_code, route, error_code, duration_ms, occurred_at
+		) VALUES ($1, $2, NULLIF($3, '')::uuid, $4, NULLIF($5, '')::uuid, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, 0), $10)
+		RETURNING id, occurred_at
+	`, event.TransferID, logging.RequestID(ctx), event.FileID, event.TargetDeviceID, event.ExecutionID, event.Code, event.Route, event.ErrorCode, event.DurationMillis, event.OccurredAt).Scan(
+		&event.Sequence, &event.OccurredAt,
+	)
+	if err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	event.RequestID = logging.RequestID(ctx)
+	responseBody, err = json.Marshal(event)
+	if err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	command, err := tx.Exec(ctx, `
+		UPDATE idempotency_records
+		SET state = 'COMPLETED', response_status = 200, response_body = $5::jsonb, completed_at = now()
+		WHERE actor_device_id = $1 AND method = 'POST' AND resource = $2
+		  AND idempotency_key = $3 AND request_hash = $4 AND state = 'PROCESSING'
+	`, session.DeviceID, resource, report.IdempotencyKey, digest[:], responseBody)
+	if err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	if command.RowsAffected() != 1 {
+		return transfer.TimelineEvent{}, transfer.ErrIdempotencyConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return transfer.TimelineEvent{}, err
+	}
+	return event, nil
+}
+
 func (store *Store) getTransfer(ctx context.Context, query querier, session auth.Session, transferID string) (transfer.Transfer, error) {
 	var result transfer.Transfer
 	var groupID *string
@@ -1569,6 +1833,21 @@ func (store *Store) CancelTransfer(ctx context.Context, session auth.Session, tr
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO transfer_timeline_events (
+			transfer_id, request_id, target_device_id, execution_id, event_code, route, status, occurred_at
+		)
+		SELECT target.transfer_id, $4, target.target_device_id, execution.id, $2, target.selected_route, 'CANCELLED', $3
+		FROM transfer_targets target
+		LEFT JOIN LATERAL (
+			SELECT id FROM transfer_executions
+			WHERE transfer_id = target.transfer_id AND target_device_id = target.target_device_id
+			ORDER BY attempt DESC LIMIT 1
+		) execution ON true
+		WHERE target.transfer_id = $1 AND target.status = 'CANCELLED'
+	`, transferID, transfer.EventTargetCancelled, now, logging.RequestID(ctx)); err != nil {
+		return transfer.Transfer{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return transfer.Transfer{}, err
 	}
@@ -1645,16 +1924,71 @@ func (store *Store) ReadTransfer(ctx context.Context, session auth.Session, tran
 	if err != nil {
 		return transfer.Transfer{}, err
 	}
+	var executionID string
+	if err := tx.QueryRow(ctx, `
+		SELECT id::text FROM transfer_executions
+		WHERE transfer_id = $1 AND target_device_id = $2
+		ORDER BY attempt DESC LIMIT 1
+	`, transferID, session.DeviceID).Scan(&executionID); err != nil {
+		return transfer.Transfer{}, err
+	}
+	if err := insertTransferTimelineEvent(ctx, tx, transfer.TimelineEvent{
+		TransferID: transferID, TargetDeviceID: *session.DeviceID, ExecutionID: executionID,
+		Code: transfer.EventTargetRead, Status: domain.TransferRead, OccurredAt: now,
+	}); err != nil {
+		return transfer.Transfer{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return transfer.Transfer{}, err
 	}
 	return store.GetTransfer(ctx, session, transferID)
 }
 
+func insertTransferTimelineEvent(
+	ctx context.Context,
+	tx pgx.Tx,
+	event transfer.TimelineEvent,
+) error {
+	var targetID any
+	if event.TargetDeviceID != "" {
+		targetID = event.TargetDeviceID
+	}
+	var relatedFileID any
+	if event.FileID != "" {
+		relatedFileID = event.FileID
+	}
+	var attemptID any
+	if event.ExecutionID != "" {
+		attemptID = event.ExecutionID
+	}
+	var selectedRoute any
+	if event.Route != "" {
+		selectedRoute = event.Route
+	}
+	var transferStatus any
+	if event.Status != "" {
+		transferStatus = event.Status
+	}
+	var stableErrorCode any
+	if event.ErrorCode != "" {
+		stableErrorCode = event.ErrorCode
+	}
+	var durationMillis any
+	if event.DurationMillis > 0 {
+		durationMillis = event.DurationMillis
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO transfer_timeline_events (
+			transfer_id, request_id, file_id, target_device_id, execution_id, event_code, route, status, error_code, duration_ms, occurred_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, event.TransferID, logging.RequestID(ctx), relatedFileID, targetID, attemptID, event.Code, selectedRoute, transferStatus, stableErrorCode, durationMillis, event.OccurredAt)
+	return err
+}
+
 func (store *Store) PrepareChunkUpload(ctx context.Context, session auth.Session, fileID string, index int) (filetransfer.FileRecord, *filetransfer.ChunkRecord, error) {
 	var file filetransfer.FileRecord
 	err := store.pool.QueryRow(ctx, `
-		SELECT f.id::text, f.size, f.sha256, f.chunk_size, f.chunk_count, f.status, f.storage_path
+		SELECT f.id::text, f.transfer_id::text, f.size, f.sha256, f.chunk_size, f.chunk_count, f.status, f.storage_path
 		FROM files f
 		JOIN transfer_tasks t ON t.id = f.transfer_id
 		WHERE f.id = $1 AND t.sender_user_id = $2 AND t.sender_device_id = $3
@@ -1664,7 +1998,7 @@ func (store *Store) PrepareChunkUpload(ctx context.Context, session auth.Session
 		      WHERE ft.file_id = f.id AND ft.selected_route = 'NODE'
 		  )
 	`, fileID, session.ID, session.DeviceID).Scan(
-		&file.ID, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.Status, &file.StoragePath,
+		&file.ID, &file.TransferID, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.Status, &file.StoragePath,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return filetransfer.FileRecord{}, nil, filetransfer.ErrForbidden
@@ -1736,11 +2070,11 @@ func (store *Store) OpenChunk(ctx context.Context, session auth.Session, fileID 
 func (store *Store) PrepareFileCompletion(ctx context.Context, session auth.Session, fileID string) (filetransfer.FileRecord, []filetransfer.ChunkRecord, error) {
 	var file filetransfer.FileRecord
 	err := store.pool.QueryRow(ctx, `
-		SELECT f.id::text, f.size, f.sha256, f.chunk_size, f.chunk_count, f.status, f.storage_path
+		SELECT f.id::text, f.transfer_id::text, f.size, f.sha256, f.chunk_size, f.chunk_count, f.status, f.storage_path
 		FROM files f JOIN transfer_tasks t ON t.id = f.transfer_id
 		WHERE f.id = $1 AND t.sender_user_id = $2 AND t.sender_device_id = $3
 		  AND f.status IN ('UPLOADING', 'AVAILABLE_ON_NODE')
-	`, fileID, session.ID, session.DeviceID).Scan(&file.ID, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.Status, &file.StoragePath)
+	`, fileID, session.ID, session.DeviceID).Scan(&file.ID, &file.TransferID, &file.Size, &file.SHA256, &file.ChunkSize, &file.ChunkCount, &file.Status, &file.StoragePath)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return filetransfer.FileRecord{}, nil, filetransfer.ErrForbidden
 	}
@@ -1773,18 +2107,20 @@ func (store *Store) CompleteFile(ctx context.Context, session auth.Session, file
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	command, err := tx.Exec(ctx, `
+	var transferID string
+	err = tx.QueryRow(ctx, `
 		UPDATE files f SET status = 'AVAILABLE_ON_NODE', storage_path = $2, completed_at = $3
 		FROM transfer_tasks t
 		WHERE f.id = $1 AND t.id = f.transfer_id
 		  AND t.sender_user_id = $4 AND t.sender_device_id = $5
 		  AND f.status = 'UPLOADING'
-	`, fileID, storagePath, completedAt, session.ID, session.DeviceID)
+		RETURNING f.transfer_id::text
+	`, fileID, storagePath, completedAt, session.ID, session.DeviceID).Scan(&transferID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return filetransfer.ErrConflict
+	}
 	if err != nil {
 		return err
-	}
-	if command.RowsAffected() == 0 {
-		return filetransfer.ErrConflict
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE transfer_file_targets SET status = 'AVAILABLE_ON_NODE'
@@ -1799,6 +2135,12 @@ func (store *Store) CompleteFile(ctx context.Context, session auth.Session, file
 		  AND target.selected_route = 'NODE'
 	`, fileID)
 	if err != nil {
+		return err
+	}
+	if err := insertTransferTimelineEvent(ctx, tx, transfer.TimelineEvent{
+		TransferID: transferID, FileID: fileID, Code: transfer.EventHashVerified,
+		Route: domain.SelectedRouteNode, Status: domain.TransferAvailableOnNode, OccurredAt: completedAt,
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -2155,7 +2497,7 @@ func (store *Store) NodeStatistics(ctx context.Context, session auth.Session, ti
 
 func (store *Store) ExpiredFiles(ctx context.Context, now time.Time, limit int) ([]maintenance.ExpiredFile, error) {
 	rows, err := store.pool.Query(ctx, `
-		SELECT id::text, storage_path
+		SELECT id::text, transfer_id::text, storage_path
 		FROM files file
 		WHERE file.status <> 'EXPIRED'
 		  AND (
@@ -2196,7 +2538,7 @@ func (store *Store) ExpiredFiles(ctx context.Context, now time.Time, limit int) 
 	result := make([]maintenance.ExpiredFile, 0)
 	for rows.Next() {
 		var file maintenance.ExpiredFile
-		if err := rows.Scan(&file.ID, &file.StoragePath); err != nil {
+		if err := rows.Scan(&file.ID, &file.TransferID, &file.StoragePath); err != nil {
 			rows.Close()
 			return nil, err
 		}

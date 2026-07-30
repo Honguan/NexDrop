@@ -129,7 +129,7 @@ jobs:
           docker exec "$postgres_container" pg_dump -U nexdrop -d "$rollback_database" -Fc -f /tmp/nexdrop-pre-upgrade.dump
           start_migration_server "$rollback_url" migrations
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
-            "SELECT count(*) FROM schema_migrations")" = 9
+            "SELECT count(*) FROM schema_migrations")" = 10
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
             "SELECT to_regclass('public.idempotency_records') IS NOT NULL")" = t
           docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
@@ -143,6 +143,7 @@ jobs:
             "SELECT to_regclass('public.idempotency_records') IS NULL")" = t
           docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
           docker exec "$postgres_container" rm -f /tmp/nexdrop-pre-upgrade.dump
+          ./scripts/failure-injection.sh deterministic
           start_server
           stop_process "$server_pid"
           server_pid=''
@@ -181,6 +182,7 @@ jobs:
           test "$database_ready" = true
           test "$(docker exec "$postgres_container" psql -U nexdrop -d nexdrop_test -tAc \
             "SELECT count(*) FROM devices WHERE display_name='$unavailable_device_name'")" = 0
+          NEXDROP_POSTGRES_CONTAINER="$postgres_container" ./scripts/failure-injection.sh database-outage
 
           restart_barrier="$RUNNER_TEMP/nexdrop-restart-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           rm -f -- "$restart_barrier.ready" "$restart_barrier.continue" "$restart_barrier.file-id"

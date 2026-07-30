@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"nexdrop/internal/auth"
+	"nexdrop/internal/monitoring"
 	"nexdrop/internal/version"
 )
 
@@ -50,6 +52,7 @@ type client struct {
 	connection *websocket.Conn
 	cancel     context.CancelFunc
 	send       chan Message
+	sessionID  string
 }
 
 type Hub struct {
@@ -107,7 +110,7 @@ func (hub *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	current := &client{connection: connection, cancel: cancel, send: make(chan Message, 32)}
+	current := &client{connection: connection, cancel: cancel, send: make(chan Message, 32), sessionID: session.SessionID}
 	hub.register(deviceID, current)
 	defer func() {
 		cancel()
@@ -134,8 +137,12 @@ func (hub *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		readContext, readCancel := context.WithTimeout(ctx, hub.timeout)
 		var message Message
 		err := wsjson.Read(readContext, connection, &message)
+		heartbeatGap := errors.Is(readContext.Err(), context.DeadlineExceeded)
 		readCancel()
 		if err != nil {
+			if heartbeatGap {
+				_ = monitoring.DefaultRegistry.Add("nexdrop_websocket_heartbeat_gap_total", 1, map[string]string{"result": "failure"})
+			}
 			return
 		}
 		switch message.Type {
@@ -223,6 +230,15 @@ func (hub *Hub) sendNotifications(ctx context.Context, deviceID string, current 
 		if !hub.enqueue(current, Message{Type: "notification", Notification: &notifications[index]}) {
 			return errors.New("notification queue full")
 		}
+		if transferID, ok := notifications[index].Payload["transferId"].(string); ok && transferID != "" {
+			slog.Info(
+				"transfer notification queued",
+				"module", "websocket",
+				"session_id", current.sessionID,
+				"transfer_id", transferID,
+				"notification_id", notifications[index].ID,
+			)
+		}
 	}
 	return nil
 }
@@ -232,10 +248,13 @@ func (hub *Hub) register(deviceID string, current *client) {
 	previous := hub.clients[deviceID]
 	hub.clients[deviceID] = current
 	hub.mu.Unlock()
+	result := "connected"
 	if previous != nil {
+		result = "replaced"
 		previous.cancel()
 		_ = previous.connection.Close(websocket.StatusNormalClosure, "replaced by newer connection")
 	}
+	_ = monitoring.DefaultRegistry.Add("nexdrop_websocket_connection_total", 1, map[string]string{"result": result})
 }
 
 func (hub *Hub) unregister(deviceID string, current *client) bool {
@@ -245,6 +264,7 @@ func (hub *Hub) unregister(deviceID string, current *client) bool {
 		return false
 	}
 	delete(hub.clients, deviceID)
+	_ = monitoring.DefaultRegistry.Add("nexdrop_websocket_connection_total", 1, map[string]string{"result": "disconnected"})
 	return true
 }
 

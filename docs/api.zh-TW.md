@@ -33,6 +33,8 @@ X-NexDrop-API-Version: 1
 
 主要資源包含 auth、account、devices、groups、transfers、files、metrics、statistics 與 admin。`GET /api/version` 回傳產品、介面、協議、最低用戶端與建置 Commit 版本，並提供不透明節點身分、能力結構版本、版本指紋、穩定能力識別碼及可協商數值限制；詳見[能力協商](protocols/capability-negotiation.zh-TW.md)。
 
+`GET /api/transfers/{id}/timeline` 回傳已授權傳輸不含內容的有序事件歷史。`POST /api/transfers/{id}/timeline` 可附加文件列出的用戶端觀察階段，並要求 UUID `Idempotency-Key`。詳見[穩定傳輸事件碼](operations/transfer-events.zh-TW.md)。
+
 用戶端遇到缺少能力欄位的舊節點時，視為不支援可選能力；未知的新增欄位須忽略，能力快取依回傳的節點身分隔離。沒有安全降級方式的功能回傳 `CAPABILITY_UNAVAILABLE`。
 
 用戶端在顯示功能前，可於 `GET /api/version` 重複加入 `require=<capability>`；若能力不可用，回傳 HTTP 409、`CAPABILITY_UNAVAILABLE`，以及 `details.capability` 與 `details.party`。

@@ -265,6 +265,26 @@ class APIClient {
     return response.arrayBuffer();
   }
 
+  async reportTimelineEvent(
+    transferID: string,
+    event: {
+      code: string;
+      targetDeviceId: string;
+      fileId?: string;
+      route?: string;
+      errorCode?: string;
+    },
+  ) {
+    try {
+      await this.send(`/api/transfers/${transferID}/timeline`, "POST", event);
+    } catch (reason) {
+      if (reason instanceof APIError && (reason.status === 404 || reason.status === 405)) {
+        return;
+      }
+      throw reason;
+    }
+  }
+
   private async request<T>(path: string, init: RequestInit, retry = true): Promise<T> {
     const response = await this.requestRaw(path, init, retry);
     if (response.status === 204) return undefined as T;

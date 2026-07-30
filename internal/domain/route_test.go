@@ -50,3 +50,17 @@ func TestSelectRouteManualModeDoesNotFallBack(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectRouteFallsBackWhenOneAddressFamilyCannotReachLAN(t *testing.T) {
+	request := RouteRequest{
+		Mode: RouteModeAutomatic, LANAvailable: false, NodeAvailable: true,
+		TextContent: true,
+	}
+	if got := SelectRoute(request); got != SelectedRouteNode {
+		t.Fatalf("IPv4/IPv6 asymmetric fallback route = %q, want %q", got, SelectedRouteNode)
+	}
+	request.NodeAvailable = false
+	if got := SelectRoute(request); got != SelectedRouteDraft {
+		t.Fatalf("fully unavailable route = %q, want %q", got, SelectedRouteDraft)
+	}
+}
