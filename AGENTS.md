@@ -39,3 +39,17 @@ Android 與 Windows 簽章材料為選填。有完整材料時建立簽章產物
 - 草稿 Release 缺少必要產物或無法追溯至同一 Commit 與 Tag
 
 每次判定前必須重新讀取最新 `master`，不得沿用快取的舊發布結論。
+
+## Agent skills
+
+### Issue tracker
+
+專案工作使用 GitHub Issues 追蹤。詳見 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+Issue 使用預設五種 triage 狀態標籤。詳見 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+專案採單一 domain context，系統決策位於根目錄脈絡文件與 `docs/adr/`。詳見 `docs/agents/domain.md`。
