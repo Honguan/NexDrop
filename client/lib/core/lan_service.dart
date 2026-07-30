@@ -22,7 +22,7 @@ const _capabilities = <String>[
   'resumable_chunks',
   'realtime_versions',
 ];
-const _serviceVersion = '2.0.4';
+const _serviceVersion = '2.1.0';
 const _fallbackPort = 53317;
 const _discoveryMagic = 'NEXDROP_DISCOVERY_V1';
 const _maxChunkSize = 9 * 1024 * 1024;
