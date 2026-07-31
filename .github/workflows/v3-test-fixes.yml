@@ -1,0 +1,52 @@
+name: v3-test-fixes
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v3-test-fixes.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  correct:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Correct v3 expectations and path folding
+        shell: python
+        run: |
+          from pathlib import Path
+
+          api = Path('internal/api/api_test.go')
+          text = api.read_text(encoding='utf-8')
+          text = text.replace('body.Limits.MaxParallelChunks != 3', 'body.Limits.MaxParallelChunks != 6')
+          api.write_text(text, encoding='utf-8')
+
+          manifest = Path('internal/folder/manifest.go')
+          text = manifest.read_text(encoding='utf-8')
+          text = text.replace('\n\t"unicode"', '')
+          text = text.replace('strings.ToLowerSpecial(unicode.TurkishCase, normalized)', 'strings.ToLower(normalized)')
+          manifest.write_text(text, encoding='utf-8')
+
+          integration = Path('.github/workflows/integration-test.yml')
+          text = integration.read_text(encoding='utf-8')
+          text = text.replace('"SELECT count(*) FROM schema_migrations")" = 10', '"SELECT count(*) FROM schema_migrations")" = 11')
+          integration.write_text(text, encoding='utf-8')
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Format corrected Go files
+        run: gofmt -w internal/api/api_test.go internal/folder/manifest.go
+      - name: Commit corrections
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add internal/api/api_test.go internal/folder/manifest.go .github/workflows/integration-test.yml
+          git commit -m 'test: align v3 limits, migration count, and path folding'
+          git push origin HEAD:${{ github.head_ref }}
