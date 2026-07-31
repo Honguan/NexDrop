@@ -19,12 +19,20 @@ const (
 	CapabilitySchemaVersion   = 1
 	CapabilityUnavailableCode = "CAPABILITY_UNAVAILABLE"
 
-	CapabilityNegotiation = "capability_negotiation"
-	StructuredErrors      = "structured_errors"
-	CursorPagination      = "cursor_pagination"
-	IdempotencyReplay     = "idempotency_replay"
-	ResumableChunks       = "resumable_chunks"
-	RealtimeVersions      = "realtime_versions"
+	CapabilityNegotiation       = "capability_negotiation"
+	StructuredErrors            = "structured_errors"
+	CursorPagination            = "cursor_pagination"
+	IdempotencyReplay           = "idempotency_replay"
+	ResumableChunks             = "resumable_chunks"
+	RealtimeVersions            = "realtime_versions"
+	AdaptiveRouteRacing         = "adaptive_route_racing"
+	AdaptiveTransferProfile     = "adaptive_transfer_profile"
+	TransferRecovery            = "transfer_recovery"
+	ScopedDeviceEnrollment      = "scoped_device_enrollment"
+	OfflineDeliveryPolicies     = "offline_delivery_policies"
+	RelayPool                   = "relay_pool"
+	FolderManifest              = "folder_manifest"
+	MessageLifecycle            = "message_lifecycle"
 )
 
 var (
@@ -119,7 +127,7 @@ type Limits struct {
 func CurrentLimits() Limits {
 	return Limits{
 		MaxChunkSize:      8 * 1024 * 1024,
-		MaxParallelChunks: 3,
+		MaxParallelChunks: 6,
 		MaxRecipients:     100,
 	}
 }
@@ -139,6 +147,14 @@ var capabilityRegistry = []CapabilityDefinition{
 	{ID: IdempotencyReplay, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Do not automatically retry a non-idempotent request.", UnavailableError: CapabilityUnavailableCode},
 	{ID: ResumableChunks, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"sender", "receiver"}, Fallback: "Restart the file transfer from the first chunk.", UnavailableError: CapabilityUnavailableCode},
 	{ID: RealtimeVersions, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use the initial HTTP version document and periodic refresh.", UnavailableError: CapabilityUnavailableCode},
+	{ID: AdaptiveRouteRacing, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"sender", "receiver"}, Fallback: "Use sequential LAN-first routing and Node fallback.", UnavailableError: CapabilityUnavailableCode},
+	{ID: AdaptiveTransferProfile, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"sender", "receiver"}, Fallback: "Use the fixed negotiated chunk size and one transfer stream.", UnavailableError: CapabilityUnavailableCode},
+	{ID: TransferRecovery, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node"}, Fallback: "Use manual per-target retry and startup cleanup.", UnavailableError: CapabilityUnavailableCode},
+	{ID: ScopedDeviceEnrollment, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use legacy Node-key device creation during the migration window.", UnavailableError: CapabilityUnavailableCode},
+	{ID: OfflineDeliveryPolicies, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Queue content without platform-aware background constraints.", UnavailableError: CapabilityUnavailableCode},
+	{ID: RelayPool, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use the primary Node as the only relay path.", UnavailableError: CapabilityUnavailableCode},
+	{ID: FolderManifest, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"sender", "receiver"}, Fallback: "Return unsupported-feature or use an explicitly requested archive.", UnavailableError: CapabilityUnavailableCode},
+	{ID: MessageLifecycle, SchemaVersion: CapabilitySchemaVersion, Parties: []string{"node", "client"}, Fallback: "Use existing cursor history, local hide, and fixed retention behavior.", UnavailableError: CapabilityUnavailableCode},
 }
 
 func Registry() []CapabilityDefinition {
