@@ -17,7 +17,14 @@ const nexDropCapabilities = <String>[
   'idempotency_replay',
   'resumable_chunks',
   'realtime_versions',
-];
+  'adaptive_route_racing',
+  'adaptive_transfer_profile',
+  'transfer_recovery',
+  'scoped_device_enrollment',
+  'offline_delivery_policies',
+  'relay_pool',
+  'folder_manifest',
+  'message_lifecycle',];
 const nexDropProtocols = <String>{'1.0', '1.1', '1.2'};
 
 String compatibleProtocol(NodeCapabilityDocument? document) {

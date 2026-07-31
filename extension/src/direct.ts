@@ -28,7 +28,14 @@ const supportedCapabilities = [
   "idempotency_replay",
   "resumable_chunks",
   "realtime_versions",
-];
+  "adaptive_route_racing",
+  "adaptive_transfer_profile",
+  "transfer_recovery",
+  "scoped_device_enrollment",
+  "offline_delivery_policies",
+  "relay_pool",
+  "folder_manifest",
+  "message_lifecycle",];
 const supportedProtocols = new Set(["1.0", "1.1", "1.2"]);
 let activeCapabilityDocument: {
   nodeIdentity: string;

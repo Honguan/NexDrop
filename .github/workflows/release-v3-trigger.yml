@@ -1,0 +1,32 @@
+name: release-v3-trigger
+
+on:
+  push:
+    branches:
+      - release-trigger/v3.0.0
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: release-v3-trigger
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: dispatch-v3-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch release-package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run release-package.yml \
+            --ref master \
+            -f bump=major \
+            -f summary='Adaptive routing, recovery, secure enrollment, relay pools, folders, and message lifecycle' \
+            -f summary_zh_tw='自適應路由、復原、安全註冊、Relay Pool、資料夾與訊息生命週期'
