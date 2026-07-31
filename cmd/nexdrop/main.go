@@ -29,6 +29,7 @@ import (
 	"nexdrop/internal/postgres"
 	"nexdrop/internal/presence"
 	"nexdrop/internal/transfer"
+	"nexdrop/internal/v3"
 	internalversion "nexdrop/internal/version"
 	"nexdrop/internal/webui"
 )
@@ -64,6 +65,14 @@ func main() {
 	if len(cursorSecret) < 32 {
 		fatal("configuration failed", errors.New("NEXDROP_CURSOR_SECRET must contain at least 32 characters"))
 	}
+	nodeKey := strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY"))
+	if len(nodeKey) < 32 {
+		fatal("configuration failed", errors.New("NEXDROP_NODE_KEY must contain at least 32 characters"))
+	}
+	nodeID := strings.TrimSpace(os.Getenv("NEXDROP_NODE_ID"))
+	if len(nodeID) < 8 {
+		fatal("configuration failed", errors.New("NEXDROP_NODE_ID must contain at least 8 characters"))
+	}
 	store, err := postgres.OpenWithPassword(context.Background(), databaseURL, os.Getenv("NEXDROP_DATABASE_PASSWORD"))
 	if err != nil {
 		fatal("connect to PostgreSQL", err)
@@ -89,6 +98,10 @@ func main() {
 	if err != nil {
 		fatal("configure file storage", err)
 	}
+	v3Service, err := v3.New(store, nodeID, []byte(nodeKey), []byte(cursorSecret), storagePath)
+	if err != nil {
+		fatal("configure v3 services", err)
+	}
 	analyticsService := analytics.NewService(store)
 	adminService := admin.NewService(store)
 	if err := adminService.Bootstrap(context.Background(), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_USERNAME"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_EMAIL"), os.Getenv("NEXDROP_BOOTSTRAP_ADMIN_PASSWORD")); err != nil {
@@ -113,6 +126,8 @@ func main() {
 		_, _ = cleaner.RunOnce(context.Background(), 100)
 		cleaner.Start(context.Background(), time.Hour)
 	}()
+	go startRecoveryWorker(v3Service)
+	go startRetentionWorker(v3Service)
 	collector := monitoring.NewCollector(store, monitoring.NewSystemSampler(), storagePath)
 	go func() {
 		_ = collector.RunOnce(context.Background())
@@ -137,6 +152,7 @@ func main() {
 		}
 		healthHandler(w, r)
 	})
+	mux.Handle("/api/v3/", applicationAPI.V3Routes(v3Service))
 	mux.Handle("/api/", applicationAPI.Routes())
 	mux.Handle("/metrics", monitoring.DefaultRegistry)
 	mux.Handle("/ws", presenceHub)
@@ -155,9 +171,66 @@ func main() {
 	}
 }
 
+func startRecoveryWorker(service *v3.Service) {
+	ctx := context.Background()
+	if report, err := service.RunRecovery(ctx, "startup", 100); err != nil {
+		slog.Error("startup transfer recovery failed", "module", "recovery", "error_code", "RECOVERY_FAILED", "error", err)
+	} else {
+		slog.Info("startup transfer recovery completed", "module", "recovery", "scanned", report.Scanned, "completed", report.Completed, "waiting", report.Waiting, "dead_letters", report.DeadLetters)
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if _, err := service.RunRecovery(ctx, "periodic", 100); err != nil {
+			slog.Error("periodic transfer recovery failed", "module", "recovery", "error_code", "RECOVERY_FAILED", "error", err)
+		}
+	}
+}
+
+func startRetentionWorker(service *v3.Service) {
+	ctx := context.Background()
+	if _, err := service.RunRetention(ctx, 100); err != nil {
+		slog.Error("startup retention cleanup failed", "module", "retention", "error_code", "RETENTION_FAILED", "error", err)
+	}
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if _, err := service.RunRetention(ctx, 100); err != nil {
+			slog.Error("periodic retention cleanup failed", "module", "retention", "error_code", "RETENTION_FAILED", "error", err)
+		}
+	}
+}
+
 func fatal(message string, err error) {
 	slog.Error(message, "module", "server", "error_code", "FATAL", "error", err)
 	os.Exit(1)
+}
+
+func openV3MaintenanceService(ctx context.Context, databaseURL, databasePassword, storagePath string) (*postgres.Store, *v3.Service, error) {
+	store, err := postgres.OpenWithPassword(ctx, databaseURL, databasePassword)
+	if err != nil {
+		return nil, nil, err
+	}
+	migrationsPath := os.Getenv("NEXDROP_MIGRATIONS_PATH")
+	if migrationsPath == "" {
+		migrationsPath = "/usr/share/nexdrop/migrations"
+	}
+	if err := store.ApplyMigrations(ctx, migrationsPath); err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	service, err := v3.New(
+		store,
+		strings.TrimSpace(os.Getenv("NEXDROP_NODE_ID")),
+		[]byte(strings.TrimSpace(os.Getenv("NEXDROP_NODE_KEY"))),
+		[]byte(os.Getenv("NEXDROP_CURSOR_SECRET")),
+		storagePath,
+	)
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	return store, service, nil
 }
 
 func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error) {
@@ -266,6 +339,56 @@ func runMaintenanceCommand(ctx context.Context, arguments []string) (bool, error
 			return true, err
 		}
 		return true, json.NewEncoder(os.Stdout).Encode(map[string]int{"cleaned": cleaned})
+	case "transfers":
+		if len(arguments) < 2 {
+			return true, errors.New("usage: transfers {failed|inspect <transfer-id>|retry <transfer-id>|reconcile [--limit N]}")
+		}
+		store, service, err := openV3MaintenanceService(ctx, databaseURL, databasePassword, storagePath)
+		if err != nil {
+			return true, err
+		}
+		defer store.Close()
+		operator := auth.Session{User: auth.User{ID: "cli-operator", Admin: true}, SessionID: "cli", AdminVerified: true}
+		switch arguments[1] {
+		case "failed":
+			flags := flag.NewFlagSet("transfers failed", flag.ContinueOnError)
+			limit := flags.Int("limit", 100, "maximum dead-letter entries")
+			if err := flags.Parse(arguments[2:]); err != nil {
+				return true, err
+			}
+			items, err := service.FailedRecovery(ctx, operator, *limit)
+			if err != nil {
+				return true, err
+			}
+			return true, json.NewEncoder(os.Stdout).Encode(map[string]any{"items": items})
+		case "inspect":
+			if len(arguments) != 3 {
+				return true, errors.New("usage: transfers inspect <transfer-id>")
+			}
+			items, err := service.InspectRecovery(ctx, operator, arguments[2])
+			if err != nil {
+				return true, err
+			}
+			return true, json.NewEncoder(os.Stdout).Encode(map[string]any{"items": items})
+		case "retry":
+			if len(arguments) != 3 {
+				return true, errors.New("usage: transfers retry <transfer-id>")
+			}
+			return true, service.RetryRecovery(ctx, operator, arguments[2])
+		case "reconcile":
+			flags := flag.NewFlagSet("transfers reconcile", flag.ContinueOnError)
+			limit := flags.Int("limit", 100, "maximum targets to reconcile")
+			if err := flags.Parse(arguments[2:]); err != nil {
+				return true, err
+			}
+			report, err := service.RunRecovery(ctx, "operator-cli", *limit)
+			if err != nil {
+				return true, err
+			}
+			return true, json.NewEncoder(os.Stdout).Encode(report)
+		default:
+			return true, fmt.Errorf("unknown transfers command %q", arguments[1])
+		}
 	case "reset-password":
 		flags := flag.NewFlagSet("reset-password", flag.ContinueOnError)
 		identifier := flags.String("identifier", "", "username or email")
