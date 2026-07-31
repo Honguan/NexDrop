@@ -1,0 +1,41 @@
+name: v3-diagnostics
+
+on:
+  pull_request:
+    paths:
+      - 'internal/**'
+      - 'docs/**'
+      - 'scripts/check-docs.ps1'
+      - '.github/workflows/v3-diagnostics.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: List files requiring gofmt
+        shell: bash
+        run: |
+          echo 'GOFMT_FILES_BEGIN'
+          gofmt -l cmd internal
+          echo 'GOFMT_FILES_END'
+      - name: Print compatibility contract fingerprint
+        shell: pwsh
+        run: |
+          $sources = @(
+            (Get-Content -Raw -Encoding UTF8 'internal/version/compatibility.go'),
+            (Get-Content -Raw -Encoding UTF8 'internal/presence/hub.go'),
+            (Get-Content -Raw -Encoding UTF8 'internal/lan/discovery.go'),
+            (Get-Content -Raw -Encoding UTF8 'internal/lan/transfer.go')
+          )
+          $text = ($sources -join "`n---`n") -replace "`r`n", "`n"
+          $bytes = [Text.Encoding]::UTF8.GetBytes($text.Trim())
+          $hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+          Write-Host "CONTRACT_HASH=$hash"
