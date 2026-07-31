@@ -9,24 +9,24 @@ on:
       - '.github/workflows/v3-diagnostics.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.head_ref }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
-      - name: List files requiring gofmt
+      - name: Format Go files
         shell: bash
-        run: |
-          echo 'GOFMT_FILES_BEGIN'
-          gofmt -l cmd internal
-          echo 'GOFMT_FILES_END'
-      - name: Print compatibility contract fingerprint
+        run: gofmt -w cmd internal
+      - name: Refresh compatibility contract fingerprint
         shell: pwsh
         run: |
           $sources = @(
@@ -38,4 +38,29 @@ jobs:
           $text = ($sources -join "`n---`n") -replace "`r`n", "`n"
           $bytes = [Text.Encoding]::UTF8.GetBytes($text.Trim())
           $hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+
+          $englishPath = 'docs/compatibility-matrix.md'
+          $english = Get-Content -Raw -Encoding UTF8 $englishPath
+          $englishReplacement = 'Compatibility contract fingerprint: `' + $hash + '`'
+          $english = [regex]::Replace($english, '(?m)^Compatibility contract fingerprint: `[^`]+`$', $englishReplacement)
+          Set-Content -NoNewline -Encoding UTF8 $englishPath $english
+
+          $traditionalPath = 'docs/compatibility-matrix.zh-TW.md'
+          $traditional = Get-Content -Raw -Encoding UTF8 $traditionalPath
+          $traditionalReplacement = '相容性契約指紋：`' + $hash + '`'
+          $traditional = [regex]::Replace($traditional, '(?m)^相容性契約指紋：`[^`]+`$', $traditionalReplacement)
+          Set-Content -NoNewline -Encoding UTF8 $traditionalPath $traditional
+
           Write-Host "CONTRACT_HASH=$hash"
+      - name: Commit generated corrections
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No generated corrections required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add internal docs/compatibility-matrix.md docs/compatibility-matrix.zh-TW.md
+          git commit -m 'style: format v3 modules and refresh compatibility fingerprint'
+          git push origin HEAD:${{ github.head_ref }}
