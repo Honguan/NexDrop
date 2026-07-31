@@ -14,3 +14,6 @@ The update preserves `.env`, PostgreSQL data, file data, and existing secrets, a
 
 If the release uses a temporary Android certificate, a device with an older APK can require uninstalling it before installation. Production deployments should configure persistent Android signing secrets. When no Windows certificate is provided, the EXE and ZIP remain usable but Windows can display a SmartScreen warning.
 
+## Validation
+
+The feature release passed server, PostgreSQL integration, Flutter, Web, browser-extension, Docker, documentation, and security workflows before the version bump.
