@@ -1,5 +1,5 @@
 param(
-	[string]$Version = '2.2.0',
+	[string]$Version = '3.0.0',
 	[string]$Commit = 'development',
 	[string]$OutputDirectory = 'dist'
 )
