@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -175,6 +178,106 @@ void main() {
       expect(compatibleProtocol(previous), '1.1');
       expect(compatibleProtocol(unsupported), '1.0');
       expect(compatibleProtocol(null), '1.0');
+    });
+
+    test('reuses one transfer when a LAN route falls back to Node', () async {
+      FlutterSecureStorage.setMockInitialValues({
+        'nexdrop.node_url': 'https://node.example',
+        'nexdrop.access_token': 'access-token',
+        'nexdrop.refresh_token': 'refresh-token',
+      });
+      var createCount = 0;
+      var deleteCount = 0;
+      var routeSwitchCount = 0;
+      final transfer = <String, dynamic>{
+        'id': 'transfer-1',
+        'senderDeviceId': 'sender-1',
+        'contentType': 'FILE',
+        'status': 'TRANSFERRING_LAN',
+        'createdAt': '2026-07-31T12:00:00Z',
+        'updatedAt': '2026-07-31T12:00:00Z',
+        'targets': [
+          {
+            'deviceId': 'target-1',
+            'route': 'LAN',
+            'status': 'TRANSFERRING_LAN',
+            'bytesTransferred': 0,
+          },
+        ],
+        'files': <dynamic>[],
+        'fileTargets': <dynamic>[],
+      };
+      final client = MockClient((request) async {
+        if (request.url.path == '/api/version') {
+          return http.Response(
+            jsonEncode({
+              'nodeIdentity': 'node-1',
+              'protocolVersion': '1.2',
+              'capabilities': [
+                'capability_negotiation',
+                'adaptive_route_racing',
+              ],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/transfers' && request.method == 'POST') {
+          createCount++;
+          return http.Response(jsonEncode(transfer), 201);
+        }
+        if (request.url.path == '/api/transfers/transfer-1/timeline') {
+          return http.Response('', 204);
+        }
+        if (request.url.path == '/api/transfers/transfer-1' &&
+            request.method == 'DELETE') {
+          deleteCount++;
+          return http.Response('', 204);
+        }
+        if (request.url.path == '/api/v3/transfers/transfer-1/route') {
+          routeSwitchCount++;
+          final route = jsonDecode(request.body) as Map<String, dynamic>;
+          expect(route['deviceId'], 'target-1');
+          expect(route['route'], 'NODE');
+          return http.Response('', 204);
+        }
+        if (request.url.path == '/api/transfers/transfer-1' &&
+            request.method == 'GET') {
+          final refreshed = Map<String, dynamic>.from(transfer);
+          refreshed['targets'] = [
+            {
+              'deviceId': 'target-1',
+              'route': 'NODE',
+              'status': 'QUEUED',
+              'bytesTransferred': 0,
+            },
+          ];
+          return http.Response(jsonEncode(refreshed), 200);
+        }
+        return http.Response('{"error":"NOT_FOUND"}', 404);
+      });
+      final api = ApiClient(client: client);
+      expect(await api.restore(), isTrue);
+
+      final created = await api.sendJson('/api/transfers', 'POST', {
+        'targetDeviceIds': ['target-1'],
+        'lanAvailableDeviceIds': ['target-1'],
+      }) as Map<String, dynamic>;
+      expect(created['id'], 'transfer-1');
+      await api.sendJson('/api/transfers/transfer-1/timeline', 'POST', {
+        'code': 'ROUTE_FALLBACK_SELECTED',
+        'targetDeviceId': 'target-1',
+        'route': 'NODE',
+      });
+      await api.sendJson('/api/transfers/transfer-1', 'DELETE');
+      final resumed = await api.sendJson('/api/transfers', 'POST', {
+        'targetDeviceIds': ['target-1'],
+        'lanAvailableDeviceIds': <String>[],
+      }) as Map<String, dynamic>;
+
+      expect(resumed['id'], 'transfer-1');
+      expect(createCount, 1);
+      expect(deleteCount, 0);
+      expect(routeSwitchCount, 1);
     });
   });
 }
