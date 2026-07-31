@@ -474,7 +474,7 @@ func TestVersionEndpointPublishesCapabilitiesAndLimits(t *testing.T) {
 	if body.NodeIdentity == "" || body.CapabilitySchemaVersion != 1 || body.VersionFingerprint == "" || len(body.Capabilities) == 0 {
 		t.Fatalf("version capability document = %+v", body)
 	}
-	if body.Limits.MaxChunkSize != 8*1024*1024 || body.Limits.MaxParallelChunks != 3 || body.Limits.MaxRecipients != 100 {
+	if body.Limits.MaxChunkSize != 8*1024*1024 || body.Limits.MaxParallelChunks != 6 || body.Limits.MaxRecipients != 100 {
 		t.Fatalf("version limits = %+v", body.Limits)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 )
 
 var (
@@ -85,7 +84,7 @@ func Validate(manifest Manifest, limits Limits) (Manifest, error) {
 		if len(normalized) > limits.MaxPathBytes || depth > limits.MaxDepth {
 			return Manifest{}, ErrLimitExceeded
 		}
-		folded := strings.ToLowerSpecial(unicode.TurkishCase, normalized)
+		folded := strings.ToLower(normalized)
 		if previous, exists := seen[folded]; exists && previous != normalized {
 			return Manifest{}, ErrPathCollision
 		}
