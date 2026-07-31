@@ -25,6 +25,7 @@ jobs:
       NEXDROP_DATABASE_URL: postgres://nexdrop:test-only-password@127.0.0.1:5432/nexdrop_test?sslmode=disable
       NEXDROP_CURSOR_SECRET: integration-test-only-cursor-secret-32-bytes
       NEXDROP_NODE_KEY: integration-test-only-node-key-32-bytes
+      NEXDROP_NODE_ID: integration-test-node
       NEXDROP_STORAGE_PATH: /tmp/nexdrop-storage
       NEXDROP_WEB_PATH: web/dist
       NEXDROP_MIGRATIONS_PATH: migrations
@@ -129,7 +130,7 @@ jobs:
           docker exec "$postgres_container" pg_dump -U nexdrop -d "$rollback_database" -Fc -f /tmp/nexdrop-pre-upgrade.dump
           start_migration_server "$rollback_url" migrations
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
-            "SELECT count(*) FROM schema_migrations")" = 11
+            "SELECT count(*) FROM schema_migrations")" = 12
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
             "SELECT to_regclass('public.idempotency_records') IS NOT NULL")" = t
           docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
