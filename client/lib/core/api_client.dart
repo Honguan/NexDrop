@@ -362,10 +362,11 @@ class ApiClient {
     final deviceID = _deviceID;
     final credential = _deviceCredential;
     if (deviceID == null || credential == null) return;
-    await sendJson('/api/v3/enrollment/attach-session', 'POST', {
-      'deviceId': deviceID,
-      'deviceCredential': credential,
-    });
+    await _request(
+      '/api/v3/enrollment/attach-session',
+      method: 'POST',
+      body: {'deviceId': deviceID, 'deviceCredential': credential},
+    );
   }
 
   Future<List<DeviceStatistic>> deviceStatistics() async =>
@@ -444,8 +445,24 @@ class ApiClient {
 
   Future<dynamic> getJson(String path) => _request(path, method: 'GET');
 
-  Future<dynamic> sendJson(String path, String method, [Object? body]) =>
-      _request(path, method: method, body: body);
+  Future<dynamic> sendJson(String path, String method, [Object? body]) async {
+    if (path == '/api/devices' &&
+        method == 'POST' &&
+        body is Map<String, dynamic> &&
+        capabilityDocument?.supports('scoped_device_enrollment') == true) {
+      final publicKey = base64Decode(body['publicKey'] as String);
+      final deviceID = await bootstrapDevice(
+        deviceType: body['type'] as String,
+        deviceName: body['displayName'] as String,
+        publicKey: publicKey,
+      );
+      final rawDevices = await getJson('/api/devices') as List<dynamic>;
+      return rawDevices.cast<Map<String, dynamic>>().firstWhere(
+        (device) => device['id'] == deviceID,
+      );
+    }
+    return _request(path, method: method, body: body);
+  }
 
   Future<void> uploadChunk(
     String fileId,
