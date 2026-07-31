@@ -14,20 +14,22 @@ COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X nexdrop/internal/version.ProductVersion=${VERSION} -X nexdrop/internal/version.BuildCommit=${COMMIT}" -o /out/nexdrop ./cmd/nexdrop
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/nexdrop-relay ./cmd/nexdrop-relay
 
 FROM alpine:3.24.1
 ARG VERSION=3.0.0
 ARG COMMIT=development
-LABEL org.opencontainers.image.title="NexDrop Node" \
+LABEL org.opencontainers.image.title="NexDrop Node and Relay" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.source="https://github.com/Honguan/NexDrop"
 RUN apk add --no-cache postgresql17-client
 RUN addgroup -S nexdrop && adduser -S -G nexdrop nexdrop
-RUN mkdir -p /var/lib/nexdrop && chown nexdrop:nexdrop /var/lib/nexdrop
+RUN mkdir -p /var/lib/nexdrop /var/lib/nexdrop-relay && chown -R nexdrop:nexdrop /var/lib/nexdrop /var/lib/nexdrop-relay
 COPY --from=build /out/nexdrop /usr/local/bin/nexdrop
+COPY --from=build /out/nexdrop-relay /usr/local/bin/nexdrop-relay
 COPY --from=web-build /web/dist /usr/share/nexdrop/web
 COPY migrations /usr/share/nexdrop/migrations
 USER nexdrop
-EXPOSE 8080
+EXPOSE 8080 8081
 ENTRYPOINT ["nexdrop"]
