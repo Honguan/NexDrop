@@ -41,11 +41,11 @@ type Manifest struct {
 }
 
 type Limits struct {
-	MaxEntries      int
-	MaxPathBytes    int
+	MaxEntries       int
+	MaxPathBytes     int
 	MaxManifestBytes int64
-	MaxTotalBytes   int64
-	MaxDepth        int
+	MaxTotalBytes    int64
+	MaxDepth         int
 }
 
 func (limits Limits) normalized() Limits {

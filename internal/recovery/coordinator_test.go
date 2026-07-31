@@ -18,8 +18,10 @@ type memoryStore struct {
 func (store *memoryStore) ListRecoverable(context.Context, time.Time, int) ([]WorkItem, error) {
 	return append([]WorkItem(nil), store.items...), nil
 }
-func (store *memoryStore) TryLease(context.Context, WorkItem, time.Time) (bool, error) { return true, nil }
-func (store *memoryStore) ReleaseLease(context.Context, WorkItem) error                 { return nil }
+func (store *memoryStore) TryLease(context.Context, WorkItem, time.Time) (bool, error) {
+	return true, nil
+}
+func (store *memoryStore) ReleaseLease(context.Context, WorkItem) error { return nil }
 func (store *memoryStore) MarkCompleted(context.Context, WorkItem, time.Time) error {
 	store.completed++
 	return nil

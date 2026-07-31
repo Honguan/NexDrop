@@ -51,11 +51,11 @@ type Environment struct {
 }
 
 type Item struct {
-	ID       string
-	Priority Priority
-	Size     int64
-	CreatedAt time.Time
-	Policy   Policy
+	ID                   string
+	Priority             Priority
+	Size                 int64
+	CreatedAt            time.Time
+	Policy               Policy
 	MetadataSynchronized bool
 }
 

@@ -19,13 +19,13 @@ const (
 )
 
 type WorkItem struct {
-	TransferID   string
-	TargetID     string
-	RetryCount   int
-	NextAttempt  time.Time
-	ErrorCode    string
-	Verified     map[int]string
-	UpdatedAt    time.Time
+	TransferID  string
+	TargetID    string
+	RetryCount  int
+	NextAttempt time.Time
+	ErrorCode   string
+	Verified    map[int]string
+	UpdatedAt   time.Time
 }
 
 type Outcome struct {

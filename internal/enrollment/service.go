@@ -27,26 +27,26 @@ type Permissions struct {
 }
 
 type Grant struct {
-	ID         string
-	NodeID     string
-	TokenHash  []byte
-	ExpiresAt  time.Time
-	MaxUses    int
-	Uses       int
-	DeviceType string
-	NameHint   string
-	OwnerID    string
+	ID          string
+	NodeID      string
+	TokenHash   []byte
+	ExpiresAt   time.Time
+	MaxUses     int
+	Uses        int
+	DeviceType  string
+	NameHint    string
+	OwnerID     string
 	Permissions Permissions
-	RevokedAt  *time.Time
+	RevokedAt   *time.Time
 }
 
 type CredentialRecord struct {
-	DeviceType string
-	Name       string
-	OwnerID    string
-	SecretHash []byte
+	DeviceType  string
+	Name        string
+	OwnerID     string
+	SecretHash  []byte
 	Permissions Permissions
-	CreatedAt  time.Time
+	CreatedAt   time.Time
 }
 
 type Store interface {
@@ -75,9 +75,9 @@ func New(store Store, nodeID string, rootSecret []byte) (*Service, error) {
 type IssueRequest struct {
 	TTL         time.Duration
 	MaxUses     int
-	DeviceType string
-	NameHint   string
-	OwnerID    string
+	DeviceType  string
+	NameHint    string
+	OwnerID     string
 	Permissions Permissions
 }
 
@@ -133,8 +133,8 @@ type RedeemRequest struct {
 }
 
 type Credential struct {
-	DeviceID   string      `json:"deviceId"`
-	Secret     string      `json:"deviceCredential"`
+	DeviceID    string      `json:"deviceId"`
+	Secret      string      `json:"deviceCredential"`
 	Permissions Permissions `json:"permissions"`
 }
 

@@ -126,7 +126,7 @@ func clamp(value, minimum, maximum float64) float64 {
 }
 
 type Result struct {
-	CandidateID  string
+	CandidateID   string
 	Authenticated bool
 	Healthy       bool
 	CompletedAt   time.Time
