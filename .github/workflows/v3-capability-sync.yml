@@ -1,0 +1,75 @@
+name: v3-capability-sync
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v3-capability-sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  synchronize:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Add negotiated capabilities to first-party clients
+        shell: pwsh
+        run: |
+          $capabilitiesSingle = @"
+            'adaptive_route_racing',
+            'adaptive_transfer_profile',
+            'transfer_recovery',
+            'scoped_device_enrollment',
+            'offline_delivery_policies',
+            'relay_pool',
+            'folder_manifest',
+            'message_lifecycle',
+          "@
+          $capabilitiesDouble = @"
+            "adaptive_route_racing",
+            "adaptive_transfer_profile",
+            "transfer_recovery",
+            "scoped_device_enrollment",
+            "offline_delivery_policies",
+            "relay_pool",
+            "folder_manifest",
+            "message_lifecycle",
+          "@
+
+          $dartPath = 'client/lib/core/api_client.dart'
+          $dart = Get-Content -Raw -Encoding UTF8 $dartPath
+          if (-not $dart.Contains('adaptive_route_racing')) {
+            $dart = $dart.Replace("  'realtime_versions',`n];", "  'realtime_versions',`n$capabilitiesSingle];")
+          }
+          $dart = $dart.Replace('maxParallelChunks: 3,', 'maxParallelChunks: 6,')
+          Set-Content -NoNewline -Encoding UTF8 $dartPath $dart
+
+          $webPath = 'web/src/api.ts'
+          $web = Get-Content -Raw -Encoding UTF8 $webPath
+          if (-not $web.Contains('adaptive_route_racing')) {
+            $web = $web.Replace("  \"realtime_versions\",`n] as const;", "  \"realtime_versions\",`n$capabilitiesDouble] as const;")
+          }
+          Set-Content -NoNewline -Encoding UTF8 $webPath $web
+
+          $extensionPath = 'extension/src/direct.ts'
+          $extension = Get-Content -Raw -Encoding UTF8 $extensionPath
+          if (-not $extension.Contains('adaptive_route_racing')) {
+            $extension = $extension.Replace("  \"realtime_versions\",`n];", "  \"realtime_versions\",`n$capabilitiesDouble];")
+          }
+          Set-Content -NoNewline -Encoding UTF8 $extensionPath $extension
+      - name: Commit synchronized clients
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'Clients are already synchronized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add client/lib/core/api_client.dart web/src/api.ts extension/src/direct.ts
+          git commit -m 'feat: advertise v3 capabilities in first-party clients'
+          git push origin HEAD:${{ github.head_ref }}
