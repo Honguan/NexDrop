@@ -1,0 +1,243 @@
+name: apply-v3-client-enrollment
+
+on:
+  push:
+    branches:
+      - agent/complete-v3-integrations
+    paths:
+      - .github/workflows/apply-v3-client-enrollment.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/complete-v3-integrations
+      - name: Patch Flutter enrollment flow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              text = path.read_text()
+              if old not in text:
+                  raise SystemExit(f'missing marker in {path}: {old[:100]!r}')
+              path.write_text(text.replace(old, new, 1))
+
+          api = Path('client/lib/core/api_client.dart')
+          replace(api,
+              "  static const _nodeSecretKey = 'nexdrop.node_secret';\n  static const _accessKey = 'nexdrop.access_token';",
+              "  static const _nodeSecretKey = 'nexdrop.node_secret';\n  static const _deviceIDKey = 'nexdrop.enrollment.device_id';\n  static const _deviceCredentialKey = 'nexdrop.enrollment.credential';\n  static const _accessKey = 'nexdrop.access_token';")
+          replace(api,
+              "  String? _nodeSecret;\n  String? _accessToken;\n  String? _refreshToken;",
+              "  String? _nodeSecret;\n  String? _deviceID;\n  String? _deviceCredential;\n  String? _accessToken;\n  String? _refreshToken;")
+          replace(api,
+              "  bool get authenticated => _accessToken != null;\n  NodeCapabilityDocument? get capabilityDocument =>",
+              "  bool get authenticated => _accessToken != null;\n  String? get enrolledDeviceID => _deviceID;\n  bool get hasDeviceCredential =>\n      _deviceID?.isNotEmpty == true && _deviceCredential?.isNotEmpty == true;\n  bool get hasNodeBootstrapSecret => _nodeSecret?.trim().isNotEmpty == true;\n  NodeCapabilityDocument? get capabilityDocument =>")
+          replace(api,
+              "    _nodeSecret = await _storage.read(key: _nodeSecretKey);\n    _accessToken = await _storage.read(key: _accessKey);\n    _refreshToken = await _storage.read(key: _refreshKey);",
+              "    _nodeSecret = await _storage.read(key: _nodeSecretKey);\n    _deviceID = await _storage.read(key: _deviceIDKey);\n    _deviceCredential = await _storage.read(key: _deviceCredentialKey);\n    _accessToken = await _storage.read(key: _accessKey);\n    _refreshToken = await _storage.read(key: _refreshKey);")
+          replace(api,
+              "    return _accessToken != null &&\n        _refreshToken != null &&\n        _nodeSecret?.trim().isNotEmpty == true;",
+              "    final restored = _accessToken != null && _refreshToken != null;\n    if (restored && hasDeviceCredential) {\n      try {\n        await attachStoredDevice();\n      } catch (_) {\n        // A revoked credential is surfaced by the normal device sync flow.\n      }\n    }\n    return restored;")
+          replace(api,
+              "    _nodeSecret = nodeSecret.trim();\n    if (_nodeSecret!.isEmpty) {\n      throw const ApiException('NODE_KEY_REQUIRED', 401);\n    }",
+              "    _nodeSecret = nodeSecret.trim();")
+          replace(api,
+              "        'Accept': _accept,\n        'X-NexDrop-Node-Key': _nodeSecret!,\n        'X-NexDrop-Capabilities': supportedCapabilities.join(','),",
+              "        'Accept': _accept,\n        'X-NexDrop-Capabilities': supportedCapabilities.join(','),")
+          replace(api,
+              "    await _saveTokens(jsonDecode(response.body) as Map<String, dynamic>);\n    return account();",
+              "    await _saveTokens(jsonDecode(response.body) as Map<String, dynamic>);\n    if (hasDeviceCredential) {\n      await attachStoredDevice();\n    }\n    return account();")
+          marker = "  Future<List<DeviceStatistic>> deviceStatistics() async =>"
+          methods = """  Future<String> bootstrapDevice({
+    required String deviceType,
+    required String deviceName,
+    required List<int> publicKey,
+  }) async {
+    final nodeSecret = _nodeSecret?.trim() ?? '';
+    if (nodeSecret.isEmpty) {
+      throw const ApiException('NODE_KEY_REQUIRED', 401);
+    }
+    final response = await _authorized(
+      () => _client.post(
+        _uri('/api/v3/enrollment/bootstrap'),
+        headers: {
+          ..._headers({
+            'Content-Type': 'application/json',
+            'Idempotency-Key': _uuid.v4(),
+          }),
+          'X-NexDrop-Node-Key': nodeSecret,
+        },
+        body: jsonEncode({
+          'deviceType': deviceType,
+          'deviceName': deviceName,
+          'publicKey': base64Encode(publicKey),
+          'keyAlgorithm': 'X25519',
+        }),
+      ),
+    );
+    if (response.statusCode != HttpStatus.created) throw _error(response);
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    _deviceID = json['deviceId'] as String;
+    _deviceCredential = json['deviceCredential'] as String;
+    _nodeSecret = null;
+    await Future.wait([
+      _storage.write(key: _deviceIDKey, value: _deviceID),
+      _storage.write(key: _deviceCredentialKey, value: _deviceCredential),
+      _storage.delete(key: _nodeSecretKey),
+    ]);
+    await attachStoredDevice();
+    return _deviceID!;
+  }
+
+  Future<String> createLegacyDevice({
+    required String deviceType,
+    required String deviceName,
+    required List<int> publicKey,
+  }) async {
+    final nodeSecret = _nodeSecret?.trim() ?? '';
+    if (nodeSecret.isEmpty) {
+      throw const ApiException('NODE_KEY_REQUIRED', 401);
+    }
+    final response = await _authorized(
+      () => _client.post(
+        _uri('/api/devices'),
+        headers: {
+          ..._headers({
+            'Content-Type': 'application/json',
+            'Idempotency-Key': _uuid.v4(),
+          }),
+          'X-NexDrop-Node-Key': nodeSecret,
+        },
+        body: jsonEncode({
+          'displayName': deviceName,
+          'type': deviceType,
+          'publicKey': base64Encode(publicKey),
+          'keyAlgorithm': 'X25519',
+        }),
+      ),
+    );
+    if (response.statusCode != HttpStatus.created) throw _error(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['id'] as String;
+  }
+
+  Future<void> attachStoredDevice() async {
+    final deviceID = _deviceID;
+    final credential = _deviceCredential;
+    if (deviceID == null || credential == null) return;
+    await sendJson('/api/v3/enrollment/attach-session', 'POST', {
+      'deviceId': deviceID,
+      'deviceCredential': credential,
+    });
+  }
+
+"""
+          text = api.read_text()
+          if marker not in text:
+              raise SystemExit('missing deviceStatistics marker')
+          api.write_text(text.replace(marker, methods + marker, 1))
+          replace(api,
+              "    if (_nodeSecret?.trim().isNotEmpty == true)\n      'X-NexDrop-Node-Key': _nodeSecret!.trim(),\n    ...?extra,",
+              "    ...?extra,")
+          replace(api,
+              "    await Future.wait([\n      _storage.write(key: _nodeUrlKey, value: _node.toString()),\n      _storage.write(key: _nodeSecretKey, value: _nodeSecret),\n      _storage.write(key: _accessKey, value: _accessToken),\n      _storage.write(key: _refreshKey, value: _refreshToken),\n    ]);",
+              "    await Future.wait([\n      _storage.write(key: _nodeUrlKey, value: _node.toString()),\n      if (_nodeSecret?.isNotEmpty == true)\n        _storage.write(key: _nodeSecretKey, value: _nodeSecret)\n      else\n        _storage.delete(key: _nodeSecretKey),\n      _storage.write(key: _accessKey, value: _accessToken),\n      _storage.write(key: _refreshKey, value: _refreshToken),\n    ]);")
+
+          transfer = Path('client/lib/core/transfer_service.dart')
+          old = """    if (current == null) {
+      final keys = await crypto.ensureDeviceKey(account.id);
+      final response =
+          await api.sendJson('/api/devices', 'POST', {
+                'displayName':
+                    '${Platform.localHostname} · ${Platform.isWindows ? 'Windows' : 'Android'}',
+                'type': Platform.isWindows ? 'WINDOWS' : 'ANDROID',
+                'publicKey': base64Encode(keys.publicKey),
+                'keyAlgorithm': 'X25519',
+              })
+              as Map<String, dynamic>;
+      current = Device.fromJson(response);
+      await _storage.write(
+        key: '$_deviceKeyPrefix${account.id}',
+        value: current.id,
+      );
+    } else {
+      final challenge =
+          await api.sendJson(
+                '/api/devices/${current.id}/session-challenge',
+                'POST',
+              )
+              as Map<String, dynamic>;
+      final proof = await crypto.proveSession(
+        account.id,
+        challenge['ephemeralPublicKey'] as String,
+        challenge['nonce'] as String,
+        challenge['sessionId'] as String,
+      );
+      await api.sendJson('/api/devices/${current.id}/attach-session', 'POST', {
+        'challengeId': challenge['id'],
+        'proof': proof,
+      });
+    }
+"""
+          new = """    if (current == null) {
+      final keys = await crypto.ensureDeviceKey(account.id);
+      final displayName =
+          '${Platform.localHostname} · ${Platform.isWindows ? 'Windows' : 'Android'}';
+      final deviceType = Platform.isWindows ? 'WINDOWS' : 'ANDROID';
+      late final String deviceID;
+      if (api.capabilityDocument?.supports('scoped_device_enrollment') == true) {
+        deviceID = await api.bootstrapDevice(
+          deviceType: deviceType,
+          deviceName: displayName,
+          publicKey: keys.publicKey,
+        );
+      } else {
+        deviceID = await api.createLegacyDevice(
+          deviceType: deviceType,
+          deviceName: displayName,
+          publicKey: keys.publicKey,
+        );
+      }
+      final refreshed = await api.devices();
+      current = refreshed.firstWhere((device) => device.id == deviceID);
+      await _storage.write(
+        key: '$_deviceKeyPrefix${account.id}',
+        value: current.id,
+      );
+    } else if (api.enrolledDeviceID == current.id &&
+        api.hasDeviceCredential) {
+      await api.attachStoredDevice();
+    } else {
+      final challenge =
+          await api.sendJson(
+                '/api/devices/${current.id}/session-challenge',
+                'POST',
+              )
+              as Map<String, dynamic>;
+      final proof = await crypto.proveSession(
+        account.id,
+        challenge['ephemeralPublicKey'] as String,
+        challenge['nonce'] as String,
+        challenge['sessionId'] as String,
+      );
+      await api.sendJson('/api/devices/${current.id}/attach-session', 'POST', {
+        'challengeId': challenge['id'],
+        'proof': proof,
+      });
+    }
+"""
+          replace(transfer, old, new)
+          PY
+          dart format client/lib/core/api_client.dart client/lib/core/transfer_service.dart
+          rm .github/workflows/apply-v3-client-enrollment.yml
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m "feat(client): use scoped device enrollment"
+          git push origin HEAD:agent/complete-v3-integrations
