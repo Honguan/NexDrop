@@ -129,7 +129,7 @@ jobs:
           docker exec "$postgres_container" pg_dump -U nexdrop -d "$rollback_database" -Fc -f /tmp/nexdrop-pre-upgrade.dump
           start_migration_server "$rollback_url" migrations
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
-            "SELECT count(*) FROM schema_migrations")" = 10
+            "SELECT count(*) FROM schema_migrations")" = 11
           test "$(docker exec "$postgres_container" psql -U nexdrop -d "$rollback_database" -tAc \
             "SELECT to_regclass('public.idempotency_records') IS NOT NULL")" = t
           docker exec "$postgres_container" dropdb --force -U nexdrop "$rollback_database"
