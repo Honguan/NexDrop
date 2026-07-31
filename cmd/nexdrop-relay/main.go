@@ -76,10 +76,10 @@ func configuration() (relay.ServerConfig, string, error) {
 		root = "/var/lib/nexdrop-relay"
 	}
 	return relay.ServerConfig{
-		RelayID: strings.TrimSpace(os.Getenv("NEXDROP_RELAY_ID")),
-		StorageRoot: root,
+		RelayID:       strings.TrimSpace(os.Getenv("NEXDROP_RELAY_ID")),
+		StorageRoot:   root,
 		CapacityBytes: capacity,
-		Retention: retention,
-		Verifier: verifier,
+		Retention:     retention,
+		Verifier:      verifier,
 	}, address, nil
 }
