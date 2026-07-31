@@ -41,12 +41,14 @@ type Grant struct {
 }
 
 type CredentialRecord struct {
-	DeviceType  string
-	Name        string
-	OwnerID     string
-	SecretHash  []byte
-	Permissions Permissions
-	CreatedAt   time.Time
+	DeviceType   string
+	Name         string
+	OwnerID      string
+	PublicKey    []byte
+	KeyAlgorithm string
+	SecretHash   []byte
+	Permissions  Permissions
+	CreatedAt    time.Time
 }
 
 type Store interface {
@@ -54,6 +56,13 @@ type Store interface {
 	ConsumeGrant(context.Context, string, []byte, time.Time) (Grant, error)
 	CreateDeviceCredential(context.Context, Grant, CredentialRecord) (string, error)
 	RevokeGrant(context.Context, string, time.Time) error
+}
+
+// AtomicStore is used by production stores so token consumption, restriction
+// checks, device creation, and credential issuance commit in one transaction.
+// The legacy Store methods remain available for deterministic unit fakes.
+type AtomicStore interface {
+	RedeemGrant(context.Context, string, []byte, time.Time, CredentialRecord) (Grant, string, error)
 }
 
 type Service struct {
@@ -126,10 +135,12 @@ func (service *Service) Issue(ctx context.Context, request IssueRequest) (Issued
 }
 
 type RedeemRequest struct {
-	Token      string
-	DeviceType string
-	DeviceName string
-	OwnerID    string
+	Token        string
+	DeviceType   string
+	DeviceName   string
+	OwnerID      string
+	PublicKey    []byte
+	KeyAlgorithm string
 }
 
 type Credential struct {
@@ -147,23 +158,10 @@ func (service *Service) Redeem(ctx context.Context, request RedeemRequest) (Cred
 	if now.After(time.Unix(parsed.Expires, 0).Add(service.clockSkew)) {
 		return Credential{}, ErrExpiredToken
 	}
-	digest := sha256.Sum256([]byte(request.Token))
-	grant, err := service.store.ConsumeGrant(ctx, parsed.GrantID, digest[:], now)
-	if err != nil {
-		return Credential{}, err
-	}
-	if grant.NodeID != service.nodeID || (!grant.ExpiresAt.IsZero() && now.After(grant.ExpiresAt.Add(service.clockSkew))) {
-		return Credential{}, ErrExpiredToken
-	}
 	deviceType := strings.TrimSpace(request.DeviceType)
-	if grant.DeviceType != "" && deviceType != grant.DeviceType {
-		return Credential{}, ErrInvalidToken
-	}
 	name := strings.TrimSpace(request.DeviceName)
-	if name == "" {
-		name = grant.NameHint
-	}
-	if name == "" || len(name) > 100 || (grant.OwnerID != "" && request.OwnerID != grant.OwnerID) {
+	algorithm := strings.TrimSpace(request.KeyAlgorithm)
+	if name == "" || len(name) > 100 || deviceType == "" || len(deviceType) > 50 || len(request.PublicKey) != 32 || algorithm != "X25519" || strings.TrimSpace(request.OwnerID) == "" {
 		return Credential{}, ErrInvalidToken
 	}
 	secret, err := randomID(32)
@@ -171,9 +169,38 @@ func (service *Service) Redeem(ctx context.Context, request RedeemRequest) (Cred
 		return Credential{}, err
 	}
 	secretHash := sha256.Sum256([]byte(secret))
-	deviceID, err := service.store.CreateDeviceCredential(ctx, grant, CredentialRecord{
-		DeviceType: deviceType, Name: name, OwnerID: request.OwnerID, SecretHash: secretHash[:], Permissions: grant.Permissions, CreatedAt: now,
-	})
+	record := CredentialRecord{
+		DeviceType: deviceType, Name: name, OwnerID: strings.TrimSpace(request.OwnerID),
+		PublicKey: append([]byte(nil), request.PublicKey...), KeyAlgorithm: algorithm,
+		SecretHash: secretHash[:], CreatedAt: now,
+	}
+	digest := sha256.Sum256([]byte(request.Token))
+	if atomic, ok := service.store.(AtomicStore); ok {
+		grant, deviceID, redeemErr := atomic.RedeemGrant(ctx, parsed.GrantID, digest[:], now, record)
+		if redeemErr != nil {
+			return Credential{}, redeemErr
+		}
+		return Credential{DeviceID: deviceID, Secret: secret, Permissions: grant.Permissions}, nil
+	}
+
+	grant, err := service.store.ConsumeGrant(ctx, parsed.GrantID, digest[:], now)
+	if err != nil {
+		return Credential{}, err
+	}
+	if grant.NodeID != service.nodeID || (!grant.ExpiresAt.IsZero() && now.After(grant.ExpiresAt.Add(service.clockSkew))) {
+		return Credential{}, ErrExpiredToken
+	}
+	if grant.DeviceType != "" && deviceType != grant.DeviceType {
+		return Credential{}, ErrInvalidToken
+	}
+	if grant.NameHint != "" && request.DeviceName == "" {
+		record.Name = grant.NameHint
+	}
+	if grant.OwnerID != "" && record.OwnerID != grant.OwnerID {
+		return Credential{}, ErrInvalidToken
+	}
+	record.Permissions = grant.Permissions
+	deviceID, err := service.store.CreateDeviceCredential(ctx, grant, record)
 	if err != nil {
 		return Credential{}, err
 	}

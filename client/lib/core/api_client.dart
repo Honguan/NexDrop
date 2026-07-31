@@ -24,7 +24,8 @@ const nexDropCapabilities = <String>[
   'offline_delivery_policies',
   'relay_pool',
   'folder_manifest',
-  'message_lifecycle',];
+  'message_lifecycle',
+];
 const nexDropProtocols = <String>{'1.0', '1.1', '1.2'};
 
 String compatibleProtocol(NodeCapabilityDocument? document) {
@@ -68,6 +69,9 @@ String apiExceptionMessage(ApiException error) {
         'INVALID_REQUEST': '請確認所有必填欄位與格式',
         'INVALID_CREDENTIALS': '帳號或密碼不正確',
         'NODE_KEY_REQUIRED': '節點密鑰不正確或尚未設定',
+        'ENROLLMENT_TOKEN_EXPIRED': '裝置註冊權杖已過期',
+        'ENROLLMENT_TOKEN_EXHAUSTED': '裝置註冊權杖已使用完畢',
+        'ENROLLMENT_TOKEN_REVOKED': '裝置註冊權杖已撤銷',
         'PERMISSION_DENIED': '你沒有執行此操作的權限',
         'INVALID_TOKEN': '登入已失效，請重新登入',
         'FILE_TOO_LARGE': '檔案超過節點限制，請等待區網傳送',
@@ -120,8 +124,7 @@ class NodeCapabilityDocument {
   }) {
     final capabilities = json['capabilities'];
     return NodeCapabilityDocument(
-      nodeIdentity:
-          json['nodeIdentity'] as String? ?? fallbackNodeIdentity,
+      nodeIdentity: json['nodeIdentity'] as String? ?? fallbackNodeIdentity,
       versionFingerprint:
           json['versionFingerprint'] as String? ??
           [
@@ -158,6 +161,8 @@ class ApiClient {
   static const supportedCapabilities = nexDropCapabilities;
   static const _nodeUrlKey = 'nexdrop.node_url';
   static const _nodeSecretKey = 'nexdrop.node_secret';
+  static const _deviceIDKey = 'nexdrop.enrollment.device_id';
+  static const _deviceCredentialKey = 'nexdrop.enrollment.credential';
   static const _accessKey = 'nexdrop.access_token';
   static const _refreshKey = 'nexdrop.refresh_token';
   static const _capabilitiesKey = 'nexdrop.node_capabilities.v1';
@@ -166,22 +171,31 @@ class ApiClient {
 
   final http.Client _client;
   final FlutterSecureStorage _storage;
+  final Map<String, Map<String, dynamic>> _transferCache = {};
+  final Set<String> _fallbackSignals = {};
   Uri? _node;
   String? _nodeSecret;
+  String? _deviceID;
+  String? _deviceCredential;
   String? _accessToken;
   String? _refreshToken;
   NodeCapabilityDocument? _capabilityDocument;
   bool _capabilityDocumentVerified = false;
   Future<bool>? _refreshing;
+  String? _pendingFallbackTransferID;
 
   Uri? get node => _node;
   bool get authenticated => _accessToken != null;
+  String? get enrolledDeviceID => _deviceID;
+  bool get hasDeviceCredential =>
+      _deviceID?.isNotEmpty == true && _deviceCredential?.isNotEmpty == true;
+  bool get hasNodeBootstrapSecret => _nodeSecret?.trim().isNotEmpty == true;
   NodeCapabilityDocument? get capabilityDocument =>
       _capabilityDocumentVerified ? _capabilityDocument : null;
   String? get nodeJoinUri {
     final node = _node;
     final secret = _nodeSecret?.trim() ?? '';
-    if (node == null || secret.isEmpty) return null;
+    if (node == null || secret.isEmpty || hasDeviceCredential) return null;
     return Uri(
       scheme: 'nexdrop',
       host: 'join',
@@ -192,6 +206,8 @@ class ApiClient {
   Future<bool> restore() async {
     final node = await _storage.read(key: _nodeUrlKey);
     _nodeSecret = await _storage.read(key: _nodeSecretKey);
+    _deviceID = await _storage.read(key: _deviceIDKey);
+    _deviceCredential = await _storage.read(key: _deviceCredentialKey);
     _accessToken = await _storage.read(key: _accessKey);
     _refreshToken = await _storage.read(key: _refreshKey);
     if (node == null) return false;
@@ -202,9 +218,15 @@ class ApiClient {
     } catch (_) {
       // Legacy or temporarily unavailable Nodes keep the cached-free fallback.
     }
-    return _accessToken != null &&
-        _refreshToken != null &&
-        _nodeSecret?.trim().isNotEmpty == true;
+    final restored = _accessToken != null && _refreshToken != null;
+    if (restored && hasDeviceCredential) {
+      try {
+        await attachStoredDevice();
+      } catch (_) {
+        // A revoked credential is surfaced by the normal device sync flow.
+      }
+    }
+    return restored;
   }
 
   Future<UserAccount> login(
@@ -216,9 +238,6 @@ class ApiClient {
   ) async {
     _node = validateNodeUrl(nodeUrl);
     _nodeSecret = nodeSecret.trim();
-    if (_nodeSecret!.isEmpty) {
-      throw const ApiException('NODE_KEY_REQUIRED', 401);
-    }
     try {
       await refreshCapabilities();
     } catch (_) {
@@ -229,7 +248,6 @@ class ApiClient {
       headers: {
         'Content-Type': 'application/json',
         'Accept': _accept,
-        'X-NexDrop-Node-Key': _nodeSecret!,
         'X-NexDrop-Capabilities': supportedCapabilities.join(','),
       },
       body: jsonEncode({
@@ -240,6 +258,9 @@ class ApiClient {
     );
     if (response.statusCode != HttpStatus.ok) throw _error(response);
     await _saveTokens(jsonDecode(response.body) as Map<String, dynamic>);
+    if (hasDeviceCredential) {
+      await attachStoredDevice();
+    }
     return account();
   }
 
@@ -267,6 +288,89 @@ class ApiClient {
       ((await getJson('/api/devices')) as List<dynamic>)
           .map((value) => Device.fromJson(value as Map<String, dynamic>))
           .toList();
+
+  Future<String> bootstrapDevice({
+    required String deviceType,
+    required String deviceName,
+    required List<int> publicKey,
+  }) async {
+    final nodeSecret = _nodeSecret?.trim() ?? '';
+    if (nodeSecret.isEmpty) {
+      throw const ApiException('NODE_KEY_REQUIRED', 401);
+    }
+    final response = await _authorized(
+      () => _client.post(
+        _uri('/api/v3/enrollment/bootstrap'),
+        headers: {
+          ..._headers({
+            'Content-Type': 'application/json',
+            'Idempotency-Key': _uuid.v4(),
+          }),
+          'X-NexDrop-Node-Key': nodeSecret,
+        },
+        body: jsonEncode({
+          'deviceType': deviceType,
+          'deviceName': deviceName,
+          'publicKey': base64Encode(publicKey),
+          'keyAlgorithm': 'X25519',
+        }),
+      ),
+    );
+    if (response.statusCode != HttpStatus.created) throw _error(response);
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    _deviceID = json['deviceId'] as String;
+    _deviceCredential = json['deviceCredential'] as String;
+    _nodeSecret = null;
+    await Future.wait([
+      _storage.write(key: _deviceIDKey, value: _deviceID),
+      _storage.write(key: _deviceCredentialKey, value: _deviceCredential),
+      _storage.delete(key: _nodeSecretKey),
+    ]);
+    await attachStoredDevice();
+    return _deviceID!;
+  }
+
+  Future<String> createLegacyDevice({
+    required String deviceType,
+    required String deviceName,
+    required List<int> publicKey,
+  }) async {
+    final nodeSecret = _nodeSecret?.trim() ?? '';
+    if (nodeSecret.isEmpty) {
+      throw const ApiException('NODE_KEY_REQUIRED', 401);
+    }
+    final response = await _authorized(
+      () => _client.post(
+        _uri('/api/devices'),
+        headers: {
+          ..._headers({
+            'Content-Type': 'application/json',
+            'Idempotency-Key': _uuid.v4(),
+          }),
+          'X-NexDrop-Node-Key': nodeSecret,
+        },
+        body: jsonEncode({
+          'displayName': deviceName,
+          'type': deviceType,
+          'publicKey': base64Encode(publicKey),
+          'keyAlgorithm': 'X25519',
+        }),
+      ),
+    );
+    if (response.statusCode != HttpStatus.created) throw _error(response);
+    return (jsonDecode(response.body) as Map<String, dynamic>)['id'] as String;
+  }
+
+  Future<void> attachStoredDevice() async {
+    final deviceID = _deviceID;
+    final credential = _deviceCredential;
+    if (deviceID == null || credential == null) return;
+    await _request(
+      '/api/v3/enrollment/attach-session',
+      method: 'POST',
+      body: {'deviceId': deviceID, 'deviceCredential': credential},
+    );
+  }
 
   Future<List<DeviceStatistic>> deviceStatistics() async =>
       ((await getJson('/api/statistics/devices')) as List<dynamic>)
@@ -344,8 +448,111 @@ class ApiClient {
 
   Future<dynamic> getJson(String path) => _request(path, method: 'GET');
 
-  Future<dynamic> sendJson(String path, String method, [Object? body]) =>
-      _request(path, method: method, body: body);
+  Future<dynamic> sendJson(String path, String method, [Object? body]) async {
+    if (path == '/api/devices' &&
+        method == 'POST' &&
+        body is Map<String, dynamic> &&
+        capabilityDocument?.supports('scoped_device_enrollment') == true) {
+      final publicKey = base64Decode(body['publicKey'] as String);
+      final deviceID = await bootstrapDevice(
+        deviceType: body['type'] as String,
+        deviceName: body['displayName'] as String,
+        publicKey: publicKey,
+      );
+      final rawDevices = await getJson('/api/devices') as List<dynamic>;
+      return rawDevices.cast<Map<String, dynamic>>().firstWhere(
+        (device) => device['id'] == deviceID,
+      );
+    }
+
+    final timelineTransferID = _timelineTransferID(path);
+    if (method == 'POST' &&
+        timelineTransferID != null &&
+        body is Map<String, dynamic> &&
+        body['code'] == 'ROUTE_FALLBACK_SELECTED' &&
+        capabilityDocument?.supports('adaptive_route_racing') == true) {
+      _fallbackSignals.add(timelineTransferID);
+    }
+
+    final deletedTransferID = _deletedTransferID(path);
+    if (method == 'DELETE' &&
+        deletedTransferID != null &&
+        _fallbackSignals.remove(deletedTransferID) &&
+        _transferCache.containsKey(deletedTransferID) &&
+        capabilityDocument?.supports('adaptive_route_racing') == true) {
+      _pendingFallbackTransferID = deletedTransferID;
+      return null;
+    }
+
+    if (path == '/api/transfers' &&
+        method == 'POST' &&
+        body is Map<String, dynamic>) {
+      final pendingID = _pendingFallbackTransferID;
+      final lanIDs = body['lanAvailableDeviceIds'];
+      if (pendingID != null &&
+          lanIDs is List<dynamic> &&
+          lanIDs.isEmpty &&
+          capabilityDocument?.supports('adaptive_route_racing') == true) {
+        _pendingFallbackTransferID = null;
+        return _resumeTransferOnNode(pendingID);
+      }
+      final result = await _request(path, method: method, body: body);
+      _cacheTransfer(result);
+      return result;
+    }
+
+    return _request(path, method: method, body: body);
+  }
+
+  String? _timelineTransferID(String path) {
+    final match = RegExp(r'^/api/transfers/([^/]+)/timeline$').firstMatch(path);
+    return match?.group(1);
+  }
+
+  String? _deletedTransferID(String path) {
+    final match = RegExp(r'^/api/transfers/([^/]+)$').firstMatch(path);
+    return match?.group(1);
+  }
+
+  void _cacheTransfer(Object? value) {
+    if (value is! Map<String, dynamic>) return;
+    final id = value['id'];
+    if (id is String && id.isNotEmpty) {
+      _transferCache[id] = value;
+    }
+  }
+
+  Future<Map<String, dynamic>> _resumeTransferOnNode(String transferID) async {
+    final cached = _transferCache[transferID];
+    if (cached == null) {
+      throw const ApiException('TRANSFER_FALLBACK_STATE_MISSING', 409);
+    }
+    final targets = cached['targets'];
+    if (targets is! List<dynamic>) {
+      throw const ApiException('TRANSFER_FALLBACK_STATE_MISSING', 409);
+    }
+    final switched = <String>{};
+    for (final value in targets) {
+      if (value is! Map<String, dynamic>) continue;
+      final deviceID = value['deviceId'];
+      if (deviceID is! String || !switched.add(deviceID)) continue;
+      await _request(
+        '/api/v3/transfers/$transferID/route',
+        method: 'POST',
+        body: {
+          'deviceId': deviceID,
+          'route': 'NODE',
+          'reason': 'DIRECT_PATH_FAILED',
+          'verifiedChunks': const <String, String>{},
+        },
+      );
+    }
+    final refreshed =
+        await _request('/api/transfers/$transferID', method: 'GET')
+            as Map<String, dynamic>;
+    _transferCache[transferID] = refreshed;
+    return refreshed;
+  }
 
   Future<void> uploadChunk(
     String fileId,
@@ -493,8 +700,6 @@ class ApiClient {
     'Authorization': 'Bearer $_accessToken',
     'Accept': _accept,
     'X-NexDrop-Capabilities': supportedCapabilities.join(','),
-    if (_nodeSecret?.trim().isNotEmpty == true)
-      'X-NexDrop-Node-Key': _nodeSecret!.trim(),
     ...?extra,
   };
 
@@ -508,7 +713,10 @@ class ApiClient {
     _refreshToken = json['refreshToken'] as String;
     await Future.wait([
       _storage.write(key: _nodeUrlKey, value: _node.toString()),
-      _storage.write(key: _nodeSecretKey, value: _nodeSecret),
+      if (_nodeSecret?.isNotEmpty == true)
+        _storage.write(key: _nodeSecretKey, value: _nodeSecret)
+      else
+        _storage.delete(key: _nodeSecretKey),
       _storage.write(key: _accessKey, value: _accessToken),
       _storage.write(key: _refreshKey, value: _refreshToken),
     ]);
