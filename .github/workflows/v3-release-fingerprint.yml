@@ -1,0 +1,56 @@
+name: v3-release-fingerprint
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v3-release-fingerprint.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Refresh compatibility contract fingerprint
+        shell: pwsh
+        run: |
+          $sources = @(
+            (Get-Content -Raw -Encoding UTF8 'internal/version/compatibility.go'),
+            (Get-Content -Raw -Encoding UTF8 'internal/presence/hub.go'),
+            (Get-Content -Raw -Encoding UTF8 'internal/lan/discovery.go'),
+            (Get-Content -Raw -Encoding UTF8 'internal/lan/transfer.go')
+          )
+          $text = ($sources -join "`n---`n") -replace "`r`n", "`n"
+          $bytes = [Text.Encoding]::UTF8.GetBytes($text.Trim())
+          $hash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+
+          $englishPath = 'docs/compatibility-matrix.md'
+          $english = Get-Content -Raw -Encoding UTF8 $englishPath
+          $englishReplacement = 'Compatibility contract fingerprint: `' + $hash + '`'
+          $english = [regex]::Replace($english, '(?m)^Compatibility contract fingerprint: `[^`]+`$', $englishReplacement)
+          Set-Content -NoNewline -Encoding UTF8 $englishPath $english
+
+          $traditionalPath = 'docs/compatibility-matrix.zh-TW.md'
+          $traditional = Get-Content -Raw -Encoding UTF8 $traditionalPath
+          $traditionalReplacement = '相容性契約指紋：`' + $hash + '`'
+          $traditional = [regex]::Replace($traditional, '(?m)^相容性契約指紋：`[^`]+`$', $traditionalReplacement)
+          Set-Content -NoNewline -Encoding UTF8 $traditionalPath $traditional
+
+          Write-Host "CONTRACT_HASH=$hash"
+      - name: Commit updated fingerprints
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'Fingerprint is already current.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/compatibility-matrix.md docs/compatibility-matrix.zh-TW.md
+          git commit -m 'docs: refresh v3.0.0 protocol fingerprint'
+          git push origin HEAD:${{ github.head_ref }}
