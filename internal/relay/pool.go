@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ func Select(relays []Relay, requiredBytes int64, preferredRegion string) (Relay,
 }
 
 func relayScore(candidate Relay, preferredRegion string) float64 {
-	availableRatio := float64(candidate.CapacityBytes-candidate.UsedBytes) / float64(max(candidate.CapacityBytes, 1))
+	availableRatio := float64(candidate.CapacityBytes-candidate.UsedBytes) / float64(maxInt64(candidate.CapacityBytes, 1))
 	score := 100*availableRatio - 60*clamp(candidate.FailureRate, 0, 1)
 	if preferredRegion != "" && candidate.Region == preferredRegion {
 		score += 20
@@ -100,6 +101,9 @@ type GrantVerifier struct {
 // NewGrantSigner creates the control-plane signer from an independent seed.
 // The seed is never sent to a relay. Relays receive only PublicKey().
 func NewGrantSigner(seed []byte) (*GrantSigner, error) {
+	if configured := strings.TrimSpace(os.Getenv("NEXDROP_RELAY_SIGNING_SEED")); configured != "" {
+		seed = []byte(configured)
+	}
 	if len(seed) < ed25519.SeedSize {
 		return nil, ErrInvalidGrant
 	}
@@ -196,7 +200,7 @@ func clamp(value, minimum, maximum float64) float64 {
 	return value
 }
 
-func max(a, b int64) int64 {
+func maxInt64(a, b int64) int64 {
 	if a > b {
 		return a
 	}
