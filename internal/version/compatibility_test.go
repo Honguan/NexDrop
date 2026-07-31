@@ -55,7 +55,7 @@ func TestCurrentPublishesStableCapabilityDocument(t *testing.T) {
 	if !reflect.DeepEqual(information.Capabilities, SupportedCapabilities()) {
 		t.Fatalf("capabilities = %v, want %v", information.Capabilities, SupportedCapabilities())
 	}
-	if information.Limits.MaxChunkSize != 8*1024*1024 || information.Limits.MaxParallelChunks != 3 || information.Limits.MaxRecipients != 100 {
+	if information.Limits.MaxChunkSize != 8*1024*1024 || information.Limits.MaxParallelChunks != 6 || information.Limits.MaxRecipients != 100 {
 		t.Fatalf("limits = %+v", information.Limits)
 	}
 }
