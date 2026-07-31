@@ -43,7 +43,9 @@ jobs:
           $dartPath = 'client/lib/core/api_client.dart'
           $dart = Get-Content -Raw -Encoding UTF8 $dartPath
           if (-not $dart.Contains('adaptive_route_racing')) {
-            $dart = $dart.Replace("  'realtime_versions',`n];", "  'realtime_versions',`n$capabilitiesSingle];")
+            $dartNeedle = "  'realtime_versions'," + "`n" + '];'
+            $dartReplacement = "  'realtime_versions'," + "`n" + $capabilitiesSingle + '];'
+            $dart = $dart.Replace($dartNeedle, $dartReplacement)
           }
           $dart = $dart.Replace('maxParallelChunks: 3,', 'maxParallelChunks: 6,')
           Set-Content -NoNewline -Encoding UTF8 $dartPath $dart
@@ -51,14 +53,18 @@ jobs:
           $webPath = 'web/src/api.ts'
           $web = Get-Content -Raw -Encoding UTF8 $webPath
           if (-not $web.Contains('adaptive_route_racing')) {
-            $web = $web.Replace("  \"realtime_versions\",`n] as const;", "  \"realtime_versions\",`n$capabilitiesDouble] as const;")
+            $webNeedle = '  "realtime_versions",' + "`n" + '] as const;'
+            $webReplacement = '  "realtime_versions",' + "`n" + $capabilitiesDouble + '] as const;'
+            $web = $web.Replace($webNeedle, $webReplacement)
           }
           Set-Content -NoNewline -Encoding UTF8 $webPath $web
 
           $extensionPath = 'extension/src/direct.ts'
           $extension = Get-Content -Raw -Encoding UTF8 $extensionPath
           if (-not $extension.Contains('adaptive_route_racing')) {
-            $extension = $extension.Replace("  \"realtime_versions\",`n];", "  \"realtime_versions\",`n$capabilitiesDouble];")
+            $extensionNeedle = '  "realtime_versions",' + "`n" + '];'
+            $extensionReplacement = '  "realtime_versions",' + "`n" + $capabilitiesDouble + '];'
+            $extension = $extension.Replace($extensionNeedle, $extensionReplacement)
           }
           Set-Content -NoNewline -Encoding UTF8 $extensionPath $extension
       - name: Commit synchronized clients
