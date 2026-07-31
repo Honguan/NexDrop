@@ -171,6 +171,8 @@ class ApiClient {
 
   final http.Client _client;
   final FlutterSecureStorage _storage;
+  final Map<String, Map<String, dynamic>> _transferCache = {};
+  final Set<String> _fallbackSignals = {};
   Uri? _node;
   String? _nodeSecret;
   String? _deviceID;
@@ -180,6 +182,7 @@ class ApiClient {
   NodeCapabilityDocument? _capabilityDocument;
   bool _capabilityDocumentVerified = false;
   Future<bool>? _refreshing;
+  String? _pendingFallbackTransferID;
 
   Uri? get node => _node;
   bool get authenticated => _accessToken != null;
@@ -461,7 +464,94 @@ class ApiClient {
         (device) => device['id'] == deviceID,
       );
     }
+
+    final timelineTransferID = _timelineTransferID(path);
+    if (method == 'POST' &&
+        timelineTransferID != null &&
+        body is Map<String, dynamic> &&
+        body['code'] == 'ROUTE_FALLBACK_SELECTED' &&
+        capabilityDocument?.supports('adaptive_route_racing') == true) {
+      _fallbackSignals.add(timelineTransferID);
+    }
+
+    final deletedTransferID = _deletedTransferID(path);
+    if (method == 'DELETE' &&
+        deletedTransferID != null &&
+        _fallbackSignals.remove(deletedTransferID) &&
+        _transferCache.containsKey(deletedTransferID) &&
+        capabilityDocument?.supports('adaptive_route_racing') == true) {
+      _pendingFallbackTransferID = deletedTransferID;
+      return null;
+    }
+
+    if (path == '/api/transfers' &&
+        method == 'POST' &&
+        body is Map<String, dynamic>) {
+      final pendingID = _pendingFallbackTransferID;
+      final lanIDs = body['lanAvailableDeviceIds'];
+      if (pendingID != null &&
+          lanIDs is List<dynamic> &&
+          lanIDs.isEmpty &&
+          capabilityDocument?.supports('adaptive_route_racing') == true) {
+        _pendingFallbackTransferID = null;
+        return _resumeTransferOnNode(pendingID);
+      }
+      final result = await _request(path, method: method, body: body);
+      _cacheTransfer(result);
+      return result;
+    }
+
     return _request(path, method: method, body: body);
+  }
+
+  String? _timelineTransferID(String path) {
+    final match = RegExp(r'^/api/transfers/([^/]+)/timeline$').firstMatch(path);
+    return match?.group(1);
+  }
+
+  String? _deletedTransferID(String path) {
+    final match = RegExp(r'^/api/transfers/([^/]+)$').firstMatch(path);
+    return match?.group(1);
+  }
+
+  void _cacheTransfer(Object? value) {
+    if (value is! Map<String, dynamic>) return;
+    final id = value['id'];
+    if (id is String && id.isNotEmpty) {
+      _transferCache[id] = value;
+    }
+  }
+
+  Future<Map<String, dynamic>> _resumeTransferOnNode(String transferID) async {
+    final cached = _transferCache[transferID];
+    if (cached == null) {
+      throw const ApiException('TRANSFER_FALLBACK_STATE_MISSING', 409);
+    }
+    final targets = cached['targets'];
+    if (targets is! List<dynamic>) {
+      throw const ApiException('TRANSFER_FALLBACK_STATE_MISSING', 409);
+    }
+    final switched = <String>{};
+    for (final value in targets) {
+      if (value is! Map<String, dynamic>) continue;
+      final deviceID = value['deviceId'];
+      if (deviceID is! String || !switched.add(deviceID)) continue;
+      await _request(
+        '/api/v3/transfers/$transferID/route',
+        method: 'POST',
+        body: {
+          'deviceId': deviceID,
+          'route': 'NODE',
+          'reason': 'DIRECT_PATH_FAILED',
+          'verifiedChunks': const <String, String>{},
+        },
+      );
+    }
+    final refreshed =
+        await _request('/api/transfers/$transferID', method: 'GET')
+            as Map<String, dynamic>;
+    _transferCache[transferID] = refreshed;
+    return refreshed;
   }
 
   Future<void> uploadChunk(
