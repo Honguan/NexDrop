@@ -16,7 +16,7 @@ NexDrop uses protocol versions to reject incompatible wire formats and capabilit
   "capabilities": ["capability_negotiation", "structured_errors"],
   "limits": {
     "maxChunkSize": 8388608,
-    "maxParallelChunks": 3,
+    "maxParallelChunks": 6,
     "maxRecipients": 100
   }
 }
@@ -40,6 +40,14 @@ LAN clients advertise the same list in `X-NexDrop-Capabilities`. The receiver re
 | `idempotency_replay` | Node, client | Do not automatically retry a non-idempotent request. |
 | `resumable_chunks` | Sender and receiver (the Node is the receiver for Node-routed uploads) | Restart the file from the first chunk. |
 | `realtime_versions` | Node, client | Refresh the HTTP version document periodically. |
+| `adaptive_route_racing` | Sender and receiver | Use sequential LAN-first routing and Node fallback. |
+| `adaptive_transfer_profile` | Sender and receiver | Use the fixed negotiated chunk size and one transfer stream. |
+| `transfer_recovery` | Node | Use manual per-target retry and startup cleanup. |
+| `scoped_device_enrollment` | Node, client | Use legacy Node-key device creation during the migration window. |
+| `offline_delivery_policies` | Node, client | Queue content without platform-aware background constraints. |
+| `relay_pool` | Node, client | Use the primary Node as the only relay path. |
+| `folder_manifest` | Sender and receiver | Return unsupported-feature or use an explicitly requested archive. |
+| `message_lifecycle` | Node, client | Use existing history, local hide, and fixed retention behavior. |
 
 When a requested behavior has no safe fallback, the initiating side returns or displays `CAPABILITY_UNAVAILABLE` and identifies the required capability in structured details.
 
