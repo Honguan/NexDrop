@@ -39,17 +39,21 @@ void main() {
             .singleWhere((header) => header.key.toLowerCase() == 'accept')
             .value;
         expect(accept, 'application/vnd.nexdrop.v1+json');
-        expect(captured.headers['X-NexDrop-Node-Key'], 'node-secret');
+        expect(captured.headers.containsKey('X-NexDrop-Node-Key'), isFalse);
         expect(captured.body, contains('"totp":"123456"'));
       });
     }
 
-    test('rejects an empty node key before sending a request', () async {
-      var requested = false;
+    test('allows authentication without a Node key', () async {
+      var loginRequested = false;
       final api = ApiClient(
-        client: MockClient((_) async {
-          requested = true;
-          return http.Response('{}', 200);
+        client: MockClient((request) async {
+          if (request.url.path == '/api/version') {
+            return http.Response('{}', 200);
+          }
+          loginRequested = true;
+          expect(request.headers.containsKey('X-NexDrop-Node-Key'), isFalse);
+          return http.Response('{"error":"INVALID_CREDENTIALS"}', 401);
         }),
       );
 
@@ -57,11 +61,11 @@ void main() {
         api.login('https://node.example', '   ', 'user', 'password', ''),
         throwsA(
           isA<ApiException>()
-              .having((error) => error.code, 'code', 'NODE_KEY_REQUIRED')
+              .having((error) => error.code, 'code', 'INVALID_CREDENTIALS')
               .having((error) => error.statusCode, 'statusCode', 401),
         ),
       );
-      expect(requested, isFalse);
+      expect(loginRequested, isTrue);
     });
 
     test('preserves Retry-After and formats a rate limit message', () async {
@@ -119,6 +123,8 @@ void main() {
         'protocolVersion': '1.2',
         'capabilities': [
           'capability_negotiation',
+          'adaptive_route_racing',
+          'scoped_device_enrollment',
           'future_unknown',
           42,
         ],
@@ -134,6 +140,8 @@ void main() {
       expect(document.nodeIdentity, 'node-1');
       expect(document.versionFingerprint, 'fingerprint-1');
       expect(document.supports('capability_negotiation'), isTrue);
+      expect(document.supports('adaptive_route_racing'), isTrue);
+      expect(document.supports('scoped_device_enrollment'), isTrue);
       expect(document.supports('missing'), isFalse);
       expect(document.supports('future_unknown'), isFalse);
       expect(document.capabilities, contains('future_unknown'));
