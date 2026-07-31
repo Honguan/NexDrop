@@ -15,7 +15,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with: {go-version-file: go.mod, cache: true}
       - name: 格式檢查
-        run: test -z "$(gofmt -l cmd internal)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=$(gofmt -l cmd internal)
+          if [ -n "$files" ]; then
+            printf 'Unformatted Go files:\n%s\n' "$files"
+            exit 1
+          fi
       - run: go vet ./...
       - run: go test ./...
       - run: go test -race ./...
