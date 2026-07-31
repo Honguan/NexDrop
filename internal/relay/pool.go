@@ -5,10 +5,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -99,18 +102,95 @@ type GrantVerifier struct {
 }
 
 // NewGrantSigner creates the control-plane signer from an independent seed.
-// The seed is never sent to a relay. Relays receive only PublicKey().
-func NewGrantSigner(seed []byte) (*GrantSigner, error) {
-	if configured := strings.TrimSpace(os.Getenv("NEXDROP_RELAY_SIGNING_SEED")); configured != "" {
-		seed = []byte(configured)
-	}
-	if len(seed) < ed25519.SeedSize {
-		return nil, ErrInvalidGrant
+// Production Nodes prefer NEXDROP_RELAY_SIGNING_SEED. If it is absent or still
+// contains an example placeholder, a random seed is created once in the
+// persistent storage volume. Relays receive only PublicKey().
+func NewGrantSigner(fallbackSeed []byte) (*GrantSigner, error) {
+	seed, err := relaySigningSeed(fallbackSeed)
+	if err != nil {
+		return nil, err
 	}
 	digest := sha256.Sum256(seed)
 	privateKey := ed25519.NewKeyFromSeed(digest[:])
 	publicKey := append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
 	return &GrantSigner{privateKey: privateKey, publicKey: publicKey, now: time.Now}, nil
+}
+
+func relaySigningSeed(fallback []byte) ([]byte, error) {
+	configured := strings.TrimSpace(os.Getenv("NEXDROP_RELAY_SIGNING_SEED"))
+	if configured != "" && !relaySeedPlaceholder(configured) {
+		if len(configured) < ed25519.SeedSize {
+			return nil, fmt.Errorf("NEXDROP_RELAY_SIGNING_SEED must contain at least %d characters", ed25519.SeedSize)
+		}
+		return []byte(configured), nil
+	}
+
+	storageRoot := strings.TrimSpace(os.Getenv("NEXDROP_STORAGE_PATH"))
+	if storageRoot != "" {
+		path := filepath.Join(filepath.Clean(storageRoot), ".relay-signing-seed")
+		if encoded, readErr := os.ReadFile(path); readErr == nil {
+			seed, decodeErr := hex.DecodeString(strings.TrimSpace(string(encoded)))
+			if decodeErr != nil || len(seed) != ed25519.SeedSize {
+				return nil, errors.New("persisted relay signing seed is invalid")
+			}
+			return seed, nil
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return nil, readErr
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		seed := make([]byte, ed25519.SeedSize)
+		if _, err := rand.Read(seed); err != nil {
+			return nil, err
+		}
+		temporary, err := os.CreateTemp(filepath.Dir(path), ".relay-signing-seed-*")
+		if err != nil {
+			return nil, err
+		}
+		temporaryPath := temporary.Name()
+		committed := false
+		defer func() {
+			_ = temporary.Close()
+			if !committed {
+				_ = os.Remove(temporaryPath)
+			}
+		}()
+		if err := temporary.Chmod(0o600); err != nil {
+			return nil, err
+		}
+		if _, err := temporary.WriteString(hex.EncodeToString(seed) + "\n"); err != nil {
+			return nil, err
+		}
+		if err := temporary.Sync(); err != nil || temporary.Close() != nil {
+			return nil, errors.New("persist relay signing seed")
+		}
+		if err := os.Rename(temporaryPath, path); err != nil {
+			if encoded, readErr := os.ReadFile(path); readErr == nil {
+				existing, decodeErr := hex.DecodeString(strings.TrimSpace(string(encoded)))
+				if decodeErr == nil && len(existing) == ed25519.SeedSize {
+					return existing, nil
+				}
+			}
+			return nil, err
+		}
+		committed = true
+		return seed, nil
+	}
+
+	if len(fallback) < ed25519.SeedSize {
+		return nil, ErrInvalidGrant
+	}
+	return append([]byte(nil), fallback...), nil
+}
+
+func relaySeedPlaceholder(value string) bool {
+	switch value {
+	case "change-me", "replace-with-openssl-rand-hex-32", "replace-with-random-relay-signing-seed":
+		return true
+	default:
+		return false
+	}
 }
 
 func NewGrantVerifier(publicKey []byte) (*GrantVerifier, error) {
