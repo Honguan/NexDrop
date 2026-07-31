@@ -32,6 +32,8 @@ jobs:
         env:
           POSTGRES_PASSWORD: docker-test-only
           NEXDROP_CURSOR_SECRET: docker-test-only-cursor-secret-32-bytes
+          NEXDROP_NODE_KEY: docker-test-only-node-key-32-bytes
+          NEXDROP_NODE_ID: docker-test-node
           NEXDROP_IMAGE: nexdrop:test
         run: |
           trap 'docker compose down -v' EXIT
