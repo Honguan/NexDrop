@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -124,20 +125,24 @@ func TestRelayEnforcesQuotaAndScopedDelete(t *testing.T) {
 func TestRelayCleanupRemovesExpiredChunks(t *testing.T) {
 	server, signer := relayFixture(t, 1024)
 	server.retention = time.Second
-	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Truncate(time.Second)
 	server.now = func() time.Time { return base }
 	server.verifier.now = func() time.Time { return base }
 	signer.now = func() time.Time { return base }
 	ciphertext := []byte("ciphertext")
 	digest := sha256.Sum256(ciphertext)
-	path := "/relay/v1/transfers/transfer-test/files/file-test/chunks/0"
-	request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(ciphertext))
+	requestPath := "/relay/v1/transfers/transfer-test/files/file-test/chunks/0"
+	request := httptest.NewRequest(http.MethodPut, requestPath, bytes.NewReader(ciphertext))
 	request.Header.Set("Authorization", "Bearer "+issueGrant(t, signer, OperationUpload, int64(len(ciphertext))))
 	request.Header.Set("X-Chunk-SHA256", hex.EncodeToString(digest[:]))
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload failed: %d", response.Code)
+	}
+	storedPath := server.chunkPath("transfer-test", "file-test", 0)
+	if err := os.Chtimes(storedPath, base, base); err != nil {
+		t.Fatal(err)
 	}
 
 	server.now = func() time.Time { return base.Add(2 * time.Second) }
