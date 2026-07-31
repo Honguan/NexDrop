@@ -85,6 +85,10 @@ CREATE TABLE folder_manifest_selections (
         ON DELETE CASCADE
 );
 
+ALTER TABLE messages
+    ADD COLUMN pinned boolean NOT NULL DEFAULT false,
+    ADD COLUMN reply_to_message_id uuid REFERENCES messages(id) ON DELETE SET NULL;
+
 ALTER TABLE message_read_cursors
     DROP CONSTRAINT message_read_cursors_pkey;
 
@@ -94,6 +98,19 @@ ALTER TABLE message_read_cursors
 
 ALTER TABLE message_read_cursors
     ADD PRIMARY KEY (device_id, conversation_key);
+
+ALTER TABLE message_tombstones
+    ALTER COLUMN actor_device_id DROP NOT NULL;
+
+ALTER TABLE message_retention_policies
+    DROP CONSTRAINT message_retention_policies_pkey;
+
+ALTER TABLE message_retention_policies
+    ALTER COLUMN group_id DROP NOT NULL,
+    ADD COLUMN conversation_key text NOT NULL DEFAULT 'inbox';
+
+ALTER TABLE message_retention_policies
+    ADD PRIMARY KEY (conversation_key);
 
 CREATE TABLE message_local_removals (
     message_id uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -126,3 +143,7 @@ CREATE INDEX message_tombstones_expiry_idx
 
 CREATE INDEX message_local_removals_device_idx
     ON message_local_removals(device_id, removed_at DESC);
+
+CREATE INDEX messages_reply_idx
+    ON messages(reply_to_message_id)
+    WHERE reply_to_message_id IS NOT NULL;
