@@ -31,11 +31,6 @@ jobs:
           text = text.replace('\n\t"unicode"', '')
           text = text.replace('strings.ToLowerSpecial(unicode.TurkishCase, normalized)', 'strings.ToLower(normalized)')
           manifest.write_text(text, encoding='utf-8')
-
-          integration = Path('.github/workflows/integration-test.yml')
-          text = integration.read_text(encoding='utf-8')
-          text = text.replace('"SELECT count(*) FROM schema_migrations")" = 10', '"SELECT count(*) FROM schema_migrations")" = 11')
-          integration.write_text(text, encoding='utf-8')
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
@@ -47,6 +42,6 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add internal/api/api_test.go internal/folder/manifest.go .github/workflows/integration-test.yml
-          git commit -m 'test: align v3 limits, migration count, and path folding'
+          git add internal/api/api_test.go internal/folder/manifest.go
+          git commit -m 'test: align v3 limits and path folding'
           git push origin HEAD:${{ github.head_ref }}
