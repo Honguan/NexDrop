@@ -6,6 +6,12 @@ This file records user-visible NexDrop changes and follows Keep a Changelog and 
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-07-31
+
+### Changed
+
+- Adaptive routing, recovery, secure enrollment, relay pools, folders, and message lifecycle
+
 ## [3.0.0] - 2026-07-31
 
 ### Changed
