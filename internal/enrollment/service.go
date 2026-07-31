@@ -41,14 +41,14 @@ type Grant struct {
 }
 
 type CredentialRecord struct {
-	DeviceType  string
-	Name        string
-	OwnerID     string
-	PublicKey   []byte
+	DeviceType   string
+	Name         string
+	OwnerID      string
+	PublicKey    []byte
 	KeyAlgorithm string
-	SecretHash  []byte
-	Permissions Permissions
-	CreatedAt   time.Time
+	SecretHash   []byte
+	Permissions  Permissions
+	CreatedAt    time.Time
 }
 
 type Store interface {

@@ -177,7 +177,7 @@ func (handler *v3API) attachEnrollmentSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var request struct {
-		DeviceID  string `json:"deviceId"`
+		DeviceID   string `json:"deviceId"`
 		Credential string `json:"deviceCredential"`
 	}
 	if decodeJSON(r, &request) != nil {
@@ -216,15 +216,15 @@ func (handler *v3API) revokeDeviceCredential(w http.ResponseWriter, r *http.Requ
 }
 
 type routeCandidateRequest struct {
-	ID               string       `json:"id"`
-	Endpoint         string       `json:"endpoint"`
-	Kind             routing.Kind `json:"kind"`
-	Authenticated    bool         `json:"authenticated"`
-	Healthy          bool         `json:"healthy"`
-	LatencyMillis    int64        `json:"latencyMillis,omitempty"`
-	ThroughputBPS    float64      `json:"throughputBytesPerSecond,omitempty"`
-	FailureRate      float64      `json:"failureRate,omitempty"`
-	LastSuccess      time.Time    `json:"lastSuccess,omitempty"`
+	ID            string       `json:"id"`
+	Endpoint      string       `json:"endpoint"`
+	Kind          routing.Kind `json:"kind"`
+	Authenticated bool         `json:"authenticated"`
+	Healthy       bool         `json:"healthy"`
+	LatencyMillis int64        `json:"latencyMillis,omitempty"`
+	ThroughputBPS float64      `json:"throughputBytesPerSecond,omitempty"`
+	FailureRate   float64      `json:"failureRate,omitempty"`
+	LastSuccess   time.Time    `json:"lastSuccess,omitempty"`
 }
 
 func (handler *v3API) planRoutes(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +246,7 @@ func (handler *v3API) planRoutes(w http.ResponseWriter, r *http.Request) {
 			ID: candidate.ID, Endpoint: candidate.Endpoint, Kind: candidate.Kind,
 			Authenticated: candidate.Authenticated, Healthy: candidate.Healthy,
 			HandshakeLatency: time.Duration(candidate.LatencyMillis) * time.Millisecond,
-			ThroughputBPS: candidate.ThroughputBPS, FailureRate: candidate.FailureRate,
+			ThroughputBPS:    candidate.ThroughputBPS, FailureRate: candidate.FailureRate,
 			LastSuccess: candidate.LastSuccess,
 		})
 	}
@@ -299,11 +299,11 @@ func (handler *v3API) recommendProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		FileSize int64            `json:"fileSize"`
-		Current  adaptive.Profile `json:"current"`
-		Limits   adaptive.Limits  `json:"limits"`
+		FileSize    int64            `json:"fileSize"`
+		Current     adaptive.Profile `json:"current"`
+		Limits      adaptive.Limits  `json:"limits"`
 		Observation struct {
-			RTTMillis          int64   `json:"rttMillis"`
+			RTTMillis           int64   `json:"rttMillis"`
 			ThroughputBPS       float64 `json:"throughputBytesPerSecond"`
 			RetryRate           float64 `json:"retryRate"`
 			ChecksumFailureRate float64 `json:"checksumFailureRate"`
@@ -319,15 +319,15 @@ func (handler *v3API) recommendProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := handler.service.RecommendProfile(r.Context(), session, r.PathValue("id"), request.FileSize, request.Current, request.Limits, adaptive.Observation{
-		RTT: time.Duration(request.Observation.RTTMillis) * time.Millisecond,
-		ThroughputBPS: request.Observation.ThroughputBPS,
-		RetryRate: request.Observation.RetryRate,
+		RTT:                 time.Duration(request.Observation.RTTMillis) * time.Millisecond,
+		ThroughputBPS:       request.Observation.ThroughputBPS,
+		RetryRate:           request.Observation.RetryRate,
 		ChecksumFailureRate: request.Observation.ChecksumFailureRate,
-		Backpressure: request.Observation.Backpressure,
-		StoragePressure: request.Observation.StoragePressure,
-		ThermalPressure: request.Observation.ThermalPressure,
-		LowBattery: request.Observation.LowBattery,
-		Background: request.Observation.Background,
+		Backpressure:        request.Observation.Backpressure,
+		StoragePressure:     request.Observation.StoragePressure,
+		ThermalPressure:     request.Observation.ThermalPressure,
+		LowBattery:          request.Observation.LowBattery,
+		Background:          request.Observation.Background,
 	})
 	if err != nil {
 		writeV3Error(w, err)
@@ -337,14 +337,14 @@ func (handler *v3API) recommendProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 type deliveryPolicyRequest struct {
-	Priority           delivery.Priority `json:"priority"`
-	Size               int64             `json:"size"`
-	ExpiresAt          time.Time         `json:"expiresAt,omitempty"`
-	WiFiOnly           bool              `json:"wifiOnly"`
-	ChargingOnly       bool              `json:"chargingOnly"`
-	MaxMobileDataSize  int64             `json:"maximumMobileDataBytes"`
-	AutomaticDownload  bool              `json:"automaticDownload"`
-	ForegroundOnly     bool              `json:"foregroundOnly"`
+	Priority          delivery.Priority `json:"priority"`
+	Size              int64             `json:"size"`
+	ExpiresAt         time.Time         `json:"expiresAt,omitempty"`
+	WiFiOnly          bool              `json:"wifiOnly"`
+	ChargingOnly      bool              `json:"chargingOnly"`
+	MaxMobileDataSize int64             `json:"maximumMobileDataBytes"`
+	AutomaticDownload bool              `json:"automaticDownload"`
+	ForegroundOnly    bool              `json:"foregroundOnly"`
 }
 
 func (handler *v3API) putDeliveryPolicy(w http.ResponseWriter, r *http.Request) {
@@ -488,7 +488,9 @@ func (handler *v3API) drainRelay(w http.ResponseWriter, r *http.Request) {
 	if !ok || !requireWriteKey(w, r) {
 		return
 	}
-	var request struct { Draining bool `json:"draining"` }
+	var request struct {
+		Draining bool `json:"draining"`
+	}
 	if decodeJSON(r, &request) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
@@ -518,13 +520,13 @@ func (handler *v3API) assignRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		TransferID     string          `json:"transferId"`
-		FileID         string          `json:"fileId"`
-		Operation      relay.Operation `json:"operation"`
-		RequiredBytes  int64           `json:"requiredBytes"`
-		PreferredRegion string         `json:"preferredRegion,omitempty"`
-		FirstChunk     int             `json:"firstChunk"`
-		LastChunk      int             `json:"lastChunk"`
+		TransferID      string          `json:"transferId"`
+		FileID          string          `json:"fileId"`
+		Operation       relay.Operation `json:"operation"`
+		RequiredBytes   int64           `json:"requiredBytes"`
+		PreferredRegion string          `json:"preferredRegion,omitempty"`
+		FirstChunk      int             `json:"firstChunk"`
+		LastChunk       int             `json:"lastChunk"`
 	}
 	if decodeJSON(r, &request) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
@@ -575,7 +577,9 @@ func (handler *v3API) saveFolderSelection(w http.ResponseWriter, r *http.Request
 	if !ok || !requireWriteKey(w, r) {
 		return
 	}
-	var request struct { Entries []v3.FolderSelection `json:"entries"` }
+	var request struct {
+		Entries []v3.FolderSelection `json:"entries"`
+	}
 	if decodeJSON(r, &request) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
@@ -606,7 +610,9 @@ func (handler *v3API) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit == 0 { limit = 50 }
+	if limit == 0 {
+		limit = 50
+	}
 	result, err := handler.service.Messages(r.Context(), session, r.URL.Query().Get("conversation"), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		writeV3Error(w, err)
@@ -699,7 +705,9 @@ func (handler *v3API) runRetention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ADMIN_VERIFICATION_REQUIRED")
 		return
 	}
-	var request struct { Limit int `json:"limit"` }
+	var request struct {
+		Limit int `json:"limit"`
+	}
 	if decodeJSON(r, &request) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return
@@ -760,7 +768,9 @@ func (handler *v3API) runRecovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ADMIN_VERIFICATION_REQUIRED")
 		return
 	}
-	var request struct { Limit int `json:"limit"` }
+	var request struct {
+		Limit int `json:"limit"`
+	}
 	if decodeJSON(r, &request) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST")
 		return

@@ -52,7 +52,7 @@ type RouteObservation struct {
 }
 
 type RoutePlanRequest struct {
-	DeviceID  string              `json:"deviceId"`
+	DeviceID   string              `json:"deviceId"`
 	Candidates []routing.Candidate `json:"candidates"`
 }
 
@@ -73,16 +73,16 @@ type RouteSwitch struct {
 }
 
 type DeliveryRecord struct {
-	TransferID             string
-	TargetDeviceID          string
-	Priority                delivery.Priority
-	Size                    int64
-	Policy                  delivery.Policy
-	State                   delivery.State
-	ReasonCode              string
-	MetadataSynchronized    bool
-	BodyDownloaded          bool
-	UpdatedAt               time.Time
+	TransferID           string
+	TargetDeviceID       string
+	Priority             delivery.Priority
+	Size                 int64
+	Policy               delivery.Policy
+	State                delivery.State
+	ReasonCode           string
+	MetadataSynchronized bool
+	BodyDownloaded       bool
+	UpdatedAt            time.Time
 }
 
 type RelayRecord struct {
@@ -467,7 +467,7 @@ func (service *Service) RegisterRelay(ctx context.Context, session auth.Session,
 		retention = 7 * 24 * time.Hour
 	}
 	registered, err := service.store.RegisterRelay(ctx, session, RelayRecord{
-		Relay: relay.Relay{ID: request.ID, Endpoint: request.Endpoint, Region: request.Region, CapacityBytes: request.CapacityBytes},
+		Relay:       relay.Relay{ID: request.ID, Endpoint: request.Endpoint, Region: request.Region, CapacityBytes: request.CapacityBytes},
 		IdentityKey: request.IdentityKey, CredentialHash: digest[:], Retention: retention,
 	}, service.now().UTC())
 	return registered, credential, err
