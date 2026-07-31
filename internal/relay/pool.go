@@ -1,10 +1,9 @@
 package relay
 
 import (
-	"crypto/hmac"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,7 @@ var (
 	ErrNoRelay      = errors.New("no eligible relay")
 	ErrInvalidGrant = errors.New("invalid relay grant")
 	ErrExpiredGrant = errors.New("expired relay grant")
+	ErrGrantReplay  = errors.New("relay grant replayed")
 )
 
 type Relay struct {
@@ -87,15 +87,41 @@ type GrantClaims struct {
 }
 
 type GrantSigner struct {
-	secret []byte
-	now    func() time.Time
+	privateKey ed25519.PrivateKey
+	publicKey  ed25519.PublicKey
+	now        func() time.Time
 }
 
-func NewGrantSigner(secret []byte) (*GrantSigner, error) {
-	if len(secret) < 32 {
+type GrantVerifier struct {
+	publicKey ed25519.PublicKey
+	now       func() time.Time
+}
+
+// NewGrantSigner creates the control-plane signer from an independent seed.
+// The seed is never sent to a relay. Relays receive only PublicKey().
+func NewGrantSigner(seed []byte) (*GrantSigner, error) {
+	if len(seed) < ed25519.SeedSize {
 		return nil, ErrInvalidGrant
 	}
-	return &GrantSigner{secret: append([]byte(nil), secret...), now: time.Now}, nil
+	digest := sha256.Sum256(seed)
+	privateKey := ed25519.NewKeyFromSeed(digest[:])
+	publicKey := append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
+	return &GrantSigner{privateKey: privateKey, publicKey: publicKey, now: time.Now}, nil
+}
+
+func NewGrantVerifier(publicKey []byte) (*GrantVerifier, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return nil, ErrInvalidGrant
+	}
+	return &GrantVerifier{publicKey: append(ed25519.PublicKey(nil), publicKey...), now: time.Now}, nil
+}
+
+func (signer *GrantSigner) PublicKey() []byte {
+	return append([]byte(nil), signer.publicKey...)
+}
+
+func (signer *GrantSigner) PublicKeyBase64() string {
+	return base64.RawURLEncoding.EncodeToString(signer.publicKey)
 }
 
 func (signer *GrantSigner) Issue(relayID, transferID, fileID string, operation Operation, maxBytes int64, ttl time.Duration) (string, error) {
@@ -106,22 +132,33 @@ func (signer *GrantSigner) Issue(relayID, transferID, fileID string, operation O
 	if _, err := rand.Read(nonceBytes); err != nil {
 		return "", err
 	}
-	claims := GrantClaims{Version: 1, RelayID: relayID, TransferID: transferID, FileID: fileID, Operation: operation, MaxBytes: maxBytes, ExpiresAt: signer.now().UTC().Add(ttl).Unix(), Nonce: base64.RawURLEncoding.EncodeToString(nonceBytes)}
+	claims := GrantClaims{
+		Version: 2, RelayID: relayID, TransferID: transferID, FileID: fileID,
+		Operation: operation, MaxBytes: maxBytes,
+		ExpiresAt: signer.now().UTC().Add(ttl).Unix(),
+		Nonce:     base64.RawURLEncoding.EncodeToString(nonceBytes),
+	}
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payload)
-	return "v1." + encoded + "." + signer.signature(encoded), nil
+	signature := ed25519.Sign(signer.privateKey, grantSigningMessage(encoded))
+	return "v2." + encoded + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 func (signer *GrantSigner) Verify(token, relayID, transferID, fileID string, operation Operation, requestedBytes int64) (GrantClaims, error) {
+	verifier := &GrantVerifier{publicKey: signer.publicKey, now: signer.now}
+	return verifier.Verify(token, relayID, transferID, fileID, operation, requestedBytes)
+}
+
+func (verifier *GrantVerifier) Verify(token, relayID, transferID, fileID string, operation Operation, requestedBytes int64) (GrantClaims, error) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != "v1" {
+	if len(parts) != 3 || parts[0] != "v2" || parts[1] == "" || parts[2] == "" {
 		return GrantClaims{}, ErrInvalidGrant
 	}
-	expected := signer.signature(parts[1])
-	if len(expected) != len(parts[2]) || subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(verifier.publicKey, grantSigningMessage(parts[1]), signature) {
 		return GrantClaims{}, ErrInvalidGrant
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
@@ -129,10 +166,10 @@ func (signer *GrantSigner) Verify(token, relayID, transferID, fileID string, ope
 		return GrantClaims{}, ErrInvalidGrant
 	}
 	var claims GrantClaims
-	if json.Unmarshal(payload, &claims) != nil || claims.Version != 1 || claims.Nonce == "" || !validOperation(claims.Operation) {
+	if json.Unmarshal(payload, &claims) != nil || claims.Version != 2 || claims.Nonce == "" || !validOperation(claims.Operation) {
 		return GrantClaims{}, ErrInvalidGrant
 	}
-	if signer.now().UTC().After(time.Unix(claims.ExpiresAt, 0)) {
+	if verifier.now().UTC().After(time.Unix(claims.ExpiresAt, 0)) {
 		return GrantClaims{}, ErrExpiredGrant
 	}
 	if claims.RelayID != relayID || claims.TransferID != transferID || claims.FileID != fileID || claims.Operation != operation || requestedBytes < 0 || requestedBytes > claims.MaxBytes {
@@ -141,11 +178,8 @@ func (signer *GrantSigner) Verify(token, relayID, transferID, fileID string, ope
 	return claims, nil
 }
 
-func (signer *GrantSigner) signature(payload string) string {
-	mac := hmac.New(sha256.New, signer.secret)
-	_, _ = mac.Write([]byte("nexdrop/relay-grant/v1\n"))
-	_, _ = mac.Write([]byte(payload))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+func grantSigningMessage(payload string) []byte {
+	return []byte("nexdrop/relay-grant/v2\n" + payload)
 }
 
 func validOperation(operation Operation) bool {
