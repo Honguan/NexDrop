@@ -183,7 +183,7 @@ jobs:
             ghcr.io/honguan/nexdrop:${{ needs.validate.outputs.version }}
             ghcr.io/honguan/nexdrop:${{ steps.tags.outputs.major_minor }}
             ghcr.io/honguan/nexdrop:latest
-      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
       - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
@@ -207,7 +207,7 @@ jobs:
           cd release-assets
           find . -maxdepth 1 -type f ! -name 'checksums-*' -print0 | sort -z | xargs -0 sha256sum > checksums-sha256.txt
           sha256sum --check checksums-sha256.txt
-      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with: {subject-path: 'release-assets/*'}
       - name: 建立實際發布說明
         run: |
