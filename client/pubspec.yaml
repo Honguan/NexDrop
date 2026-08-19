@@ -51,7 +51,7 @@ dependencies:
   path: ^1.9.1
   crypto: ^3.0.7
   basic_utils: ^5.8.2
-  bonsoir: ^7.1.4
+  bonsoir: ^7.1.5
   desktop_drop: ^0.7.1
 
 dev_dependencies:
