@@ -187,7 +187,7 @@ jobs:
         with: {subject-name: ghcr.io/honguan/nexdrop, subject-digest: '${{ steps.build.outputs.digest }}', push-to-registry: true}
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
       - run: cosign sign --yes 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}'
-      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26
         with: {image: 'ghcr.io/honguan/nexdrop@${{ steps.build.outputs.digest }}', format: spdx-json, output-file: nexdrop-node.spdx.json, upload-artifact: false}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: container-sbom, path: nexdrop-node.spdx.json, if-no-files-found: error}
